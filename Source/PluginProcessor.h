@@ -6,6 +6,7 @@
 #include "ChainKnobs.h"
 #include "Space.h"
 #include "StackMorph.h"
+#include "Arp.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -39,6 +40,10 @@ public:
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
+
+    // The arp / sequencer step pattern (message thread; saved with the state)
+    void setPatternStep (int index, const ps::NoteGenerator::Step& step) noexcept { noteGenerator.setStep (index, step); }
+    ps::NoteGenerator::Step getPatternStep (int index) const noexcept { return noteGenerator.getStep (index); }
 
 private:
     // Each layer's current engine description, read by slot parameters to show engine-specific text.
@@ -77,6 +82,10 @@ private:
     std::atomic<float>* monoBassOn = nullptr;
     std::atomic<float>* safeOutputOn = nullptr;
     std::atomic<float>* phaseAlign = nullptr;
+    ps::NoteGenerator noteGenerator;
+    juce::MidiBuffer generatedMidi;
+    struct ArpParams { std::atomic<float>* mode, *rate, *direction, *octaves, *gate, *swing, *latch, *length, *trigger; };
+    ArpParams arpParams {};
     std::array<std::atomic<float>*, ps::params::numChainKnobs> chainKnobs {};
     std::atomic<float>* superKnob = nullptr;
     std::atomic<float>* buildButton = nullptr;

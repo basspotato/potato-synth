@@ -6,6 +6,7 @@
 #include "ChainKnobs.h"
 #include <cmath>
 #include <iostream>
+#include <set>
 
 namespace
 {
@@ -1906,6 +1907,324 @@ void benchmarkDirt()
     CHECK (best < 20.0, "Dirt stack CPU is within budget");
 }
 
+// ---- Arpeggiator and step sequencer -------------------------------------------------------------------
+
+using Gen = ps::NoteGenerator;
+
+struct GenEvent { int64_t at; bool on; int note; float velocity; };
+
+// Runs the note generator in 256-sample blocks. Input events are at absolute samples; with ppqStart >= 0 the
+// host transport plays from that beat at 120 BPM (and jumps where `jumps` says: sample -> new beat).
+struct GenRun
+{
+    Gen gen;
+    Gen::Settings s;
+    std::vector<GenEvent> out;
+    int64_t now = 0;
+    double ppq = -1.0;
+
+    GenRun() { gen.prepare (sampleRate); }
+
+    void run (int64_t samples, std::vector<std::pair<int64_t, juce::MidiMessage>> in = {}, std::vector<std::pair<int64_t, double>> jumps = {})
+    {
+        juce::MidiBuffer inBuf, outBuf;
+        const int64_t end = now + samples;
+        while (now < end)
+        {
+            const int n = (int) std::min<int64_t> (blockSize, end - now);
+            for (auto& [at, beat] : jumps)
+                if (at >= now && at < now + n)
+                    ppq = beat;
+            inBuf.clear();
+            for (auto& [at, m] : in)
+                if (at >= now && at < now + n)
+                    inBuf.addEvent (m, (int) (at - now));
+            gen.process (inBuf, outBuf, n, 120.0, ppq, s);
+            for (const auto meta : outBuf)
+            {
+                const auto m = meta.getMessage();
+                if (m.isNoteOnOrOff())
+                    out.push_back ({ now + meta.samplePosition, m.isNoteOn(), m.getNoteNumber(), m.getFloatVelocity() });
+            }
+            now += n;
+            if (ppq >= 0.0)
+                ppq += n * 2.0 / sampleRate;
+        }
+    }
+
+    std::vector<GenEvent> ons() const
+    {
+        std::vector<GenEvent> r;
+        for (auto& e : out) if (e.on) r.push_back (e);
+        return r;
+    }
+
+    std::vector<int> onNotes() const
+    {
+        std::vector<int> r;
+        for (auto& e : out) if (e.on) r.push_back (e.note);
+        return r;
+    }
+
+    // Every note on has its note off (none left sounding)
+    bool balanced() const
+    {
+        std::array<int, 128> count {};
+        for (auto& e : out)
+            count[(size_t) e.note] += e.on ? 1 : -1;
+        return std::all_of (count.begin(), count.end(), [] (int c) { return c == 0; });
+    }
+};
+
+std::vector<std::pair<int64_t, juce::MidiMessage>> keys (int64_t at, std::initializer_list<int> notes, int64_t releaseAt = -1)
+{
+    std::vector<std::pair<int64_t, juce::MidiMessage>> v;
+    for (int n : notes)
+    {
+        v.push_back ({ at, on (n) });
+        if (releaseAt >= 0)
+            v.push_back ({ releaseAt, off (n) });
+    }
+    return v;
+}
+
+std::string join (const std::vector<int>& v, size_t count)
+{
+    std::string r;
+    for (size_t i = 0; i < std::min (count, v.size()); ++i)
+        r += (i ? " " : "") + std::to_string (v[i]);
+    return r;
+}
+
+void testArpeggiator()
+{
+    const int step = 6000;   // 1/16 at 120 BPM
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.run (48000, keys (1000, { 60, 64, 67 }, 30000));
+        const auto ons = r.ons();
+        bool timed = ons.size() >= 5;
+        for (size_t i = 0; i < std::min<size_t> (5, ons.size()); ++i)
+            timed = timed && ons[i].at == 1000 + (int64_t) i * step;
+        CHECK (timed, "arp: Up plays from the key press, one note every 1/16 at 120 BPM, sample-exact");
+        CHECK (join (r.onNotes(), 5) == "60 64 67 60 64", "arp: Up plays the keys low to high (" + join (r.onNotes(), 5) + ")");
+        bool gated = true;
+        for (auto& e : r.out)
+            if (! e.on && e.at < 30000)
+                gated = gated && (e.at - 1000) % step == 3600;
+        CHECK (gated, "arp: notes last the 60 % gate");
+        CHECK (ons.back().at < 30000 && r.balanced(), "arp: releasing the keys stops it, with no stuck notes");
+    }
+
+    auto order = [] (Gen::Direction d, int octaves, std::initializer_list<int> notes)
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.direction = d;
+        r.s.octaves = octaves;
+        r.run (6000 * 12 + 100, keys (0, notes));
+        return join (r.onNotes(), 12);
+    };
+    CHECK (order (Gen::Direction::down, 1, { 60, 64, 67 }) == "67 64 60 67 64 60 67 64 60 67 64 60", "arp: Down");
+    CHECK (order (Gen::Direction::upDown, 2, { 60, 64, 67 }) == "60 64 67 72 76 79 76 72 67 64 60 64",
+           "arp: Up-Down over two octaves (" + order (Gen::Direction::upDown, 2, { 60, 64, 67 }) + ")");
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.direction = Gen::Direction::asPlayed;
+        r.run (6000 * 6 + 100, { { 0, on (67) }, { 0, on (60) }, { 0, on (64) } });
+        CHECK (join (r.onNotes(), 6) == "67 60 64 67 60 64", "arp: As Played keeps the playing order");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.direction = Gen::Direction::random;
+        r.s.octaves = 2;
+        r.run (6000 * 32, keys (0, { 60, 64, 67 }));
+        const auto notes = r.onNotes();
+        const bool inSet = std::all_of (notes.begin(), notes.end(), [] (int n) { return n == 60 || n == 64 || n == 67 || n == 72 || n == 76 || n == 79; });
+        std::set<int> distinct (notes.begin(), notes.end());
+        CHECK (inSet && distinct.size() >= 5, "arp: Random picks from the held keys over the octaves");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.direction = Gen::Direction::chord;
+        r.s.octaves = 2;
+        r.run (6000 * 2 + 100, keys (0, { 60, 64, 67 }));
+        CHECK (join (r.onNotes(), 6) == "60 64 67 72 76 79", "arp: Chord plays every key on each step, octave by octave");
+    }
+
+    // Gate over 100 %: legato, each note ends after the next begins
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.gate = 1.5f;
+        r.run (30000, keys (0, { 60, 64 }));
+        int64_t firstOff = -1;
+        for (auto& e : r.out)
+            if (! e.on && e.note == 60 && firstOff < 0)
+                firstOff = e.at;
+        CHECK (firstOff == 9000, "arp: a 150 % gate overlaps the next note (" + std::to_string (firstOff) + ")");
+    }
+
+    // Swing: every second step half a step late at 100 %
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.swing = 1.0f;
+        r.run (30000, keys (0, { 60 }));
+        const auto ons = r.ons();
+        CHECK (ons.size() >= 4 && ons[1].at == 9000 && ons[2].at == 12000 && ons[3].at == 21000, "arp: swing delays the off-beat steps");
+    }
+
+    // Latch: the pattern keeps playing after release, and a new key replaces it
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.latch = true;
+        auto in = keys (0, { 60, 64 }, 10000);
+        in.push_back ({ 60000, on (70) });
+        in.push_back ({ 70000, off (70) });
+        r.run (96000, in);
+        bool latched = false, replaced = true;
+        for (auto& e : r.ons())
+        {
+            latched = latched || (e.at > 20000 && e.at < 60000);
+            if (e.at >= 60000)
+                replaced = replaced && e.note == 70;
+        }
+        CHECK (latched && replaced, "arp: Latch holds the pattern until a new key replaces it");
+    }
+
+    // Host transport: steps land on the grid; a late press plays its step, a later one waits; a jump stops notes
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.ppq = 0.03;   // 720 samples after the beat: under a quarter step late
+        r.run (20000, keys (0, { 60 }));
+        const auto ons = r.ons();
+        CHECK (! ons.empty() && ons[0].at == 0 && ons.size() >= 2 && ons[1].at == 6000 - 720, "arp: synced to the host grid; a slightly late key still plays its step");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.ppq = 0.1;   // 2400 samples late: waits for the next 1/16
+        r.run (20000, keys (0, { 60 }));
+        const auto ons = r.ons();
+        CHECK (! ons.empty() && ons[0].at == 6000 - 2400, "arp: a key well after the step waits for the next one");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.s.gate = 1.0f;
+        r.ppq = 0.0;
+        r.run (60000, keys (0, { 60, 64 }, 50000), { { 20000, 8.0 } });
+        bool cut = false;
+        for (auto& e : r.out)
+            cut = cut || (! e.on && e.at >= 19700 && e.at < 20300);
+        CHECK (cut && r.balanced(), "arp: a transport jump stops the sounding notes and picks the grid up again");
+    }
+
+    // Switching off while keys are down: the generator's notes stop and the keys sound directly
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::arp;
+        r.run (10000, keys (0, { 60, 64 }));
+        r.s.mode = Gen::Mode::off;
+        r.run (10000);
+        int direct = 0;
+        for (auto& e : r.out)
+            direct += (e.on && e.at >= 10000) ? 1 : 0;
+        r.run (1000, { { r.now, off (60) }, { r.now, off (64) } });
+        CHECK (direct == 2 && r.balanced(), "arp: switching off hands the held keys back, with no stuck notes");
+    }
+}
+
+void testStepSequencer()
+{
+    const int step = 6000;
+    auto pattern = [] (GenRun& r, std::initializer_list<Gen::Step> steps)
+    {
+        int i = 0;
+        for (auto& st : steps)
+            r.gen.setStep (i++, st);
+        r.s.length = (int) steps.size();
+    };
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::seq;
+        pattern (r, { { true, false, 0 }, { true, false, 12 }, { false, false, 0 }, { true, false, 7 } });
+        r.run (step * 8 + 100, keys (0, { 48 }));
+        const auto ons = r.ons();
+        CHECK (join (r.onNotes(), 6) == "48 60 55 48 60 55" && ons.size() >= 3 && ons[2].at == 3 * step,
+               "seq: the pattern plays from the held key, with a rest (" + join (r.onNotes(), 6) + ")");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::seq;
+        pattern (r, { { true, false, 0 }, { true, false, 12 } });
+        r.run (step * 4 + 100, { { 0, on (48) }, { 2 * step - 100, on (53) } });
+        CHECK (join (r.onNotes(), 4) == "48 60 53 65", "seq: a new key transposes the pattern (" + join (r.onNotes(), 4) + ")");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::seq;
+        pattern (r, { { true, false, 0 }, { true, true, 0 }, { true, false, 5 }, { true, false, 7 } });
+        r.run (step * 4, keys (0, { 48 }));
+        int64_t firstOff = -1;
+        for (auto& e : r.out)
+            if (! e.on && e.note == 48 && firstOff < 0)
+                firstOff = e.at;
+        CHECK (r.onNotes().size() == 3 && firstOff == step + 3600, "seq: a tie holds the note through the next step (" + join (r.onNotes(), 4) + ", off at " + std::to_string (firstOff) + ")");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::seq;
+        Gen::Step never { true, false, 0, 1, 1.0f, 0.0f }, half { true, false, 0, 1, 1.0f, 0.5f };
+        pattern (r, { never, half });
+        r.run (step * 64, keys (0, { 48 }));
+        const auto n = r.ons().size();
+        CHECK (n >= 8 && n <= 24, "seq: probability 0 never plays, 50 % plays about half the time (" + std::to_string (n) + " of 32)");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::seq;
+        pattern (r, { { true, false, 0, 3, 0.5f, 1.0f } });
+        r.run (step, keys (0, { 48 }));
+        const auto ons = r.ons();
+        CHECK (ons.size() == 3 && ons[1].at == 2000 && ons[2].at == 4000 && std::abs (ons[0].velocity - 0.8f * 0.5f) < 0.01f && r.balanced(),
+               "seq: a ratchet plays even hits at the step's velocity");
+    }
+    {
+        GenRun r;
+        r.s.mode = Gen::Mode::seq;
+        r.s.hostTrigger = true;
+        pattern (r, { { true, false, 0 }, { true, false, 3 } });
+        r.ppq = 0.0;
+        r.run (step * 2 + 100);
+        CHECK (join (r.onNotes(), 2) == "60 63", "seq: Host trigger plays from C3 with the transport, no key needed");
+    }
+}
+
+void testArpThroughTheSynth()
+{
+    namespace p = ps::params;
+    Rig rig;
+    rig.set (p::arpMode, 1.0f);
+    rig.proc->setPatternStep (3, { false, false, 0 });
+    auto x = rig.render (48000, { { 0, on (57) }, { 0, on (60) }, { 24000, off (57) }, { 24000, off (60) } });
+    CHECK (peak (x, 2000, 24000) > 0.05f && peak (x, 24000 + 24000, 48000) < 1.0e-4f, "arp: plays the synth and stops after release");
+
+    juce::MemoryBlock state;
+    rig.proc->getStateInformation (state);
+    Rig other;
+    other.proc->setStateInformation (state.getData(), (int) state.getSize());
+    CHECK (! other.proc->getPatternStep (3).on && other.proc->getPatternStep (2).on && other.get (p::arpMode) > 0.5f,
+           "the step pattern and arp settings come back with the state");
+}
+
 // ---- Layer filter and drive ---------------------------------------------------------------------------
 
 float filterTypeValue (ps::params::FilterType t) { return (float) (int) t; }
@@ -2243,6 +2562,13 @@ int main()
         benchmarkJp();
         return 0;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_ARP_ONLY", {}).isNotEmpty())
+    {
+        testArpeggiator();
+        testStepSequencer();
+        testArpThroughTheSynth();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_DIRT_ONLY", {}).isNotEmpty())
     {
         testDirtEngine();
@@ -2320,6 +2646,9 @@ int main()
     testSpectralEngine();
     testDirtEngine();
     testDirtSwitchesDoNotClick();
+    testArpeggiator();
+    testStepSequencer();
+    testArpThroughTheSynth();
     testLayerFilter();
     testLayerDrive();
     testSends();

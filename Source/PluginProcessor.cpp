@@ -20,6 +20,12 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     monoBassOn = apvts.getRawParameterValue (ps::params::monoBass.getParamID());
     safeOutputOn = apvts.getRawParameterValue (ps::params::safeOutput.getParamID());
     phaseAlign = apvts.getRawParameterValue (ps::params::phaseAlign.getParamID());
+    {
+        namespace p = ps::params;
+        auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
+        arpParams = { raw (p::arpMode), raw (p::arpRate), raw (p::arpDirection), raw (p::arpOctaves), raw (p::arpGate),
+                      raw (p::arpSwing), raw (p::arpLatch), raw (p::arpLength), raw (p::seqTrigger) };
+    }
     for (int k = 0; k < ps::params::numChainKnobs; ++k)
         chainKnobs[(size_t) k] = apvts.getRawParameterValue (ps::params::chainKnob (k).getParamID());
     superKnob = apvts.getRawParameterValue (ps::params::super.getParamID());
@@ -70,6 +76,8 @@ PotatoSynthProcessor::PotatoSynthProcessor()
 void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     stack.prepare (sampleRate, samplesPerBlock);
+    noteGenerator.prepare (sampleRate);
+    generatedMidi.ensureSize (8192);
     bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
     clipper.prepare (sampleRate, samplesPerBlock);
     limiter.prepare (sampleRate);
@@ -184,7 +192,20 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     updatePerformance (n, bpm, ppq, barStart, barLength);
     const auto offsets = updateChainKnobs (n);
     stack.setAlignStrength (juce::jlimit (0.0f, 1.0f, phaseAlign->load() * 0.01f));
-    stack.process (buffer, midi);
+    {
+        ps::NoteGenerator::Settings s;
+        s.mode = (ps::NoteGenerator::Mode) juce::jlimit (0, 2, juce::roundToInt (arpParams.mode->load()));
+        s.direction = (ps::NoteGenerator::Direction) juce::jlimit (0, 5, juce::roundToInt (arpParams.direction->load()));
+        s.stepBeats = ps::params::delayDivisionBeats[juce::jlimit (0, ps::params::delayDivisionNames.size() - 1, juce::roundToInt (arpParams.rate->load()))];
+        s.octaves = juce::roundToInt (arpParams.octaves->load());
+        s.length = juce::roundToInt (arpParams.length->load());
+        s.gate = arpParams.gate->load() * 0.01f;
+        s.swing = arpParams.swing->load() * 0.01f;
+        s.latch = arpParams.latch->load() > 0.5f;
+        s.hostTrigger = arpParams.trigger->load() > 0.5f;
+        noteGenerator.process (midi, generatedMidi, n, bpm, ppq, s);
+    }
+    stack.process (buffer, generatedMidi);
 
     // Stack sum with sqrt-weights: the layers are scaled by 1 / sqrt(n), n the number of layers counted by
     // their level (a layer at 0 dB counts 1, a fading one less), so adding or fading in a layer keeps the
@@ -462,6 +483,15 @@ void PotatoSynthProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty ("stateVersion", ps::params::stateVersion, nullptr);
+    juce::ValueTree steps ("Steps");
+    for (int i = 0; i < ps::NoteGenerator::maxSteps; ++i)
+    {
+        const auto s = noteGenerator.getStep (i);
+        steps.appendChild (juce::ValueTree ("STEP", { { "on", s.on }, { "tie", s.tie }, { "offset", s.offset }, { "ratchet", s.ratchet },
+                                                      { "velocity", s.velocity }, { "probability", s.probability } }), nullptr);
+    }
+    state.removeChild (state.getChildWithName ("Steps"), nullptr);
+    state.appendChild (steps, nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -474,6 +504,18 @@ void PotatoSynthProcessor::setStateInformation (const void* data, int sizeInByte
 
     auto state = juce::ValueTree::fromXml (*xml);
     migrateState (state);
+    // The step pattern (state version 9; older saves get the default pattern)
+    const auto steps = state.getChildWithName ("Steps");
+    for (int i = 0; i < ps::NoteGenerator::maxSteps; ++i)
+    {
+        const auto st = steps.getChild (i);
+        ps::NoteGenerator::Step s;
+        if (st.isValid())
+            s = { (bool) st.getProperty ("on", true), (bool) st.getProperty ("tie", false), (int) st.getProperty ("offset", 0),
+                  (int) st.getProperty ("ratchet", 1), (float) st.getProperty ("velocity", 1.0f), (float) st.getProperty ("probability", 1.0f) };
+        noteGenerator.setStep (i, s);
+    }
+    state.removeChild (steps, nullptr);
     apvts.replaceState (state);
     applyLayerEnginesFromState();
 }

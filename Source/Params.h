@@ -8,8 +8,9 @@ namespace ps::params
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
     // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots. 7: chain knobs and SUPER.
     // 8: BUILD, DROP, the XY pad, layer anchors, layer filter and drive, reverb and delay sends.
+    // 9: the arpeggiator / step sequencer (and its step pattern, saved as a "Steps" child of the state).
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 7;
+    inline constexpr int stateVersion = 9;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -45,6 +46,18 @@ namespace ps::params
     inline const juce::ParameterID delayTone { "fx_dly_tone", 8 };        // feedback high cut, Hz
     inline const juce::ParameterID delayPingPong { "fx_dly_pingpong", 8 };
     inline const juce::ParameterID delayDuck { "fx_dly_duck", 8 };
+    // The note generator (Arp.h): Off, Arp or Seq, on one step grid
+    inline const juce::ParameterID arpMode { "arp_mode", 9 };
+    inline const juce::ParameterID arpRate { "arp_rate", 9 };            // DelayDivision index
+    inline const juce::ParameterID arpDirection { "arp_dir", 9 };
+    inline const juce::ParameterID arpOctaves { "arp_oct", 9 };
+    inline const juce::ParameterID arpGate { "arp_gate", 9 };            // percent of a step
+    inline const juce::ParameterID arpSwing { "arp_swing", 9 };          // percent (100 = half a step)
+    inline const juce::ParameterID arpLatch { "arp_latch", 9 };
+    inline const juce::ParameterID arpLength { "arp_length", 9 };        // steps
+    inline const juce::ParameterID seqTrigger { "seq_trigger", 9 };      // Key or Host
+    inline const juce::StringArray arpModeNames { "Off", "Arp", "Seq" };
+    inline const juce::StringArray arpDirectionNames { "Up", "Down", "Up-Down", "Random", "As Played", "Chord" };
     inline const juce::StringArray delayDivisionNames { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/1" };
     inline constexpr double delayDivisionBeats[] = { 0.125, 1.0 / 6.0, 0.25, 0.375, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0 };
 
@@ -185,6 +198,16 @@ namespace ps::params
                     return v < 1000.0f ? juce::String (juce::roundToInt (v)) + " Hz" : juce::String (v * 0.001f, 1) + " kHz"; })));
             layout.add (std::make_unique<juce::AudioParameterBool> (delayPingPong, "Delay Ping-Pong", true));
             layout.add (std::make_unique<Float> (delayDuck, "Delay Duck", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
+
+            layout.add (std::make_unique<juce::AudioParameterChoice> (arpMode, "Arp Mode", arpModeNames, 0));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (arpRate, "Arp Rate", delayDivisionNames, 2));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (arpDirection, "Arp Direction", arpDirectionNames, 0));
+            layout.add (std::make_unique<juce::AudioParameterInt> (arpOctaves, "Arp Octaves", 1, 4, 1));
+            layout.add (std::make_unique<Float> (arpGate, "Arp Gate", juce::NormalisableRange<float> (5.0f, 200.0f), 60.0f, percent));
+            layout.add (std::make_unique<Float> (arpSwing, "Arp Swing", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+            layout.add (std::make_unique<juce::AudioParameterBool> (arpLatch, "Arp Latch", false));
+            layout.add (std::make_unique<juce::AudioParameterInt> (arpLength, "Arp Length", 1, 32, 16));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (seqTrigger, "Seq Trigger", juce::StringArray { "Key", "Host" }, 0));
         }
 
         for (int i = 0; i < numLayers; ++i)
