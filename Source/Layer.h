@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine.h"
 #include "Envelope.h"
+#include "RoleBand.h"
 #include "Params.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <array>
@@ -23,6 +24,9 @@ struct LayerParams
     std::atomic<float>* releaseMs = nullptr;
     std::atomic<float>* voiceMode = nullptr;   // params::VoiceMode index
     std::atomic<float>* glideMs = nullptr;
+    std::atomic<float>* role = nullptr;            // params::Role index
+    std::atomic<float>* crossoverLowHz = nullptr;  // global, shared by every layer
+    std::atomic<float>* crossoverHighHz = nullptr;
 };
 
 // One slot of the stack: an engine plus its per-layer controls.
@@ -87,6 +91,8 @@ public:
             g->reset (sr, 0.02);
         updateControls (true);
         updateEnvelopeSettings();
+        band.prepare (sr);
+        updateBand (true);
 
         for (auto* e : { active, outgoing })
             if (e != nullptr)
@@ -137,6 +143,7 @@ public:
         level.setTargetValue (targetGain());
         updateControls (false);
         updateVoiceMode();
+        updateBand (false);
         updateEnvelopeSettings();
         if (active != nullptr)
             active->setTune (tune.load());
@@ -237,6 +244,8 @@ public:
 
         if (outgoing != nullptr && ! renderVoices (*outgoing, outgoingEnvelopes, numSamples))
             retireNow (std::exchange (outgoing, nullptr));
+
+        band.process (scratchL.data(), scratchR.data(), numSamples);
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -356,6 +365,21 @@ private:
         clearMonoNotes();
     }
 
+    void updateBand (bool snap)
+    {
+        const double low = load (params.crossoverLowHz, 120.0f), high = load (params.crossoverHighHz, 2500.0f);
+        double hp = 0.0, lp = 0.0;
+        switch ((params::Role) juce::jlimit (0, 4, juce::roundToInt (load (params.role, (float) params::Role::full))))
+        {
+            case params::Role::sub:  lp = low; break;
+            case params::Role::body: hp = low; lp = high; break;
+            case params::Role::mid:  hp = 2.0 * low; break;
+            case params::Role::air:  hp = high; break;
+            case params::Role::full: break;
+        }
+        band.setBand (hp, lp, snap);
+    }
+
     double glideSeconds() const { return load (params.glideMs, 0.0f) * 0.001; }
 
     static float load (const std::atomic<float>* p, float fallback) { return p != nullptr ? p->load() : fallback; }
@@ -418,6 +442,7 @@ private:
     juce::SmoothedValue<float> level { 1.0f }, panL { 1.0f }, panR { 1.0f };
     std::atomic<float> tune { 0.0f };   // semitones; written by the audio thread, read when a new engine is prepared
     AdsrSettings adsr;
+    RoleBandLimit band;
     std::vector<AmpEnvelope> envelopes, outgoingEnvelopes;
     std::vector<float> scratchL, scratchR, voiceL, voiceR;
     std::vector<uint32_t> startOrder;

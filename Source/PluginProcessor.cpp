@@ -16,6 +16,8 @@ PotatoSynthProcessor::PotatoSynthProcessor()
       apvts (*this, nullptr, "PotatoSynth", ps::params::createLayout())
 {
     masterDb = apvts.getRawParameterValue (ps::params::master.getParamID());
+    crossoverLowHz = apvts.getRawParameterValue (ps::params::crossoverLow.getParamID());
+    monoBassOn = apvts.getRawParameterValue (ps::params::monoBass.getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         namespace p = ps::params;
@@ -23,7 +25,8 @@ PotatoSynthProcessor::PotatoSynthProcessor()
         stack.layer (i).setParameters ({ raw (p::layerLevel (i)), raw (p::layerPan (i)), raw (p::layerOctave (i)),
                                          raw (p::layerSemi (i)), raw (p::layerFine (i)), raw (p::layerAttack (i)),
                                          raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)),
-                                         raw (p::layerVoiceMode (i)), raw (p::layerGlide (i)) });
+                                         raw (p::layerVoiceMode (i)), raw (p::layerGlide (i)), raw (p::layerRole (i)),
+                                         raw (p::crossoverLow), raw (p::crossoverHigh) });
     }
 
     auto layers = apvts.state.getOrCreateChildWithName (layersNode, nullptr);
@@ -37,6 +40,7 @@ PotatoSynthProcessor::PotatoSynthProcessor()
 void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
     stack.prepare (sampleRate, samplesPerBlock);
+    bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
     masterGain.reset (sampleRate, 0.02);
     masterGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
 }
@@ -68,6 +72,8 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
     stack.process (buffer, midi);
+    bus.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(),
+                 crossoverLowHz->load(), monoBassOn->load() > 0.5f);
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
     masterGain.applyGain (buffer, buffer.getNumSamples());

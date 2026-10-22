@@ -6,10 +6,14 @@
 namespace ps::params
 {
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
+    // 4: layer roles, crossovers and mono bass.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 3;
+    inline constexpr int stateVersion = 4;
 
     inline const juce::ParameterID master { "master", 1 };
+    inline const juce::ParameterID crossoverLow { "xover_low", 4 };
+    inline const juce::ParameterID crossoverHigh { "xover_high", 4 };
+    inline const juce::ParameterID monoBass { "mono_bass", 4 };
 
     // Per-layer parameters follow the pattern L{n}_name with n = 1..4 (expandable to 8)
     inline juce::ParameterID layerParam (int layerIndex, const char* name, int version)
@@ -27,6 +31,14 @@ namespace ps::params
     inline juce::ParameterID layerRelease (int i) { return layerParam (i, "release", 2); }
     inline juce::ParameterID layerVoiceMode (int i) { return layerParam (i, "voice", 3); }
     inline juce::ParameterID layerGlide (int i)   { return layerParam (i, "glide", 3); }
+    inline juce::ParameterID layerRole (int i)    { return layerParam (i, "role", 4); }
+
+    // Role tags set a layer's band. Order is permanent: it is saved as an index.
+    //   Sub: low-pass at the low crossover.   Body: low crossover to high crossover.
+    //   Mid: high-pass at twice the low crossover (about 250 Hz, where stereo width starts).
+    //   Air: high-pass at the high crossover.   Full: no band limit.
+    enum class Role { sub, body, mid, air, full };
+    inline const juce::StringArray roleNames { "Sub", "Body", "Mid", "Air", "Full" };
 
     // Order is permanent: it is saved as an index.
     enum class VoiceMode { poly, mono, legato };
@@ -68,6 +80,17 @@ namespace ps::params
             juce::NormalisableRange<float> (-48.0f, 6.0f, 0.01f, 2.0f), 0.0f,
             juce::AudioParameterFloatAttributes().withLabel ("dB")));
 
+        auto hz = [] (float v, int) { return v >= 1000.0f ? juce::String (v * 0.001f, 2) + " kHz" : juce::String (juce::roundToInt (v)) + " Hz"; };
+        juce::NormalisableRange<float> lowRange (40.0f, 300.0f, 0.1f);
+        lowRange.setSkewForCentre (120.0f);
+        juce::NormalisableRange<float> highRange (1000.0f, 8000.0f, 1.0f);
+        highRange.setSkewForCentre (2500.0f);
+        layout.add (std::make_unique<juce::AudioParameterFloat> (crossoverLow, "Low Crossover", lowRange, 120.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hz)));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (crossoverHigh, "High Crossover", highRange, 2500.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hz)));
+        layout.add (std::make_unique<juce::AudioParameterBool> (monoBass, "Mono Bass", true));
+
         for (int i = 0; i < numLayers; ++i)
             layout.add (std::make_unique<juce::AudioParameterFloat> (
                 layerLevel (i), juce::String (layerRoles[i]) + " Level",
@@ -101,6 +124,7 @@ namespace ps::params
             layout.add (std::make_unique<Float> (layerRelease (i), role + " Release", detail::timeRange (1.0f, 30000.0f, 500.0f), 300.0f,
                 detail::msAttributes()));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerVoiceMode (i), role + " Voice Mode", voiceModeNames, 0));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (layerRole (i), role + " Role", roleNames, i));
             layout.add (std::make_unique<Float> (layerGlide (i), role + " Glide", detail::timeRange (0.0f, 5000.0f, 250.0f), 0.0f,
                 detail::msAttributes().withStringFromValueFunction ([] (float v, int) {
                     return v < 0.05f ? juce::String ("OFF") : detail::formatMs (v); })));

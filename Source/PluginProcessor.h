@@ -2,6 +2,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Params.h"
 #include "LayerStack.h"
+#include "StackBus.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -50,7 +51,10 @@ private:
     void migrateState (juce::ValueTree& state) const;
 
     ps::LayerStack stack;
+    ps::StackBus bus;
     std::atomic<float>* masterDb = nullptr;
+    std::atomic<float>* crossoverLowHz = nullptr;
+    std::atomic<float>* monoBassOn = nullptr;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> masterGain { 1.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PotatoSynthProcessor)
