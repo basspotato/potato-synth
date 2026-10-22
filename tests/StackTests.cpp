@@ -917,6 +917,29 @@ void testSubEngine()
         CHECK (maxStep (x) < 0.05f, "the punch drop is click-free");
     }
     {
+        // Translate: harmonics 2-5 for small speakers, with the level held
+        SubRig plain, translated ({ { Sub::translate, 1.0f } });
+        auto a = plain.render (48000, { { 0, on (33) } });
+        auto b = translated.render (48000, { { 0, on (33) } });
+        CHECK (bandEnergy (b, 24000, 100.0, 300.0) > 0.2f * bandEnergy (b, 24000, 40.0, 70.0)
+                   && bandEnergy (a, 24000, 100.0, 300.0) < 1.0e-3f * bandEnergy (a, 24000, 40.0, 70.0),
+               "Translate adds harmonics 2-5");
+        const float change = std::abs (juce::Decibels::gainToDecibels (rms (b, 24000, 48000) / rms (a, 24000, 48000)));
+        CHECK (change < 1.0f, "Translate keeps the level within 1 dB (" + std::to_string (change) + " dB)");
+        CHECK (maxStep (b) < 0.05f && allFinite (b), "Translate is click-free");
+    }
+    {
+        // Low Cut: a 27.5 Hz note loses level at a 40 Hz cut and keeps it at the lowest setting
+        auto level = [] (float cut)
+        {
+            SubRig rig ({ { Sub::lowCut, cut } });
+            auto x = rig.render (96000, { { 0, on (21) } });
+            return rms (x, 48000, 96000);
+        };
+        const float open = level (0.0f), cut = level (1.0f);
+        CHECK (juce::Decibels::gainToDecibels (cut / open) < -6.0f, "Low Cut at 40 Hz cuts a 27.5 Hz sub");
+    }
+    {
         // Changing the shape on a held note is click-free
         SubRig rig ({ { Sub::tone, 0.5f } });
         auto x = rig.render (12000, { { 0, on (33) } });

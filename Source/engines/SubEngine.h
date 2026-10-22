@@ -12,8 +12,12 @@ namespace ps
 {
 // Sub: the low end of the stack. One phase-locked oscillator per voice whose Shape morphs sine -> triangle ->
 // square (PolyBLEP/BLAMP, each at the sine's loudness), plus a sine an octave down, a pitch "punch" envelope
-// for 808-style drops, ADAA drive with an Even control (asymmetry for 2nd-harmonic warmth, DC-blocked), and a
-// Tone low-pass.
+// for 808-style drops, ADAA drive with an Even control (asymmetry for 2nd-harmonic warmth), a Tone low-pass
+// and a 12 dB Low Cut (which also removes the DC that Even leaves).
+//
+// Translate adds phase-locked harmonics 2-5 so the sub still reads on small speakers that can't play its
+// fundamental: the ear rebuilds the missing fundamental from them. The sum is power-normalised, so turning it
+// up never raises the level.
 //
 // Phase: Retrig starts every new note at 0 degrees, so a sub always hits the same way (and starts from zero,
 // so it never clicks); Free keeps running from where the voice left off. A note on a sounding voice always
@@ -21,7 +25,7 @@ namespace ps
 class SubEngine final : public Engine
 {
 public:
-    enum Slot { shape, subOctave, drive, even, tone, phase, punch, punchDecay, numUsedSlots };
+    enum Slot { shape, subOctave, translate, drive, even, tone, lowCut, phase, punch, punchDecay, numUsedSlots };
 
     const EngineInfo& info() const override
     {
@@ -79,6 +83,8 @@ public:
 
     // ---- Slot mappings -----------------------------------------------------------------------------------
     static float toneHz (float v) noexcept        { return 40.0f * std::pow (500.0f, v); }
+    static float lowCutHz (float v) noexcept      { return 5.0f + 35.0f * v; }
+    static float lowCutValue (float hz) noexcept  { return (hz - 5.0f) / 35.0f; }
     static float punchSemis (float v) noexcept    { return v * 36.0f; }
     static float punchMs (float v) noexcept       { return 5.0f + 495.0f * v * v; }
     static float punchValue (float ms) noexcept   { return std::sqrt ((ms - 5.0f) / 495.0f); }
@@ -94,7 +100,7 @@ private:
         float t = 0.0f, tSub = 0.0f, punch = 0.0f;
         std::array<float, numUsedSlots> smooth {};
         ZdfSvf toneFilter;
-        ZdfHighPass1 dcBlock;
+        ZdfSvf lowCutFilter;
         AdaaTanh saturator;
     };
 
@@ -111,6 +117,7 @@ private:
                                               : "Tri > Sqr " + juce::String (juce::roundToInt ((v - 0.5f) * 200.0f)) + " %";
                           } };
         s[subOctave]  = { "Sub -1 Oct", 0.0f, percent };
+        s[translate]  = { "Translate", 0.0f, percent };
         s[drive]      = { "Drive", 0.0f, percent };
         s[even]       = { "Even", 0.0f, percent };
         s[tone]       = { "Tone", 1.0f, [] (float v)
@@ -118,6 +125,7 @@ private:
                               const float f = toneHz (v);
                               return f < 1000.0f ? juce::String (juce::roundToInt (f)) + " Hz" : juce::String (f * 0.001f, 1) + " kHz";
                           } };
+        s[lowCut]     = { "Low Cut", lowCutValue (20.0f), [] (float v) { return juce::String (juce::roundToInt (lowCutHz (v))) + " Hz"; } };
         s[phase]      = { "Phase", 0.75f, [] (float v) { return juce::String (v < 0.5f ? "Free" : "Retrig"); } };
         s[punch]      = { "Punch", 0.0f, [] (float v) { return "+" + juce::String (punchSemis (v), 1) + " st"; } };
         s[punchDecay] = { "Punch Time", punchValue (60.0f), [] (float v) { return juce::String (juce::roundToInt (punchMs (v))) + " ms"; } };
@@ -140,7 +148,7 @@ private:
         v.active = false;
         v.punch = 0.0f;
         v.toneFilter.reset();
-        v.dcBlock.reset();
+        v.lowCutFilter.reset();
         v.saturator.reset();
     }
 
@@ -167,7 +175,7 @@ private:
         const float punchDepth = punchSemis (v.smooth[punch]);
         const float punchCoef = std::exp (-1.0f / (punchMs (v.smooth[punchDecay]) * 0.001f * sr));
         const auto toneCoeffs = ZdfSvf::Coeffs::make (tptGain (toneHz (v.smooth[tone]), sr), juce::MathConstants<float>::sqrt2);
-        const float dcG = tptGain (5.0f, sr);
+        const auto lowCutCoeffs = ZdfSvf::Coeffs::make (tptGain (lowCutHz (v.smooth[lowCut]), sr), juce::MathConstants<float>::sqrt2);
         const bool driven = v.smooth[drive] > 1.0e-4f || target[drive] > 0.0f;
 
         for (int j = 0; j < n; ++j)
@@ -187,6 +195,24 @@ private:
             const float subLevel = lerp (subOctave);
             x = (x + subLevel * std::sin (juce::MathConstants<float>::twoPi * v.tSub)) / std::sqrt (1.0f + subLevel * subLevel);
 
+            const float tr = lerp (translate);
+            if (tr > 1.0e-4f)
+            {
+                // sin(h theta) by the Chebyshev recurrence; a harmonic fades out before it reaches 20 kHz
+                const float theta = juce::MathConstants<float>::twoPi * v.t, c = std::cos (theta);
+                float before = 0.0f, current = std::sin (theta), added = 0.0f, power = 0.0f;
+                for (int h = 2; h <= 5; ++h)
+                {
+                    const float next = 2.0f * c * current - before;
+                    before = current;
+                    current = next;
+                    const float a = tr * translateWeight[h - 2] * juce::jlimit (0.0f, 1.0f, (20000.0f - (float) h * dt * sr) / 2000.0f);
+                    added += a * current;
+                    power += a * a;
+                }
+                x = (x + added) / std::sqrt (1.0f + power);
+            }
+
             if (driven)
             {
                 // Bias before the curve makes it asymmetric (even harmonics); the DC it leaves is blocked below
@@ -196,12 +222,15 @@ private:
                 x += wet * (post * sat - x);
             }
             x = v.toneFilter.process (x, toneCoeffs).low;
-            x = v.dcBlock.process (x, dcG) * voiceLevel;
+            x = v.lowCutFilter.process (x, lowCutCoeffs).high * voiceLevel;
 
             outL[j] += x;
             outR[j] += x;
         }
     }
+
+    // Harmonics 2-5 fall off like a soft saw, so they read as one tone with the fundamental
+    static constexpr float translateWeight[4] = { 0.6f, 0.4f, 0.25f, 0.15f };
 
     float sr = 48000.0f, tune = 0.0f;
     std::array<float, numUsedSlots> target = defaults();
