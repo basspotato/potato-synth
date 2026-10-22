@@ -1300,6 +1300,16 @@ void testChainKnobInvariants()
             const float before = swing (cm), after = swing (bm);
             CHECK (after > before + 4.0f, "GROOVE pumps with the beat (swing " + std::to_string (before) + " -> " + std::to_string (after) + " dB)");
         }
+        if (name == "CLARITY")
+        {
+            const double calmer = bandShare (cm, 2000.0, 5000.0) - bandShare (bm, 2000.0, 5000.0);
+            CHECK (calmer > 0.5, "CLARITY calms the 2-5 kHz presence band (-" + std::to_string (calmer) + " dB share)");
+            float dipped = 1.0f;
+            for (int i = 0; i < ps::params::numLayers; ++i)
+                dipped = std::min (dipped, rig.proc->getStack().layer (i).carvePowerRatio());
+            CHECK (dipped < 0.95f, "CLARITY gives contested bands one owner (a layer gives way: "
+                                       + std::to_string (juce::Decibels::gainToDecibels (dipped, -100.0f) * 0.5f) + " dB)");
+        }
         if (name == "SHINE")
         {
             const double lift = bandShare (bm, 6000.0, 20000.0) - bandShare (cm, 6000.0, 20000.0);
@@ -1397,6 +1407,13 @@ int main()
     {
         benchmarkJp();
         return 0;
+    }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_CHAIN_ONLY", {}).isNotEmpty())   // iterating on the knobs
+    {
+        testChainPaths();
+        testOnsetDuck();
+        testChainKnobInvariants();
+        return failures == 0 ? 0 : 1;
     }
 
     testNoteOnPitchAndRelease();

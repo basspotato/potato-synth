@@ -99,6 +99,8 @@ public:
         band.prepare (sr);
         updateBand (true);
         meter.prepare (sr);
+        carvedMeter.prepare (sr);
+        carve.prepare (sr);
         duckRate = (float) sr;
         duck.attackSamples = 0.002f * duckRate;
 
@@ -135,6 +137,19 @@ public:
     float knobGain() const noexcept  { return juce::Decibels::decibelsToGain (chainLevelDb); }
     // K-weighted power of this layer at unity gain (after its band limit), averaged over 400 ms
     float measuredPower() const noexcept { return meter.getPower(); }
+
+    // CLARITY's band ownership (HarmonyEngine.h): the dips the solver asks for, the band energies it reads,
+    // and the power the dips take (P_out / P_in, 1 while flat), which the loudness trim counts as the knobs'
+    void setCarveGains (const std::array<float, harmony::CarveBank::numBands>& gains, bool analyse) noexcept
+    {
+        carveTargets = gains;
+        carveAnalyse = analyse;
+    }
+    const std::array<float, harmony::CarveBank::numBands>& carveEnergy() const noexcept { return carve.bandEnergy(); }
+    float carvePowerRatio() const noexcept
+    {
+        return carving ? 1.0f / (float) harmony::stageRatio (meter, carvedMeter) : 1.0f;
+    }
     params::Role role() const noexcept
     {
         return (params::Role) juce::jlimit (0, 4, juce::roundToInt (load (params.role, (float) params::Role::full)));
@@ -154,6 +169,8 @@ public:
     void beginBlock()
     {
         meter.update();
+        if (carving)
+            carvedMeter.update();
         // Swap only when the previous engine has finished fading and there is room to retire this one
         if (outgoing == nullptr && freeRetireSlots() >= 2)
         {
@@ -276,6 +293,8 @@ public:
         if (isIdle())
         {
             meter.addSilence (numSamples);
+            if (carving)
+                carvedMeter.addSilence (numSamples);
             return;
         }
 
@@ -290,6 +309,15 @@ public:
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
         meter.process (scratchL.data(), scratchR.data(), numSamples);
+        const bool carved = carve.process (scratchL.data(), scratchR.data(), numSamples, carveTargets, carveAnalyse);
+        if (carved != carving)
+        {
+            carvedMeter.reset();
+            carvedMeter.seed (meter.getPower());
+            carving = carved;
+        }
+        if (carving)
+            carvedMeter.process (scratchL.data(), scratchR.data(), numSamples);
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -557,6 +585,10 @@ private:
     float chainLevelDb = 0.0f;
     std::array<float, numSlotRoles> chainSlots {};
     OnsetDuck duck;
+    harmony::CarveBank carve;
+    harmony::KPowerMeter carvedMeter;
+    std::array<float, harmony::CarveBank::numBands> carveTargets { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+    bool carving = false, carveAnalyse = false;
     float duckRate = 48000.0f;
     harmony::KPowerMeter meter;
     bool slotsSent = false;

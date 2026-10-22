@@ -377,6 +377,80 @@ private:
     bool active = false;
 };
 
+// CLARITY's de-harsh: a dynamic bell on the 2-5 kHz presence band (3.2 kHz, Q 1.25). It compares that band's
+// short-term power with the whole signal's, so it reacts to harshness, not to level: when the band's share
+// rises over a threshold (-6 dB at u = 0 down to -18 dB at u = 1) it cuts by 0.6 dB per dB over, up to 6u dB,
+// with a 3 dB soft knee. Linear filters and one linked gain, so the image and the mono lows are untouched.
+class DeHarsh
+{
+public:
+    static constexpr float centreHz = 3200.0f, k = 0.8f;
+
+    void prepare (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        g = tptGain (centreHz, sr);
+        attack = 1.0f - std::exp (-1.0f / (0.005f * sr));
+        release = 1.0f - std::exp (-1.0f / (0.08f * sr));
+        reset();
+    }
+
+    void reset()
+    {
+        for (auto& f : filters)
+            f.reset();
+        bandPower = fullPower = 0.0f;
+        gain = 1.0f;
+        amount = 0.0f;
+    }
+
+    bool process (float* left, float* right, int numSamples, float u) noexcept
+    {
+        const float target = juce::jlimit (0.0f, 1.0f, u);
+        if (target < 1.0e-4f && amount < 1.0e-4f && std::abs (gain - 1.0f) < 1.0e-5f)
+        {
+            if (amount != 0.0f || bandPower != 0.0f)
+                reset();
+            return false;
+        }
+        for (int start = 0; start < numSamples; start += subBlock)
+        {
+            const int end = std::min (numSamples, start + subBlock);
+            amount += (target - amount) * (1.0f - std::exp (-(float) subBlock / (0.03f * sr)));
+            // The gain for this sub-block, from the detector as it stands
+            const float shareDb = 10.0f * std::log10 ((bandPower + 1.0e-12f) / (fullPower + 1.0e-12f));
+            const float over = shareDb - (-6.0f - 12.0f * amount);
+            constexpr float knee = 3.0f;
+            float cutDb = 0.0f;
+            if (over > knee * 0.5f)
+                cutDb = 0.6f * over;
+            else if (over > -knee * 0.5f)
+                cutDb = 0.6f * juce::square (over + knee * 0.5f) / (2.0f * knee);
+            cutDb = std::min (cutDb, 6.0f * amount);
+            const float targetGain = juce::Decibels::decibelsToGain (-cutDb);
+            const float step = (targetGain - gain) / (float) (end - start);
+            for (int i = start; i < end; ++i)
+            {
+                const float bl = k * filters[0].process (left[i], g, k).band;
+                const float br = k * filters[1].process (right[i], g, k).band;
+                const float bm = 0.5f * (bl + br), xm = 0.5f * (left[i] + right[i]);
+                bandPower += (bm * bm - bandPower) * (bm * bm > bandPower ? attack : release);
+                fullPower += (xm * xm - fullPower) * (xm * xm > fullPower ? attack : release);
+                gain += step;
+                left[i] += (gain - 1.0f) * bl;
+                right[i] += (gain - 1.0f) * br;
+            }
+        }
+        return true;
+    }
+
+private:
+    static constexpr int subBlock = 16;
+    std::array<ZdfSvf, 2> filters {};
+    float sr = 48000.0f, g = 0.2f, attack = 0.01f, release = 0.001f;
+    float bandPower = 0.0f, fullPower = 0.0f, gain = 1.0f, amount = 0.0f;
+};
+
 // GROOVE's tempo pump, the sidechain duck of a four-on-the-floor kick: on every beat the gain falls over 4 ms
 // and recovers, g = 1 - D env(p) with p the phase in the beat. The recovery morphs from a half cosine (smooth)
 // to a normalised exponential exp(-t / tau), tau = k * beat (hard), shifted so it reaches 0 exactly at the

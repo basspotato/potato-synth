@@ -87,6 +87,9 @@ enum class Target
     onsetDuckDb,       // matching layers dip at each new note, dB (Layer.h OnsetDuck)
     onsetDuckMs,       // that dip's window, ms
     tempoLock,         // PRESSURE's dynamics' releases toward 1/16 and 1/8 notes, 0..1
+    carveDepthDb,      // band ownership: the most a non-owning layer is dipped, dB (HarmonyEngine.h)
+    carveTemperature,  // band ownership softmax temperature: high = soft, low = one sharp owner per band
+    deHarsh,           // the 2-5 kHz dynamic bell's amount, 0..1 (StackBus.h DeHarsh)
 };
 
 // Which layers a route applies to: a bit per params::Role
@@ -140,6 +143,13 @@ inline const std::vector<Route>& routes()
         { groove, Target::onsetDuckMs, anyRole, SlotRole::none, Path ({ 10.0f, 20.0f, 30.0f, 40.0f, 50.0f }) },
         { groove, Target::tempoLock, anyRole, SlotRole::none, Path ({ 0.0f, 0.3f, 0.6f, 0.85f, 1.0f }) },
 
+        // CLARITY: harmony, not mud. One owner per band, a calmer presence band, and slower beating (detune
+        // pulled back on every role, so pairs of partials beat further under the critical-band roughness peak).
+        { clarity, Target::carveDepthDb, anyRole, SlotRole::none, Path ({ 0.0f, 1.5f, 3.0f, 4.5f, 6.0f }) },
+        { clarity, Target::carveTemperature, anyRole, SlotRole::none, Path ({ 1.0f, 0.75f, 0.55f, 0.4f, 0.3f }) },
+        { clarity, Target::deHarsh, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
+        { clarity, Target::slot, anyRole, SlotRole::detune, Path ({ 0.0f, -0.02f, -0.05f, -0.08f, -0.1f }) },
+
         // MORPH: every layer's spectral identity moves together
         { morph, Target::slot, anyRole, SlotRole::position, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
         { morph, Target::slot, anyRole, SlotRole::warp, Path ({ 0.0f, 0.05f, 0.12f, 0.2f, 0.3f }) },
@@ -161,6 +171,7 @@ struct Offsets
     std::array<float, params::numLayers> onsetDuckDb {};
     float onsetDuckMs = 0.0f;
     float tempoLock = 0.0f;
+    float carveDepthDb = 0.0f, carveTemperature = 1.0f, deHarsh = 0.0f;
 };
 
 // u: each knob's position 0..1 (SUPER already folded in); roles: each layer's role
@@ -184,6 +195,9 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
             case Target::pumpTau:         o.pumpTau += v; break;
             case Target::onsetDuckMs:     o.onsetDuckMs += v; break;
             case Target::tempoLock:       o.tempoLock += v; break;
+            case Target::carveDepthDb:    o.carveDepthDb += v; break;
+            case Target::carveTemperature: o.carveTemperature = v; break;
+            case Target::deHarsh:         o.deHarsh += v; break;
             case Target::onsetDuckDb:
             case Target::layerLevelDb:
             case Target::slot:

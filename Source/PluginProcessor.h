@@ -53,6 +53,7 @@ public:
     const ps::EngineInfo* getLayerEngineInfo (int layerIndex) const { return engineInfos[(size_t) layerIndex].load(); }
     // The Harmony Engine's current loudness trim (linear gain), for meters and tests
     float getLoudnessTrim() const { return loudnessTrim.getGain(); }
+    const ps::LayerStack& getStack() const { return stack; }
     // Message thread: frees engines the audio thread has finished with (also runs on a timer)
     void collectRetiredEngines() { stack.collectGarbage(); }
 
@@ -75,6 +76,7 @@ private:
     ps::LowFocus lowFocus;
     ps::Pressure pressure;
     ps::Tilt tilt;
+    ps::DeHarsh deHarsh;
     ps::TempoPump pump;
     ps::harmony::KPowerMeter knobStagesIn, knobStagesOut;   // around the bus stages the knobs drive
     bool knobStagesActive = false;

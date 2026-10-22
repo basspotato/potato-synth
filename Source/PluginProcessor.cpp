@@ -57,6 +57,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     lowFocus.prepare (sampleRate);
     pressure.prepare (sampleRate);
     tilt.prepare (sampleRate);
+    deHarsh.prepare (sampleRate);
     pump.prepare (sampleRate);
     knobStagesIn.prepare (sampleRate);
     knobStagesOut.prepare (sampleRate);
@@ -158,6 +159,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     knobStagesIn.process (left, right, n);
     bool active = lowFocus.process (left, right, n, offsets.lowFocusDb);
     active = tilt.process (left, right, n, offsets.tiltDbPerOct) || active;
+    active = deHarsh.process (left, right, n, offsets.deHarsh) || active;
     pressure.setTempoLock (offsets.tempoLock, 60.0 / juce::jlimit (20.0, 400.0, bpm));
     active = pressure.process (left, right, n, offsets.pressure) || active;
     knobStagesOut.process (left, right, n);
@@ -179,7 +181,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const auto& layer = stack.layer (i);
         power[(size_t) i] = layer.measuredPower();
         patchGain[(size_t) i] = layer.patchGain();
-        knobGain[(size_t) i] = layer.knobGain();
+        knobGain[(size_t) i] = layer.knobGain() * std::sqrt (layer.carvePowerRatio());
     }
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
                          (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio()
@@ -212,10 +214,22 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     for (int i = 0; i < ps::params::numLayers; ++i)
         roles[(size_t) i] = stack.layer (i).role();
     const auto offsets = ps::chain::compute (u, roles);
+
+    // Band ownership, from the energies the layers measured last block
+    std::array<std::array<float, ps::harmony::CarveBank::numBands>, ps::params::numLayers> energy {};
+    std::array<bool, ps::params::numLayers> sounding {};
+    for (int i = 0; i < ps::params::numLayers; ++i)
+    {
+        energy[(size_t) i] = stack.layer (i).carveEnergy();
+        sounding[(size_t) i] = stack.layer (i).engine() != nullptr;
+    }
+    const bool carving = offsets.carveDepthDb > 1.0e-3f;
+    const auto carve = ps::harmony::solveOwnership (energy, roles, sounding, offsets.carveTemperature, offsets.carveDepthDb);
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
         stack.layer (i).setOnsetDuck (offsets.onsetDuckDb[(size_t) i], offsets.onsetDuckMs);
+        stack.layer (i).setCarveGains (carve[(size_t) i], carving);
     }
     return offsets;
 }

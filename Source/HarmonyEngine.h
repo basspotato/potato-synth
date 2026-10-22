@@ -1,5 +1,7 @@
 #pragma once
 #include "Loudness.h"
+#include "Filter.h"
+#include "Params.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <array>
 #include <cmath>
@@ -64,6 +66,9 @@ public:
     void addSilence (int numSamples) noexcept { blockCount += numSamples; }
 
     float getPower() const noexcept { return power; }
+
+    // Starts the average at a known power (a meter switched in beside a running one), not at silence
+    void seed (float p) noexcept { power = p; }
 
 private:
     struct Coeffs { float b0, b1, b2, a1, a2; };
@@ -190,4 +195,145 @@ private:
     float smoothed = 1.0f;
     juce::SmoothedValue<float> gain { 1.0f };
 };
+
+// Invariant 4, band ownership (CLARITY). Where two layers fight over the same band (the mud zone, 200 Hz to
+// 3.2 kHz, in octave bands), the layer that doesn't own it is dipped, so each band has one clear owner.
+// Each layer runs a CarveBank: five cascaded bells (y = x + (g - 1) k bp, unit peak band-pass, so g is exactly
+// the gain at the centre), whose band-pass outputs also measure the layer's energy per band. The solver runs
+// once per block on those energies.
+class CarveBank
+{
+public:
+    static constexpr int numBands = 5;
+    static constexpr float centresHz[numBands] = { 200.0f, 400.0f, 800.0f, 1600.0f, 3200.0f };
+    static constexpr float k = 0.7071f;   // 1/Q, Q = 1.41: one octave wide
+
+    void prepare (double sampleRate)
+    {
+        for (size_t b = 0; b < (size_t) numBands; ++b)
+            g[b] = tptGain (centresHz[b], (float) sampleRate);
+        rate = (float) sampleRate;
+        reset();
+    }
+
+    void reset()
+    {
+        for (auto& ch : filters)
+            for (auto& f : ch)
+                f.reset();
+        gain.fill (1.0f);
+        energy.fill (0.0f);
+        active = false;
+    }
+
+    // targets: each band's gain (linear, <= 1). Ramps from the last block's gains. analyse keeps the band
+    // energies measured while flat (CLARITY is up but nothing is contested yet). Returns false when bypassed.
+    bool process (float* left, float* right, int numSamples, const std::array<float, numBands>& targets, bool analyse) noexcept
+    {
+        // The solver's targets glide over 50 ms, so a band changing hands never pumps
+        const float coef = 1.0f - std::exp (-(float) numSamples / (0.05f * rate));
+        std::array<float, numBands> next {};
+        bool flat = true;
+        for (size_t b = 0; b < (size_t) numBands; ++b)
+        {
+            next[b] = gain[b] + (targets[b] - gain[b]) * coef;
+            if (std::abs (next[b] - 1.0f) < 1.0e-4f && std::abs (targets[b] - 1.0f) < 1.0e-5f)
+                next[b] = 1.0f;
+            flat = flat && next[b] == 1.0f && gain[b] == 1.0f;
+        }
+        if (flat && ! analyse)
+        {
+            if (active)
+                reset();
+            return false;
+        }
+        active = true;
+        std::array<float, numBands> step {}, sum {};
+        for (size_t b = 0; b < (size_t) numBands; ++b)
+            step[b] = (next[b] - gain[b]) / (float) numSamples;
+        float* io[2] = { left, right };
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            auto& f = filters[(size_t) ch];
+            for (int i = 0; i < numSamples; ++i)
+            {
+                float x = io[ch][i];
+                for (size_t b = 0; b < (size_t) numBands; ++b)
+                {
+                    const float band = k * f[b].process (x, g[b], k).band;
+                    sum[b] += band * band;
+                    x += (gain[b] + step[b] * (float) (i + 1) - 1.0f) * band;
+                }
+                io[ch][i] = x;
+            }
+        }
+        for (size_t b = 0; b < (size_t) numBands; ++b)
+        {
+            gain[b] = next[b];
+            energy[b] = sum[b] / (float) numSamples;
+        }
+        return true;
+    }
+
+    // Mean band power over the last block, at the input of each bell
+    const std::array<float, numBands>& bandEnergy() const noexcept { return energy; }
+
+private:
+    std::array<std::array<ZdfSvf, numBands>, 2> filters {};
+    std::array<float, numBands> g {}, gain {}, energy {};
+    float rate = 48000.0f;
+    bool active = false;
+};
+
+// Which role owns which band: role priority pi = priority x energy, shares w = pi^(1/T) / sum pi^(1/T)
+// (a softmax over log pi with temperature T). Every layer but the owner is dipped by depth x (1 - w / w_owner),
+// so a layer with an equal claim is barely touched and a weak claimant gives way fully. Layers more than
+// 30 dB below the band's loudest aren't fighting for it and stay as they are.
+inline std::array<std::array<float, CarveBank::numBands>, params::numLayers>
+    solveOwnership (const std::array<std::array<float, CarveBank::numBands>, params::numLayers>& energy,
+                    const std::array<params::Role, params::numLayers>& roles, const std::array<bool, params::numLayers>& sounding,
+                    float temperature, float depthDb) noexcept
+{
+    //                                     200    400    800   1.6k   3.2k
+    static constexpr float priority[5][CarveBank::numBands] = { { 0.5f, 0.2f, 0.1f, 0.05f, 0.05f },   // Sub
+                                                                { 1.0f, 1.0f, 0.6f, 0.3f, 0.2f },     // Body
+                                                                { 0.4f, 0.6f, 1.0f, 1.0f, 0.7f },     // Mid
+                                                                { 0.1f, 0.2f, 0.4f, 0.7f, 1.0f },     // Air
+                                                                { 0.6f, 0.6f, 0.6f, 0.6f, 0.6f } };   // Full
+    std::array<std::array<float, CarveBank::numBands>, params::numLayers> gains {};
+    for (auto& l : gains)
+        l.fill (1.0f);
+    const float depth = 1.0f - juce::Decibels::decibelsToGain (-juce::jmax (0.0f, depthDb));
+    if (depth <= 0.0f)
+        return gains;
+    const float invT = 1.0f / juce::jmax (0.05f, temperature);
+    for (size_t b = 0; b < (size_t) CarveBank::numBands; ++b)
+    {
+        float loudest = 0.0f;
+        for (size_t l = 0; l < (size_t) params::numLayers; ++l)
+            if (sounding[l])
+                loudest = std::max (loudest, energy[l][b]);
+        if (loudest < 1.0e-12f)
+            continue;
+        std::array<float, params::numLayers> claim {};
+        float top = 0.0f;
+        int contenders = 0;
+        for (size_t l = 0; l < (size_t) params::numLayers; ++l)
+        {
+            if (! sounding[l] || energy[l][b] < loudest * 1.0e-3f)
+                continue;
+            ++contenders;
+            // pi^(1/T), relative to the loudest so it stays in range
+            claim[l] = std::pow (priority[(size_t) roles[l]][b] * energy[l][b] / loudest, invT);
+            top = std::max (top, claim[l]);
+        }
+        if (contenders < 2 || top <= 0.0f)
+            continue;
+        for (size_t l = 0; l < (size_t) params::numLayers; ++l)
+            if (claim[l] > 0.0f)
+                gains[l][b] = 1.0f - depth * (1.0f - claim[l] / top);
+    }
+    return gains;
 }
+}
+
