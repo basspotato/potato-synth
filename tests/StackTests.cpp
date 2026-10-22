@@ -1119,12 +1119,12 @@ void testWavetableEngine()
 
 // ---- Chain knobs and the Harmony Engine ---------------------------------------------------------------
 
-// The full default-role stack with an engine on every layer: Sub, Wavetable body, JP mid, Wavetable air
+// The init stack the user hears: Sub, Dirt body, JP mid, Spectral air
 struct StackRig : Rig
 {
     StackRig() : Rig (false)
     {
-        const char* engines[] = { "sub", "wavetable", "jp", "wavetable" };
+        const char* engines[] = { "sub", "dirt", "jp", "spectral" };
         for (int i = 0; i < ps::params::numLayers; ++i)
             proc->setLayerEngine (i, engines[i]);
         if (const char* m = std::getenv ("POTATO_MASTER")) set (ps::params::master, (float) std::atof (m));
@@ -1723,6 +1723,189 @@ void benchmarkSpectral()
     CHECK (still < 20.0 && moving < 25.0, "Spectral stack CPU is within budget");
 }
 
+// ---- Dirt engine -----------------------------------------------------------------------------------------
+
+struct DirtRig : Rig
+{
+    explicit DirtRig (std::initializer_list<std::pair<int, float>> slots = {})
+    {
+        proc->setLayerEngine (2, "dirt");
+        render (blockSize);
+        collectRetired();
+        for (auto& [slot, value] : slots)
+            setSlot (slot, value);
+    }
+
+    void setSlot (int slot, float value) { set (ps::params::layerSlot (2, slot), value); }
+};
+
+using Dirt = ps::DirtEngine;
+
+// A bare oscillator: filter open, no envelope, drive, subs or drift
+DirtRig dirtOsc (float shape, std::initializer_list<std::pair<int, float>> more = {})
+{
+    DirtRig rig ({ { Dirt::shape, shape }, { Dirt::sub1, 0.0f }, { Dirt::drive, 0.0f }, { Dirt::cutoff, 1.0f },
+                   { Dirt::resonance, 0.0f }, { Dirt::envAmount, 0.5f }, { Dirt::keyTrack, 0.0f }, { Dirt::drift, 0.0f } });
+    for (auto& [slot, value] : more)
+        rig.setSlot (slot, value);
+    return rig;
+}
+
+void testDirtEngine()
+{
+    {
+        auto rig = dirtOsc (0.5f);
+        auto x = rig.render (24000, { { 0, on (57) } });
+        const double f = estimateFrequency (x, 4000, 24000);
+        CHECK (std::abs (f - 220.0) < 0.2, "Dirt: A3 plays at 220 Hz with no drift (" + std::to_string (f) + " Hz)");
+        double mean = 0.0;
+        for (size_t i = 4000; i < 24000; ++i)
+            mean += x[i];
+        mean /= 20000.0;
+        CHECK (std::abs (mean) < 0.01 * rms (x, 4000, 24000), "Dirt: the curved saw has no DC");
+    }
+
+    // Every shape at the saw's level
+    {
+        float sawRms = 0.0f, worst = 0.0f;
+        for (float s : { 0.5f, 0.0f, 0.25f, 0.4f, 0.75f, 1.0f })
+        {
+            auto rig = dirtOsc (s);
+            auto x = rig.render (24000, { { 0, on (45) } });
+            const float level = rms (x, 6000, 24000);
+            if (s == 0.5f)
+                sawRms = level;
+            worst = std::max (worst, std::abs (juce::Decibels::gainToDecibels (level / sawRms)));
+        }
+        CHECK (worst < 1.0f, "Dirt: every shape plays at the saw's level (worst " + std::to_string (worst) + " dB)");
+    }
+
+    // Band-limited: the curved reset, the triangle and the square
+    for (int note : { 57, 69, 81, 93 })
+        for (float s : { 0.0f, 0.3f, 0.5f, 1.0f })
+        {
+            auto rig = dirtOsc (s);
+            auto x = rig.render (24000, { { 0, on (note) } });
+            const double f0 = 440.0 * std::pow (2.0, (note - 69) / 12.0);
+            const float alias = worstAliasDb (x, 4000, f0);
+            CHECK (alias < -60.0f, "Dirt: shape " + std::to_string (s) + " is band-limited at " + std::to_string ((int) f0) + " Hz (aliases " + std::to_string (alias) + " dB)");
+        }
+
+    // Subs one and two octaves down
+    {
+        auto one = dirtOsc (0.5f, { { Dirt::sub1, 1.0f } });
+        auto x = one.render (24000, { { 0, on (57) } });
+        auto two = dirtOsc (0.5f, { { Dirt::sub2, 1.0f } });
+        auto y = two.render (24000, { { 0, on (57) } });
+        const float s1 = bandEnergy (x, 4000, 100.0, 120.0) / bandEnergy (x, 4000, 20.0, 20000.0);
+        const float s2 = bandEnergy (y, 4000, 50.0, 60.0) / bandEnergy (y, 4000, 20.0, 20000.0);
+        CHECK (s1 > 0.2f && s2 > 0.2f, "Dirt: the subs sound an octave and two octaves down (" + std::to_string (s1) + ", " + std::to_string (s2) + " of the energy)");
+        CHECK (std::abs (juce::Decibels::gainToDecibels (rms (x, 6000, 24000) / rms (y, 6000, 24000))) < 1.0f, "Dirt: the subs keep the level");
+    }
+
+    // Resonance keeps the lows, on both filters
+    for (int p = 0; p < Dirt::numPoles; ++p)
+    {
+        auto band = [p] (float res, double lo, double hi)
+        {
+            auto rig = dirtOsc (0.5f, { { Dirt::poles, Dirt::choiceValue (p, Dirt::numPoles) }, { Dirt::cutoff, Dirt::cutoffValue (800.0f) },
+                                        { Dirt::resonance, res } });
+            auto x = rig.render (24000, { { 0, on (33) } });
+            return bandEnergy (x, 8000, lo, hi);
+        };
+        const float lowsDb = juce::Decibels::gainToDecibels (std::sqrt (band (0.9f, 40.0, 300.0) / band (0.0f, 40.0, 300.0)));
+        const float peakDb = juce::Decibels::gainToDecibels (std::sqrt (band (0.9f, 650.0, 950.0) / band (0.0f, 650.0, 950.0)));
+        const std::string name = p == 0 ? "2-pole" : "3-pole";
+        CHECK (std::abs (lowsDb) < 1.5f, "Dirt " + name + ": resonance keeps the lows (" + std::to_string (lowsDb) + " dB)");
+        CHECK (peakDb > 6.0f, "Dirt " + name + ": resonance lifts the cutoff band (" + std::to_string (peakDb) + " dB)");
+    }
+
+    for (int p = 0; p < Dirt::numPoles; ++p)
+    {
+        DirtRig rig ({ { Dirt::poles, Dirt::choiceValue (p, Dirt::numPoles) }, { Dirt::resonance, 1.0f }, { Dirt::drive, 1.0f },
+                       { Dirt::cutoff, 0.5f }, { Dirt::sub2, 1.0f }, { Dirt::noise, 0.5f } });
+        auto x = rig.render (48000, { { 0, on (36, 1.0f) }, { 0, on (60, 1.0f) }, { 0, on (79, 1.0f) } });
+        CHECK (allFinite (x) && peak (x) < 4.0f, "Dirt: full resonance, drive and subs stay bounded (filter " + std::to_string (p) + ", peak " + std::to_string (peak (x)) + ")");
+    }
+
+    // Filter envelope: bright at the attack, darker once decayed
+    {
+        // +50 st, as in the JP's test; a decay long enough to span the 170 ms analysis window
+        DirtRig rig ({ { Dirt::cutoff, Dirt::cutoffValue (300.0f) }, { Dirt::envAmount, 0.5f + 50.0f / 120.0f }, { Dirt::envSustain, 0.0f },
+                       { Dirt::envDecay, Dirt::timeValue (1500.0f) }, { Dirt::velToEnv, 0.0f }, { Dirt::keyTrack, 0.0f } });
+        auto x = rig.render (96000, { { 0, on (45) } });
+        const float ratio = bandEnergy (x, 0, 1000.0, 20000.0) / bandEnergy (x, 72000, 1000.0, 20000.0);
+        CHECK (ratio > 30.0f, "Dirt: the filter envelope opens and closes the filter (" + std::to_string (ratio) + "x the highs at the attack)");
+    }
+
+    // Drift: each re-roll retunes the voice within the Drift range
+    {
+        std::vector<double> cents;
+        for (int seed = 0; seed < 4; ++seed)
+        {
+            auto rig = dirtOsc (0.5f, { { Dirt::drift, 1.0f }, { Dirt::reroll, Dirt::choiceValue (seed, Dirt::numSeeds) } });
+            auto x = rig.render (24000, { { 0, on (57) } });
+            cents.push_back (1200.0 * std::log2 (estimateFrequency (x, 4000, 24000) / 220.0));
+        }
+        const auto [lo, hi] = std::minmax_element (cents.begin(), cents.end());
+        CHECK (*hi - *lo > 2.0 && std::abs (*lo) < 15.5 && std::abs (*hi) < 15.5,
+               "Dirt: re-roll gives each voice a new tuning inside the drift range (" + std::to_string (*lo) + " .. " + std::to_string (*hi) + " ct)");
+    }
+
+    // Loudness against the JP's default patch
+    {
+        DirtRig dirt;
+        JpRig jp;
+        auto a = dirt.render (24000, { { 0, on (48) } });
+        auto b = jp.render (24000, { { 0, on (48) } });
+        const float diff = juce::Decibels::gainToDecibels (rms (a, 12000, 24000) / rms (b, 12000, 24000));
+        std::cout << "info: Dirt default patch vs JP default: " << diff << " dB\n";
+        CHECK (std::abs (diff) < 3.0f, "Dirt: the default patch plays near the other engines' level");
+    }
+}
+
+void testDirtSwitchesDoNotClick()
+{
+    const char* names[] = { "shape", "filter poles", "sub -1", "sub -2", "drive", "cutoff", "resonance", "drift", "re-roll" };
+    const std::pair<int, float> moves[] = {
+        { Dirt::shape, 1.0f }, { Dirt::poles, Dirt::choiceValue (0, Dirt::numPoles) }, { Dirt::sub1, 1.0f }, { Dirt::sub2, 1.0f },
+        { Dirt::drive, 0.8f }, { Dirt::cutoff, 0.3f }, { Dirt::resonance, 0.8f }, { Dirt::drift, 1.0f },
+        { Dirt::reroll, Dirt::choiceValue (9, Dirt::numSeeds) } };
+    for (size_t m = 0; m < std::size (moves); ++m)
+    {
+        DirtRig rig ({ { Dirt::cutoff, 0.45f }, { Dirt::envAmount, 0.5f } });
+        auto x = rig.render (12000, { { 0, on (45) } });
+        const float baseline = maxStep (std::vector<float> (x.begin() + 6000, x.end()));
+        rig.setSlot (moves[m].first, moves[m].second);
+        auto y = rig.render (9600);
+        const float steady = std::max (baseline, maxStep (std::vector<float> (y.begin() + 4800, y.end())));
+        const float worst = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
+        CHECK (worst < steady * 1.5f, std::string ("Dirt: changing ") + names[m] + " mid-note does not click (" + std::to_string (worst / steady) + "x the steady step)");
+    }
+}
+
+void benchmarkDirt()
+{
+    Rig rig (false);
+    for (int i = 0; i < 4; ++i)
+        rig.proc->setLayerEngine (i, "dirt");
+    rig.render (blockSize);
+    rig.collectRetired();
+    std::vector<std::pair<int, juce::MidiMessage>> chord;
+    for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
+        chord.push_back ({ 0, on (n) });
+    rig.render (blockSize, chord);
+    double best = 1.0e9;
+    for (int run = 0; run < 3; ++run)
+    {
+        const auto start = juce::Time::getHighResolutionTicks();
+        rig.render ((int) sampleRate * 2);
+        best = std::min (best, 50.0 * juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start));
+    }
+    std::cout << "info: 8-note chord on 4 Dirt layers uses " << best << "% of one core\n";
+    CHECK (best < 20.0, "Dirt stack CPU is within budget");
+}
+
 // ---- Layer filter and drive ---------------------------------------------------------------------------
 
 float filterTypeValue (ps::params::FilterType t) { return (float) (int) t; }
@@ -2060,6 +2243,13 @@ int main()
         benchmarkJp();
         return 0;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_DIRT_ONLY", {}).isNotEmpty())
+    {
+        testDirtEngine();
+        testDirtSwitchesDoNotClick();
+        benchmarkDirt();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_SPECTRAL_ONLY", {}).isNotEmpty())
     {
         testSpectralEngine();
@@ -2128,6 +2318,8 @@ int main()
     testSubEngine();
     testWavetableEngine();
     testSpectralEngine();
+    testDirtEngine();
+    testDirtSwitchesDoNotClick();
     testLayerFilter();
     testLayerDrive();
     testSends();
@@ -2142,6 +2334,7 @@ int main()
     benchmarkJp();
     benchmarkWavetable();
     benchmarkSpectral();
+    benchmarkDirt();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
     return failures == 0 ? 0 : 1;

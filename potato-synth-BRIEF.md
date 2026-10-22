@@ -177,6 +177,8 @@ Layer bleed (cross-mod between layers), spectrum theft, gravity pad, resample-up
 **Phase 5: P1 engines**
 19. Spectral morph engine.
 20. Dirt engine.
+20b. Arpeggiator (user request 2026-10-22): MIDI-side, before the layer stack, so every layer follows it. Tempo-synced rate, up/down/up-down/random/as-played/chord modes, octave range, gate, swing, latch, and a step pattern with per-step velocity and ties. Arp on/off and its settings are host parameters; it never changes latency. Built before the presets, so factory presets can use it.
+20c. Step sequencer (user request 2026-10-22), sharing the arp's clock and step grid: up to 32 steps, each with a note offset (or rest), velocity, gate, tie, probability and ratchet. A held key transposes the pattern, or it plays its own notes. Plus mod step lanes that move the chain knobs and XY pad in time.
 
 **Phase 6: GUI** (separate sessions from DSP)
 21. Main page: layer strip and fader bank, XY pad, 8 chain knobs, SUPER/BUILD/DROP, Harmony Engine display, presets, CPU meter.

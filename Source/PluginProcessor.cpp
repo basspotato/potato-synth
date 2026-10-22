@@ -7,8 +7,8 @@ namespace
     const juce::Identifier layersNode { "Layers" };
     juce::Identifier engineProperty (int layerIndex) { return "L" + juce::String (layerIndex + 1) + "_engine"; }
 
-    // Init patch until the real engines exist: the test engine on the Mid layer
-    const char* const defaultEngines[ps::params::numLayers] = { "sub", "wavetable", "jp", "jp" };
+    // Init patch (brief): Sub, a Dirt body, a JP mid and a Spectral air
+    const char* const defaultEngines[ps::params::numLayers] = { "sub", "dirt", "jp", "spectral" };
 }
 
 PotatoSynthProcessor::PotatoSynthProcessor()

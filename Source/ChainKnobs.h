@@ -125,12 +125,12 @@ inline const std::vector<Route>& routes()
         // drive, so it works on every engine (the init body, a Wavetable, has no drive slot).
         { mass, Target::slot, sub, SlotRole::translate, Path ({ 0.0f, 0.2f, 0.4f, 0.6f, 0.75f }) },
         { mass, Target::lowFocusDb, anyRole, SlotRole::none, Path ({ 0.0f, 1.8f, 3.5f, 5.0f, 6.0f }) },
-        { mass, Target::slot, body, SlotRole::drive, Path ({ 0.0f, 0.08f, 0.17f, 0.26f, 0.35f }) },
         { mass, Target::layerDrive, body, SlotRole::none, Path ({ 0.0f, 0.1f, 0.2f, 0.3f, 0.4f }) },
-        { mass, Target::slot, body, SlotRole::subOctave, Path ({ 0.0f, 0.15f, 0.35f, 0.55f, 0.7f }) },
         { mass, Target::monoBassOctaves, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.18f, 0.22f }) },
-        // The body's drive and the limiter on the bigger sub peaks cost loudness the open-loop trim can't see
-        { mass, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
+        // The body's drive and the limiter on the bigger sub peaks cost loudness the open-loop trim can't see.
+        // (The body's own drive and sub-octave slots are left alone: on the init Dirt body they lost 0.8 LU
+        // between them, the sub octave mostly under the Body role's 120 Hz band limit, where it can't be heard.)
+        { mass, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.15f, 0.3f, 0.45f, 0.6f }) },
         // Listening (build #25): still too subtle. The balance of the stack leans onto the low roles (the trim holds
         // the total), so the weight shift is heard on any speaker, not only on a sub.
         { mass, Target::layerLevelDb, sub, SlotRole::none, Path ({ 0.0f, 0.8f, 1.6f, 2.4f, 3.0f }) },
@@ -143,7 +143,10 @@ inline const std::vector<Route>& routes()
         { pressure, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.15f, 0.3f, 0.48f, 0.65f }) },
 
         // SCALE: wider and bigger on the upper roles; the lows are untouched
-        { scale, Target::slot, upper, SlotRole::detune, Path ({ 0.0f, 0.08f, 0.16f, 0.24f, 0.3f }) },
+        // Listening: "detunes everything". Detune pulled back by a third (it also cost 0.4 LU on the init stack,
+        // where slower-beating unisons read quieter); the size comes from spread and side voices.
+        { scale, Target::slot, upper, SlotRole::detune, Path ({ 0.0f, 0.05f, 0.1f, 0.15f, 0.2f }) },
+        { scale, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.04f, 0.08f, 0.12f, 0.15f }) },
         { scale, Target::slot, upper, SlotRole::unisonMix, Path ({ 0.0f, 0.08f, 0.15f, 0.21f, 0.25f }) },
         { scale, Target::slot, upper, SlotRole::stereoSpread, Path ({ 0.0f, 0.1f, 0.18f, 0.25f, 0.3f }) },
         { scale, Target::slot, upper, SlotRole::positionSpread, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
@@ -170,7 +173,9 @@ inline const std::vector<Route>& routes()
         { clarity, Target::carveDepthDb, anyRole, SlotRole::none, Path ({ 0.0f, 2.5f, 5.0f, 7.0f, 9.0f }) },
         { clarity, Target::carveTemperature, anyRole, SlotRole::none, Path ({ 1.0f, 0.75f, 0.55f, 0.4f, 0.3f }) },
         { clarity, Target::deHarsh, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
-        { clarity, Target::slot, anyRole, SlotRole::detune, Path ({ 0.0f, -0.03f, -0.07f, -0.11f, -0.15f }) },
+        // Less detune beats slower but reads quieter (0.67 LU at -0.15 on the init stack): a lighter pull, and a lift
+        { clarity, Target::slot, anyRole, SlotRole::detune, Path ({ 0.0f, -0.02f, -0.04f, -0.06f, -0.08f }) },
+        { clarity, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.19f, 0.25f }) },
 
         // BLOOM: life and motion. The whole stack drifts together: a drift between layers would slowly phase
         // their sum in every band they share (the sub/body crossover first), costing punch and up to 3 dB at
