@@ -4,6 +4,7 @@
 #include "LayerStack.h"
 #include "StackBus.h"
 #include "ChainKnobs.h"
+#include "Space.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -77,6 +78,11 @@ private:
     ps::Pressure pressure;
     ps::Tilt tilt;
     ps::DeHarsh deHarsh;
+    ps::Space space;
+    // BLOOM's motion: the stack's drift (Ornstein-Uhlenbeck, then smoothed) and slow slot LFO phases
+    float driftState = 0.0f, driftSmoothed = 0.0f;
+    std::array<std::array<float, ps::numSlotRoles>, ps::params::numLayers> motionPhase {};
+    juce::Random driftRandom { 0x5eed };
     ps::TempoPump pump;
     ps::harmony::KPowerMeter knobStagesIn, knobStagesOut;   // around the bus stages the knobs drive
     bool knobStagesActive = false;

@@ -124,6 +124,9 @@ public:
         chainSlots = slotOffsets;
     }
 
+    // BLOOM's pitch drift on top of the layer's tune, in cents (the engines' setTune is phase-continuous)
+    void setChainDrift (float cents) noexcept { chainDriftCents = cents; }
+
     // GROOVE's inter-layer ducking: each new note dips this layer by depthDb for about windowMs, so the
     // transient layers' attacks read through it (forward masking). 0 dB turns it off.
     void setOnsetDuck (float depthDb, float windowMs) noexcept
@@ -200,7 +203,7 @@ public:
         updateEnvelopeSettings();
         if (active != nullptr)
         {
-            active->setTune (tune.load());
+            active->setTune (tune.load() + 0.01f * chainDriftCents);
             updateSlots();
         }
 
@@ -585,6 +588,7 @@ private:
     float chainLevelDb = 0.0f;
     std::array<float, numSlotRoles> chainSlots {};
     OnsetDuck duck;
+    float chainDriftCents = 0.0f;
     harmony::CarveBank carve;
     harmony::KPowerMeter carvedMeter;
     std::array<float, harmony::CarveBank::numBands> carveTargets { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };

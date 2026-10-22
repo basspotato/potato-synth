@@ -1199,6 +1199,23 @@ void testOnsetDuck()
     CHECK (body < full - 3.0f, "GROOVE ducks the Body layer under a new note's onset (" + std::to_string (body - full) + " dB)");
 }
 
+void testBloomSpace()
+{
+    // BLOOM opens a space: after the chord is released, its tail rings on well past the dry release
+    auto tailDb = [] (float bloom)
+    {
+        StackRig rig;
+        rig.set (ps::params::chainKnob (ps::chain::bloom), bloom);
+        std::vector<std::pair<int, juce::MidiMessage>> events = StackRig::chord();
+        for (int n : { 36, 48, 55, 60, 64, 67 })
+            events.push_back ({ 48000, off (n) });
+        auto x = rig.render (96000, events);
+        return juce::Decibels::gainToDecibels (rms (x, 48000 + 24000, 48000 + 36000) / rms (x, 24000, 48000), -200.0f);
+    };
+    const float dry = tailDb (0.0f), wet = tailDb (1.0f);
+    CHECK (wet > dry + 10.0f && wet < -10.0f, "BLOOM's space rings on after the release (" + std::to_string (dry) + " -> " + std::to_string (wet) + " dB)");
+}
+
 void testChainKnobInvariants()
 {
     // A control rig plays the same notes with the knobs untouched: the loudness change is measured against it at
@@ -1412,6 +1429,7 @@ int main()
     {
         testChainPaths();
         testOnsetDuck();
+        testBloomSpace();
         testChainKnobInvariants();
         return failures == 0 ? 0 : 1;
     }
@@ -1459,6 +1477,7 @@ int main()
     testWavetableEngine();
     testChainPaths();
     testOnsetDuck();
+    testBloomSpace();
     testChainKnobInvariants();
     benchmarkJp();
     benchmarkWavetable();

@@ -90,6 +90,11 @@ enum class Target
     carveDepthDb,      // band ownership: the most a non-owning layer is dipped, dB (HarmonyEngine.h)
     carveTemperature,  // band ownership softmax temperature: high = soft, low = one sharp owner per band
     deHarsh,           // the 2-5 kHz dynamic bell's amount, 0..1 (StackBus.h DeHarsh)
+    driftCents,        // matching layers' pitch drift, standard deviation in cents (Ornstein-Uhlenbeck)
+    slotMotion,        // a slot role on matching layers swings by this much (slow LFOs, golden-ratio rates)
+    spaceWet,          // the shared reverb's return, linear gain (Space.h)
+    spaceRt60,         // its decay, seconds
+    spaceDuck,         // how far the return dips under the dry signal, 0..1
 };
 
 // Which layers a route applies to: a bit per params::Role
@@ -150,6 +155,18 @@ inline const std::vector<Route>& routes()
         { clarity, Target::deHarsh, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
         { clarity, Target::slot, anyRole, SlotRole::detune, Path ({ 0.0f, -0.02f, -0.05f, -0.08f, -0.1f }) },
 
+        // BLOOM: life and motion. The whole stack drifts together: a drift between layers would slowly phase
+        // their sum in every band they share (the sub/body crossover first), costing punch and up to 3 dB at
+        // a crossover. The layers' own motion comes from the slot swings, and the stack opens into a space
+        // that ducks under the dry signal.
+        { bloom, Target::driftCents, anyRole, SlotRole::none, Path ({ 0.0f, 1.5f, 3.0f, 4.5f, 6.0f }) },
+        { bloom, Target::slotMotion, anyRole, SlotRole::position, Path ({ 0.0f, 0.03f, 0.06f, 0.09f, 0.12f }) },
+        { bloom, Target::slotMotion, upper, SlotRole::brightness, Path ({ 0.0f, 0.015f, 0.03f, 0.045f, 0.06f }) },
+        { bloom, Target::slotMotion, upper, SlotRole::stereoSpread, Path ({ 0.0f, 0.03f, 0.06f, 0.09f, 0.12f }) },
+        { bloom, Target::spaceWet, anyRole, SlotRole::none, Path ({ 0.0f, 0.05f, 0.1f, 0.16f, 0.22f }) },
+        { bloom, Target::spaceRt60, anyRole, SlotRole::none, Path ({ 0.8f, 1.4f, 2.2f, 3.2f, 4.5f }) },
+        { bloom, Target::spaceDuck, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.7f, 0.85f }) },
+
         // MORPH: every layer's spectral identity moves together
         { morph, Target::slot, anyRole, SlotRole::position, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
         { morph, Target::slot, anyRole, SlotRole::warp, Path ({ 0.0f, 0.05f, 0.12f, 0.2f, 0.3f }) },
@@ -172,6 +189,9 @@ struct Offsets
     float onsetDuckMs = 0.0f;
     float tempoLock = 0.0f;
     float carveDepthDb = 0.0f, carveTemperature = 1.0f, deHarsh = 0.0f;
+    std::array<float, params::numLayers> driftCents {};
+    std::array<std::array<float, numSlotRoles>, params::numLayers> slotMotion {};
+    float spaceWet = 0.0f, spaceRt60 = 0.8f, spaceDuck = 0.0f;
 };
 
 // u: each knob's position 0..1 (SUPER already folded in); roles: each layer's role
@@ -198,6 +218,11 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
             case Target::carveDepthDb:    o.carveDepthDb += v; break;
             case Target::carveTemperature: o.carveTemperature = v; break;
             case Target::deHarsh:         o.deHarsh += v; break;
+            case Target::spaceWet:        o.spaceWet += v; break;
+            case Target::spaceRt60:       o.spaceRt60 = v; break;
+            case Target::spaceDuck:       o.spaceDuck += v; break;
+            case Target::driftCents:
+            case Target::slotMotion:
             case Target::onsetDuckDb:
             case Target::layerLevelDb:
             case Target::slot:
@@ -209,6 +234,10 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
                         o.levelDb[(size_t) l] += v;
                     else if (r.target == Target::onsetDuckDb)
                         o.onsetDuckDb[(size_t) l] += v;
+                    else if (r.target == Target::driftCents)
+                        o.driftCents[(size_t) l] += v;
+                    else if (r.target == Target::slotMotion)
+                        o.slotMotion[(size_t) l][(size_t) r.slotRole] += v;
                     else
                         o.slot[(size_t) l][(size_t) r.slotRole] += v;
                 }

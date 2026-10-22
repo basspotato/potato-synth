@@ -58,6 +58,12 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     pressure.prepare (sampleRate);
     tilt.prepare (sampleRate);
     deHarsh.prepare (sampleRate);
+    space.prepare (sampleRate, samplesPerBlock);
+    driftState = driftSmoothed = 0.0f;
+    // Every layer and role starts at its own point of the cycle (golden-angle offsets)
+    for (int l = 0; l < ps::params::numLayers; ++l)
+        for (int r = 0; r < ps::numSlotRoles; ++r)
+            motionPhase[(size_t) l][(size_t) r] = std::fmod (0.381966f * (float) (l * ps::numSlotRoles + r), 1.0f);
     pump.prepare (sampleRate);
     knobStagesIn.prepare (sampleRate);
     knobStagesOut.prepare (sampleRate);
@@ -159,6 +165,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     knobStagesIn.process (left, right, n);
     bool active = lowFocus.process (left, right, n, offsets.lowFocusDb);
     active = tilt.process (left, right, n, offsets.tiltDbPerOct) || active;
+    active = space.process (left, right, n, offsets.spaceWet, offsets.spaceRt60, 0.5f, offsets.spaceDuck) || active;
     active = deHarsh.process (left, right, n, offsets.deHarsh) || active;
     pressure.setTempoLock (offsets.tempoLock, 60.0 / juce::jlimit (20.0, 400.0, bpm));
     active = pressure.process (left, right, n, offsets.pressure) || active;
@@ -213,7 +220,32 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     std::array<ps::params::Role, ps::params::numLayers> roles {};
     for (int i = 0; i < ps::params::numLayers; ++i)
         roles[(size_t) i] = stack.layer (i).role();
-    const auto offsets = ps::chain::compute (u, roles);
+    auto offsets = ps::chain::compute (u, roles);
+
+    // BLOOM. Drift: one Ornstein-Uhlenbeck walk for the stack (mean reversion theta at about 0.3 Hz, stationary
+    // deviation sigma), sampled exactly at block rate, then a 2 Hz low-pass so the pitch glides between blocks.
+    // Motion: each slot role swings on a slow sine, the rates spaced by powers of the golden ratio so the
+    // layers' movements never line up into an obvious loop.
+    const float dt = (float) numSamples / (float) getSampleRate();
+    const float decay = std::exp (-juce::MathConstants<float>::twoPi * 0.3f * dt);
+    const float smooth = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * 2.0f * dt);
+    {
+        const float u1 = juce::jmax (1.0e-7f, driftRandom.nextFloat()), u2 = driftRandom.nextFloat();
+        const float gauss = std::sqrt (-2.0f * std::log (u1)) * std::cos (juce::MathConstants<float>::twoPi * u2);
+        driftState = driftState * decay + std::sqrt (1.0f - decay * decay) * gauss;   // unit stationary deviation
+        driftSmoothed += (driftState - driftSmoothed) * smooth;
+    }
+    for (int l = 0; l < ps::params::numLayers; ++l)
+    {
+        for (int r = 0; r < ps::numSlotRoles; ++r)
+        {
+            const float depth = offsets.slotMotion[(size_t) l][(size_t) r];
+            auto& ph = motionPhase[(size_t) l][(size_t) r];
+            ph = std::fmod (ph + dt * 0.07f * std::pow (1.618034f, (float) ((l + r) % 5)), 1.0f);
+            if (depth != 0.0f)
+                offsets.slot[(size_t) l][(size_t) r] += depth * std::sin (juce::MathConstants<float>::twoPi * ph);
+        }
+    }
 
     // Band ownership, from the energies the layers measured last block
     std::array<std::array<float, ps::harmony::CarveBank::numBands>, ps::params::numLayers> energy {};
@@ -230,6 +262,7 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
         stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
         stack.layer (i).setOnsetDuck (offsets.onsetDuckDb[(size_t) i], offsets.onsetDuckMs);
         stack.layer (i).setCarveGains (carve[(size_t) i], carving);
+        stack.layer (i).setChainDrift (offsets.driftCents[(size_t) i] * driftSmoothed);
     }
     return offsets;
 }
