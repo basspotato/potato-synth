@@ -3,6 +3,7 @@
 #include "Envelope.h"
 #include "Filter.h"
 #include "Drive.h"
+#include "Inserts.h"
 #include "RoleBand.h"
 #include "HarmonyEngine.h"
 #include "Params.h"
@@ -41,6 +42,9 @@ struct LayerParams
     std::atomic<float>* filterSustainPercent = nullptr;
     std::atomic<float>* filterReleaseMs = nullptr;
     std::atomic<float>* drive = nullptr;               // percent
+    std::atomic<float>* chorus = nullptr;              // percent
+    std::atomic<float>* chorusRateHz = nullptr;
+    std::atomic<float>* chorusDepth = nullptr;         // percent
 };
 
 // One slot of the stack: an engine plus its per-layer controls.
@@ -107,6 +111,7 @@ public:
         filterType = currentFilterType();
         filterFade = 0;
         layerDrive.prepare (maxBlock);
+        chorus.prepare (sr);
         level.reset (sr, 0.02);
         level.setCurrentAndTargetValue (targetGain());
         for (auto* g : { &panL, &panR })
@@ -343,6 +348,8 @@ public:
         layerDrive.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.drive, 0.0f) * 0.01f));
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
+        chorus.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.chorus, 0.0f) * 0.01f),
+                        load (params.chorusRateHz, 0.4f), load (params.chorusDepth, 50.0f) * 0.01f);
         meter.process (scratchL.data(), scratchR.data(), numSamples);
         const bool carved = carve.process (scratchL.data(), scratchR.data(), numSamples, carveTargets, carveAnalyse);
         if (carved != carving)
@@ -779,6 +786,7 @@ private:
     params::FilterType filterType = params::FilterType::off, previousFilterType = params::FilterType::off;
     int filterFade = 0;
     LayerDrive layerDrive;
+    Chorus chorus;
     std::vector<float> scratchL, scratchR, voiceL, voiceR;
     std::vector<uint32_t> startOrder;
 

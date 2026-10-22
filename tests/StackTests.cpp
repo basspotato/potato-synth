@@ -1657,6 +1657,60 @@ void testLayerDrive()
     CHECK (worst < 1.1f, "jumping the drive does not click (" + std::to_string (worst) + "x the steadier slope)");
 }
 
+void testLayerChorus()
+{
+    namespace p = ps::params;
+    // A single mono saw (JP, no unison, no spread)
+    auto play = [] (float amount, std::initializer_list<int> notes, std::vector<float>& right)
+    {
+        JpRig rig ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) }, { Jp::spread, 0.0f } });
+        rig.set (p::layerChorus (2), amount);
+        std::vector<std::pair<int, juce::MidiMessage>> events;
+        for (int n : notes)
+            events.push_back ({ 0, on (n) });
+        auto x = rig.render (48000, events);
+        right = rig.right;
+        return x;
+    };
+    auto correlation = [] (const std::vector<float>& l, const std::vector<float>& r, size_t from)
+    {
+        double lr = 0, ll = 0, rr = 0;
+        for (size_t i = from; i < l.size(); ++i) { lr += (double) l[i] * r[i]; ll += (double) l[i] * l[i]; rr += (double) r[i] * r[i]; }
+        return lr / std::sqrt (ll * rr);
+    };
+    std::vector<float> dryR, wetR, lowR;
+    const auto dry = play (0.0f, { 69 }, dryR), wet = play (100.0f, { 69 }, wetR);
+    const double c = correlation (wet, wetR, 12000);
+    std::cout << "info: chorus 100 % on a mono saw: L/R correlation " << c << "\n";
+    CHECK (correlation (dry, dryR, 12000) > 0.9999 && c < 0.9 && c > 0.0, "the chorus widens a mono layer and stays mono-compatible");
+    const float levelDb = juce::Decibels::gainToDecibels ((rms (wet, 12000, 48000) + rms (wetR, 12000, 48000)) / (rms (dry, 12000, 48000) + rms (dryR, 12000, 48000)));
+    CHECK (std::abs (levelDb) < 1.5f, "the chorus keeps the layer's level (" + std::to_string (levelDb) + " dB)");
+
+    const auto low = play (100.0f, { 33 }, lowR);   // 55 Hz saw
+    std::vector<float> side (low.size()), mid (low.size());
+    for (size_t i = 0; i < low.size(); ++i) { side[i] = 0.5f * (low[i] - lowR[i]); mid[i] = 0.5f * (low[i] + lowR[i]); }
+    CHECK (bandEnergy (side, 24000, 20.0, 150.0) < 1.0e-4f * bandEnergy (mid, 24000, 20.0, 150.0), "the chorus leaves the lows mono");
+    std::vector<float> lowDryR;
+    const auto lowDry = play (0.0f, { 33 }, lowDryR);
+    const float lowDb = juce::Decibels::gainToDecibels (bandEnergy (mid, 24000, 40.0, 150.0) / bandEnergy (lowDry, 24000, 40.0, 150.0)) * 0.5f;
+    CHECK (std::abs (lowDb) < 0.5f, "the chorus keeps the lows' level (" + std::to_string (lowDb) + " dB)");
+
+    // Turning it on and off while a note sounds never clicks: the slope while it moves stays within the
+    // steeper of the steady slopes before and after
+    Rig rig;
+    auto steady = rig.render (12000, { { 0, on (57) } });
+    float before = maxStep (std::vector<float> (steady.begin() + 9600, steady.end())), worst = 0.0f;
+    for (float a : { 100.0f, 0.0f, 50.0f, 100.0f })
+    {
+        rig.set (p::layerChorus (2), a);
+        auto x = rig.render (96000);   // a whole LFO cycle at 0.4 Hz, past the ramp
+        const float after = maxStep (std::vector<float> (x.begin() + 2400, x.end()));
+        worst = std::max (worst, maxStep (std::vector<float> (x.begin(), x.begin() + 600)) / std::max (before, after));
+        before = after;
+    }
+    CHECK (worst < 1.1f, "switching the chorus does not click (" + std::to_string (worst) + "x)");
+}
+
 // ---- Shared sends ---------------------------------------------------------------------------------------
 
 void testSends()
@@ -1756,6 +1810,7 @@ int main()
         testLayerFilter();
         testLayerDrive();
         testSends();
+        testLayerChorus();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_CHAIN_ONLY", {}).isNotEmpty())   // iterating on the knobs
@@ -1813,6 +1868,7 @@ int main()
     testLayerFilter();
     testLayerDrive();
     testSends();
+    testLayerChorus();
     testChainPaths();
     testOnsetDuck();
     testBloomSpace();

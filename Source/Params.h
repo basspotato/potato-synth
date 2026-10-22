@@ -76,6 +76,10 @@ namespace ps::params
     inline juce::ParameterID layerFilterSustain (int i) { return layerParam (i, "flt_sustain", 8); }
     inline juce::ParameterID layerFilterRelease (int i) { return layerParam (i, "flt_release", 8); }
     inline juce::ParameterID layerDrive (int i)         { return layerParam (i, "drive", 8); }
+    // Per-layer chorus insert (Inserts.h)
+    inline juce::ParameterID layerChorus (int i)        { return layerParam (i, "chorus", 8); }
+    inline juce::ParameterID layerChorusRate (int i)    { return layerParam (i, "chorus_rate", 8); }
+    inline juce::ParameterID layerChorusDepth (int i)   { return layerParam (i, "chorus_depth", 8); }
     enum class FilterType { off, ladder24, lowPass12, bandPass, highPass };
     inline const juce::StringArray filterTypeNames { "Off", "Ladder 24", "LP 12", "BP", "HP" };
 
@@ -233,6 +237,12 @@ namespace ps::params
                 layout.add (std::make_unique<Float> (layerFilterSustain (i), role + " Filter Sustain", juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, percent));
                 layout.add (std::make_unique<Float> (layerFilterRelease (i), role + " Filter Release", detail::timeRange (1.0f, 30000.0f, 500.0f), 300.0f, detail::msAttributes()));
                 layout.add (std::make_unique<Float> (layerDrive (i), role + " Drive", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+                juce::NormalisableRange<float> rate (0.05f, 5.0f, 0.01f);
+                rate.setSkewForCentre (0.5f);
+                layout.add (std::make_unique<Float> (layerChorus (i), role + " Chorus", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+                layout.add (std::make_unique<Float> (layerChorusRate (i), role + " Chorus Rate", rate, 0.4f,
+                    juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction ([] (float v, int) { return juce::String (v, 2) + " Hz"; })));
+                layout.add (std::make_unique<Float> (layerChorusDepth (i), role + " Chorus Depth", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
             }
             for (int k = 0; k < numEngineSlots; ++k)
                 layout.add (std::make_unique<Float> (layerSlot (i, k), role + " Engine " + juce::String (k + 1),

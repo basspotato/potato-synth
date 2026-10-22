@@ -47,7 +47,8 @@ PotatoSynthProcessor::PotatoSynthProcessor()
                                          raw (p::layerFilterType (i)), raw (p::layerCutoff (i)), raw (p::layerResonance (i)),
                                          raw (p::layerFilterEnv (i)), raw (p::layerKeyTrack (i)), raw (p::layerFilterAttack (i)),
                                          raw (p::layerFilterDecay (i)), raw (p::layerFilterSustain (i)), raw (p::layerFilterRelease (i)),
-                                         raw (p::layerDrive (i)) });
+                                         raw (p::layerDrive (i)), raw (p::layerChorus (i)), raw (p::layerChorusRate (i)),
+                                         raw (p::layerChorusDepth (i)) });
         for (int k = 0; k < p::numEngineSlots; ++k)
             stack.layer (i).setSlotParameter (k, raw (p::layerSlot (i, k)));
     }
