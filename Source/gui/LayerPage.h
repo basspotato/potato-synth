@@ -68,7 +68,7 @@ private:
     juce::Colour colour { theme::mid };
 };
 
-// Detail page for one layer: engine picker, amp envelope, pan and tune.
+// Detail page for one layer: engine picker, voice mode, amp envelope, pan, tune and glide.
 // Engine-specific controls join this page as the engines arrive.
 class LayerPage : public juce::Component,
                   private juce::Timer
@@ -82,7 +82,16 @@ public:
         engineButton.onClick = [this] { if (onEngineClick != nullptr) onEngineClick(); };
         addAndMakeVisible (engineButton);
 
-        const char* const names[] = { "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "PAN", "OCTAVE", "SEMI", "FINE" };
+        for (int m = 0; m < (int) modeButtons.size(); ++m)
+        {
+            auto& b = modeButtons[(size_t) m];
+            b.setButtonText (params::voiceModeNames[m].toUpperCase());
+            b.setClickingTogglesState (false);
+            b.onClick = [this, m] { setVoiceMode (m); };
+            addAndMakeVisible (b);
+        }
+
+        const char* const names[] = { "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "PAN", "OCTAVE", "SEMI", "FINE", "GLIDE" };
         for (size_t i = 0; i < knobs.size(); ++i)
         {
             auto& k = knobs[i];
@@ -106,7 +115,7 @@ public:
 
         const juce::ParameterID ids[] = { params::layerAttack (index), params::layerDecay (index), params::layerSustain (index),
                                           params::layerRelease (index), params::layerPan (index), params::layerOctave (index),
-                                          params::layerSemi (index), params::layerFine (index) };
+                                          params::layerSemi (index), params::layerFine (index), params::layerGlide (index) };
         for (size_t i = 0; i < knobs.size(); ++i)
         {
             auto& k = knobs[i];
@@ -162,10 +171,16 @@ public:
         };
         const int w = envRow.getWidth() / 4;
         for (size_t i = 0; i < 4; ++i)
-        {
             place (knobs[i], envRow.removeFromLeft (w).reduced (4, 0));
-            place (knobs[i + 4], bottomRow.removeFromLeft (w).reduced (4, 0));
-        }
+        // Bottom row: voice mode buttons stacked in the first cell, then pan, tune and glide
+        const int bw = bottomRow.getWidth() / 6;
+        auto modes = bottomRow.removeFromLeft (bw).reduced (4, 4);
+        const int mh = juce::jmin (26, modes.getHeight() / 3);
+        modes = modes.withSizeKeepingCentre (modes.getWidth(), mh * 3);
+        for (auto& b : modeButtons)
+            b.setBounds (modes.removeFromTop (mh).reduced (0, 2));
+        for (size_t i = 4; i < knobs.size(); ++i)
+            place (knobs[i], bottomRow.removeFromLeft (bw).reduced (4, 0));
     }
 
 private:
@@ -181,6 +196,23 @@ private:
         auto value = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID())->load(); };
         envelope.setValues (value (params::layerAttack (layer)), value (params::layerDecay (layer)),
                             value (params::layerSustain (layer)) * 0.01f, value (params::layerRelease (layer)));
+
+        const int mode = juce::roundToInt (value (params::layerVoiceMode (layer)));
+        for (int m = 0; m < (int) modeButtons.size(); ++m)
+        {
+            auto& b = modeButtons[(size_t) m];
+            b.setColour (juce::TextButton::buttonColourId, m == mode ? accent : theme::panel);
+            b.setAlpha (m == mode ? 1.0f : 0.7f);
+        }
+    }
+
+    void setVoiceMode (int mode)
+    {
+        auto* p = apvts.getParameter (params::layerVoiceMode (layer).getParamID());
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) mode));
+        p->endChangeGesture();
+        timerCallback();
     }
 
     juce::AudioProcessorValueTreeState& apvts;
@@ -189,6 +221,7 @@ private:
     juce::Colour accent { theme::mid };
     EnvelopeView envelope;
     juce::TextButton engineButton;
-    std::array<Knob, 8> knobs;
+    std::array<Knob, 9> knobs;
+    std::array<juce::TextButton, 3> modeButtons;
 };
 }
