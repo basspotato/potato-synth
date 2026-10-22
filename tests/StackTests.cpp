@@ -35,7 +35,9 @@ struct Rig
                 set (ps::params::layerRole (i), (float) ps::params::Role::full);
             set (ps::params::monoBass, 0.0f);
         }
-        proc->setLayerEngine (2, "test.sine");   // the plain reference voice, whatever the plugin's default stack is
+        // The plain reference voice on layer 3 only, whatever the plugin's default stack is
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            proc->setLayerEngine (i, i == 2 ? "test.sine" : "");
         proc->setPlayConfigDetails (0, 2, sampleRate, blockSize);
         proc->prepareToPlay (sampleRate, blockSize);
     }
@@ -859,6 +861,74 @@ void testJpSwitchesDoNotClick()
     }
 }
 
+// ---- Sub engine ---------------------------------------------------------------------------------------
+
+struct SubRig : Rig
+{
+    explicit SubRig (std::initializer_list<std::pair<int, float>> slots = {})
+    {
+        proc->setLayerEngine (2, "sub");
+        render (blockSize);
+        collectRetired();
+        for (auto& [slot, value] : slots)
+            set (ps::params::layerSlot (2, slot), value);
+    }
+};
+
+using Sub = ps::SubEngine;
+
+void testSubEngine()
+{
+    {
+        SubRig rig;
+        auto x = rig.render (48000, { { 0, on (33) } });   // A1, 55 Hz
+        CHECK (std::abs (estimateFrequency (x, 6000, 48000) - 55.0) < 0.05, "Sub plays in tune (55 Hz)");
+        CHECK (std::abs (x[0]) < 1.0e-3f && maxStep (x) < 0.01f, "a retriggered Sub starts at zero phase, click-free");
+    }
+
+    auto levelFor = [] (float shapeValue)
+    {
+        SubRig rig ({ { Sub::shape, shapeValue } });
+        auto x = rig.render (48000, { { 0, on (40) } });
+        return juce::Decibels::gainToDecibels (rms (x, 12000, 48000));
+    };
+    const float sine = levelFor (0.0f);
+    float worst = 0.0f;
+    for (float s : { 0.25f, 0.5f, 0.75f, 1.0f })
+        worst = std::max (worst, std::abs (levelFor (s) - sine));
+    CHECK (worst < 1.0f, "Shape keeps the level within 1 dB from sine to square (" + std::to_string (worst) + " dB)");
+
+    {
+        SubRig rig ({ { Sub::drive, 1.0f }, { Sub::even, 1.0f }, { Sub::subOctave, 1.0f } });
+        auto x = rig.render (48000, { { 0, on (33, 1.0f) } });
+        double mean = 0.0;
+        for (size_t i = 24000; i < 48000; ++i)
+            mean += x[i];
+        mean /= 24000.0;
+        CHECK (allFinite (x) && peak (x) < 1.0f, "full drive and even stay bounded");
+        CHECK (std::abs (mean) < 1.0e-3, "even harmonics leave no DC (" + std::to_string (mean) + ")");
+        CHECK (bandEnergy (x, 24000, 100.0, 125.0) > 1.0e-3f * bandEnergy (x, 24000, 50.0, 60.0), "Even adds the 2nd harmonic");
+    }
+    {
+        SubRig rig ({ { Sub::punch, 1.0f }, { Sub::punchDecay, Sub::punchValue (40.0f) } });
+        auto x = rig.render (48000, { { 0, on (33) } });
+        CHECK (estimateFrequency (x, 0, 960) > 150.0, "Punch starts the note high");
+        CHECK (std::abs (estimateFrequency (x, 24000, 48000) - 55.0) < 0.1, "and drops to the note");
+        CHECK (maxStep (x) < 0.05f, "the punch drop is click-free");
+    }
+    {
+        // Changing the shape on a held note is click-free
+        SubRig rig ({ { Sub::tone, 0.5f } });
+        auto x = rig.render (12000, { { 0, on (33) } });
+        const float steady = maxStep (std::vector<float> (x.begin() + 6000, x.end()));
+        rig.set (ps::params::layerSlot (2, Sub::shape), 1.0f);
+        auto y = rig.render (9600);
+        const float after = std::max (steady, maxStep (std::vector<float> (y.begin() + 4800, y.end())));
+        const float worst = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
+        CHECK (worst < after * 1.5f, "moving Shape on a held note does not click (" + std::to_string (worst / after) + "x the steady step)");
+    }
+}
+
 double jpCpuShare (int unisonMode)
 {
     Rig rig (false);
@@ -873,11 +943,17 @@ double jpCpuShare (int unisonMode)
         chord.push_back ({ 0, on (n) });
     rig.render (blockSize, chord);
 
-    const int seconds = juce::SystemStats::getEnvironmentVariable ("POTATO_BENCH_ONLY", {}).isNotEmpty() ? 1 : 4;
-    const auto start = juce::Time::getHighResolutionTicks();
-    rig.render ((int) sampleRate * seconds);
-    const double elapsed = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start);
-    return 100.0 * elapsed / seconds;
+    // Best of three 2-second runs, so a busy shared machine doesn't read as engine cost
+    double best = 1.0e9;
+    for (int run = 0; run < 3; ++run)
+    {
+        const int seconds = 2;
+        const auto start = juce::Time::getHighResolutionTicks();
+        rig.render ((int) sampleRate * seconds);
+        const double elapsed = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start);
+        best = std::min (best, 100.0 * elapsed / seconds);
+    }
+    return best;
 }
 
 void benchmarkJp()
@@ -946,6 +1022,7 @@ int main()
     testJpFilter();
     testJpOsc2();
     testJpSwitchesDoNotClick();
+    testSubEngine();
     benchmarkJp();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";

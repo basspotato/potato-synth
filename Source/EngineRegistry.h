@@ -1,6 +1,7 @@
 #pragma once
 #include "engines/TestSineEngine.h"
 #include "engines/JpEngine.h"
+#include "engines/SubEngine.h"
 #include <memory>
 
 namespace ps
@@ -19,6 +20,7 @@ namespace engines
     {
         static const std::vector<Entry> list {
             { "jp", "JP", [] { return std::unique_ptr<Engine> (std::make_unique<JpEngine>()); } },
+            { "sub", "Sub", [] { return std::unique_ptr<Engine> (std::make_unique<SubEngine>()); } },
             { "test.sine", "Test Sine", [] { return std::unique_ptr<Engine> (std::make_unique<TestSineEngine>()); } },
         };
         return list;
