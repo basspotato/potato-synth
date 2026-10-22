@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine.h"
+#include "Glide.h"
 #include <cmath>
 #include <vector>
 
@@ -29,16 +30,20 @@ public:
             v = {};
     }
 
-    void noteOn (int voice, int midiNote, float velocity) override
+    void noteOn (int voice, const NoteEvent& e) override
     {
         auto& v = voices[(size_t) voice];
         // A retriggered voice keeps its phase and glides to the new velocity, so it never clicks
         if (! v.active)
-            v.amp = velocity;
-        v.note = midiNote;
-        v.target = velocity;
+        {
+            v.amp = e.velocity;
+            v.pitch.jumpTo (e.glideSeconds > 0.0 && e.glideFrom >= 0.0f ? e.glideFrom : (float) e.note);
+        }
+        if (! e.legato || ! v.active)
+            v.target = e.velocity;
+        v.pitch.glideTo ((float) e.note, e.glideSeconds, sr);
         v.active = true;
-        v.increment = incrementFor (v.note);
+        v.increment = incrementFor (v.pitch.getCurrent());
     }
 
     void noteOff (int) override {}
@@ -51,7 +56,7 @@ public:
         tune = semitones;
         for (auto& v : voices)
             if (v.active)
-                v.increment = incrementFor (v.note);
+                v.increment = incrementFor (v.pitch.getCurrent());
     }
 
     void setSlot (int slot, float value) override
@@ -69,6 +74,8 @@ public:
         constexpr double twoPi = juce::MathConstants<double>::twoPi;
         for (int i = 0; i < numSamples; ++i)
         {
+            if (v.pitch.isGliding())
+                v.increment = incrementFor (v.pitch.next());
             v.amp += (v.target - v.amp) * glideCoef;
             const float s = (float) std::sin (twoPi * v.phase) * v.amp * outputGain;
             left[i] += s;
@@ -83,15 +90,15 @@ private:
     {
         double phase = 0.0, increment = 0.0;
         float amp = 0.0f, target = 0.0f;
-        int note = 0;
+        PitchGlide pitch;
         bool active = false;
     };
 
     static constexpr float outputGain = 0.25f;   // about -12 dBFS per voice
 
-    double incrementFor (int note) const
+    double incrementFor (float pitch) const
     {
-        return 440.0 * std::pow (2.0, (note - 69 + octaveShift * 12 + (double) tune) / 12.0) / sr;
+        return 440.0 * std::exp2 ((pitch - 69.0 + octaveShift * 12 + (double) tune) / 12.0) / sr;
     }
 
     double sr = 48000.0;

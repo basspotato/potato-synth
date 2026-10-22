@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine.h"
 #include "Envelope.h"
+#include "Params.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <array>
 #include <atomic>
@@ -20,6 +21,8 @@ struct LayerParams
     std::atomic<float>* decayMs = nullptr;
     std::atomic<float>* sustainPercent = nullptr;
     std::atomic<float>* releaseMs = nullptr;
+    std::atomic<float>* voiceMode = nullptr;   // params::VoiceMode index
+    std::atomic<float>* glideMs = nullptr;
 };
 
 // One slot of the stack: an engine plus its per-layer controls.
@@ -31,6 +34,10 @@ struct LayerParams
 //
 // The layer owns each voice's amp envelope, so every engine gets the same click-free attack, release and
 // stealing. The outgoing engine keeps its own copy of the envelopes while it fades.
+//
+// Voice modes: Poly plays note slot i on voice i. Mono and Legato play every note on voice 0 with last-note
+// priority; releasing the newest key returns to the previous held one. Mono retriggers the envelope on every
+// note and glides whenever glide is up; Legato only glides between overlapping notes and does not retrigger.
 class Layer
 {
 public:
@@ -100,6 +107,7 @@ public:
             e.reset();
         if (active != nullptr)
             active->reset();
+        clearMonoNotes();
     }
 
     // ---- Audio thread ----------------------------------------------------------------------------
@@ -121,12 +129,14 @@ public:
                     }
                     outgoing = active;
                 }
+                clearMonoNotes();
                 active = isEmpty (next) ? (retireNow (next), nullptr) : next;
             }
         }
 
         level.setTargetValue (targetGain());
         updateControls (false);
+        updateVoiceMode();
         updateEnvelopeSettings();
         if (active != nullptr)
             active->setTune (tune.load());
@@ -148,30 +158,69 @@ public:
 
     Engine* engine() const noexcept { return active; }
 
-    void startVoice (int voice, int note, float velocity, uint32_t order)
+    // `slot` is the stack's note slot; in Poly it is also the voice.
+    void startVoice (int slot, int note, float velocity, uint32_t order)
     {
         if (! canPlay())
             return;
 
-        enforceVoiceCap (voice);
-        startOrder[(size_t) voice] = order;
-        active->noteOn (voice, note, velocity);
-        envelopes[(size_t) voice].trigger();
+        if (mode == params::VoiceMode::poly)
+        {
+            enforceVoiceCap (slot);
+            startOrder[(size_t) slot] = order;
+            active->noteOn (slot, { note, velocity, glideSeconds(), lastNote, false });
+            envelopes[(size_t) slot].trigger();
+        }
+        else
+        {
+            removeMonoNote (slot);
+            const bool keyAlreadyHeld = numMonoNotes > 0;
+            if (numMonoNotes == (int) monoNotes.size())
+                removeMonoNote (monoNotes[0].slot);   // more held keys than slots: forget the oldest
+            monoNotes[(size_t) numMonoNotes++] = { slot, note, velocity };
+            playMono (monoNotes[(size_t) numMonoNotes - 1], keyAlreadyHeld);
+        }
+        lastNote = (float) note;
     }
 
-    void releaseVoice (int voice)
+    void releaseVoice (int slot)
     {
-        auto& env = envelopes[(size_t) voice];
-        if (active != nullptr && env.isActive() && ! env.isStealing())
+        if (active == nullptr)
+            return;
+
+        if (mode == params::VoiceMode::poly)
         {
-            env.release();
-            active->noteOff (voice);
+            auto& env = envelopes[(size_t) slot];
+            if (env.isActive() && ! env.isStealing())
+            {
+                env.release();
+                active->noteOff (slot);
+            }
+            return;
+        }
+
+        if (! removeMonoNote (slot) || slot != monoOwner)
+            return;
+        if (numMonoNotes > 0)
+        {
+            const auto& previous = monoNotes[(size_t) numMonoNotes - 1];
+            playMono (previous, true);
+            lastNote = (float) previous.note;
+        }
+        else if (envelopes[0].isActive() && ! envelopes[0].isStealing())
+        {
+            envelopes[0].release();
+            active->noteOff (0);
         }
     }
 
-    bool isVoiceActive (int voice) const
+    bool isVoiceActive (int slot) const
     {
-        return active != nullptr && ! isMuted() && envelopes[(size_t) voice].isActive();
+        if (active == nullptr || isMuted())
+            return false;
+        if (mode == params::VoiceMode::poly)
+            return envelopes[(size_t) slot].isActive();
+        return slot == monoOwner && envelopes[0].isActive();
     }
 
     // Adds this layer's output into outL/outR. numSamples must not exceed the prepared block size.
@@ -204,7 +253,7 @@ private:
         const EngineInfo& info() const override { static const EngineInfo i { "", "Empty", 0, {} }; return i; }
         void prepare (double, int, int) override {}
         void reset() override {}
-        void noteOn (int, int, float) override {}
+        void noteOn (int, const NoteEvent&) override {}
         void noteOff (int) override {}
         void endVoice (int) override {}
         void setTune (float) override {}
@@ -261,6 +310,53 @@ private:
         }
         return anySounding;
     }
+
+    struct MonoNote { int slot = -1, note = 60; float velocity = 1.0f; };
+
+    void playMono (const MonoNote& n, bool keyAlreadyHeld)
+    {
+        auto& env = envelopes[0];
+        const bool sounding = env.isActive() && ! env.isStealing();
+        const bool legatoMove = mode == params::VoiceMode::legato && keyAlreadyHeld && sounding;
+        const bool glide = mode == params::VoiceMode::mono || legatoMove;
+
+        active->noteOn (0, { n.note, n.velocity, glide ? glideSeconds() : 0.0, lastNote, legatoMove });
+        if (! legatoMove)
+            env.trigger();
+        monoOwner = n.slot;
+    }
+
+    bool removeMonoNote (int slot)
+    {
+        for (int i = 0; i < numMonoNotes; ++i)
+            if (monoNotes[(size_t) i].slot == slot)
+            {
+                std::move (monoNotes.begin() + i + 1, monoNotes.begin() + numMonoNotes, monoNotes.begin() + i);
+                --numMonoNotes;
+                return true;
+            }
+        return false;
+    }
+
+    void clearMonoNotes()
+    {
+        numMonoNotes = 0;
+        monoOwner = -1;
+    }
+
+    // A mode change fades out whatever is sounding, so voices never hang between the two note layouts
+    void updateVoiceMode()
+    {
+        const auto newMode = (params::VoiceMode) juce::jlimit (0, 2, juce::roundToInt (load (params.voiceMode, 0.0f)));
+        if (newMode == mode)
+            return;
+        mode = newMode;
+        for (auto& env : envelopes)
+            env.steal();
+        clearMonoNotes();
+    }
+
+    double glideSeconds() const { return load (params.glideMs, 0.0f) * 0.001; }
 
     static float load (const std::atomic<float>* p, float fallback) { return p != nullptr ? p->load() : fallback; }
 
@@ -325,5 +421,10 @@ private:
     std::vector<AmpEnvelope> envelopes, outgoingEnvelopes;
     std::vector<float> scratchL, scratchR, voiceL, voiceR;
     std::vector<uint32_t> startOrder;
+
+    params::VoiceMode mode = params::VoiceMode::poly;
+    std::array<MonoNote, 16> monoNotes {};
+    int numMonoNotes = 0, monoOwner = -1;
+    float lastNote = -1.0f;   // MIDI note last played, where poly and mono glides start from
 };
 }

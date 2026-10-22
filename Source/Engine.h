@@ -12,6 +12,19 @@ struct SlotInfo
     float defaultValue = 0.0f;   // normalised 0..1
 };
 
+// A note starting (or moving) on a voice.
+struct NoteEvent
+{
+    int note = 60;
+    float velocity = 1.0f;
+    // Glide: when > 0 the voice glides to `note` over this time, from its current pitch if it is sounding,
+    // otherwise from `glideFrom` (a MIDI note; negative = no glide for an idle voice).
+    double glideSeconds = 0.0;
+    float glideFrom = -1.0f;
+    // Legato: the voice keeps its velocity, phase and any internal envelopes; only the pitch moves.
+    bool legato = false;
+};
+
 struct EngineInfo
 {
     juce::String id;             // permanent: saved in state
@@ -40,7 +53,8 @@ public:
     virtual void reset() = 0;
 
     // Starting a voice that is still sounding must be click-free (the engine glides from its current state).
-    virtual void noteOn (int voice, int midiNote, float velocity) = 0;
+    // Pitch glide should use PitchGlide (Glide.h) so every engine glides the same way.
+    virtual void noteOn (int voice, const NoteEvent& event) = 0;
     // Key released: the layer's envelope is now releasing. Engines with their own envelopes release them here.
     virtual void noteOff (int voice) = 0;
     // The layer's envelope has reached silence: drop the voice's state.

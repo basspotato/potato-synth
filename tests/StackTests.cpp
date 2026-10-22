@@ -318,6 +318,81 @@ void testOldStateLoadsDefaults()
     CHECK (peak (x, 480, 9600) > 0.1f, "and plays");
 }
 
+constexpr float poly = 0.0f, mono = 1.0f, legato = 2.0f;
+
+void testMonoLastNotePriority()
+{
+    Rig rig;
+    rig.set (ps::params::layerVoiceMode (2), mono);
+    auto x = rig.render (96000, { { 0, on (57) }, { 24000, on (64) }, { 48000, off (64) }, { 72000, off (57) } });
+    CHECK (std::abs (estimateFrequency (x, 4000, 24000) - 220.0) < 0.1, "mono plays the first note");
+    CHECK (std::abs (estimateFrequency (x, 28000, 48000) - 329.628) < 0.1, "a second key takes over (one pitch, no chord)");
+    CHECK (peak (x, 28000, 48000) < peak (x, 4000, 24000) * 1.1f, "mono never stacks two voices");
+    CHECK (std::abs (estimateFrequency (x, 52000, 72000) - 220.0) < 0.1, "releasing it returns to the held key");
+    CHECK (peak (x, 72000 + 43200, 96000) < 1.0e-4f, "releasing the last key ends the note");
+    CHECK (maxStep (x) < 0.05f, "mono note changes are click-free");
+}
+
+void testLegatoDoesNotRetrigger()
+{
+    auto run = [] (float mode)
+    {
+        Rig rig;
+        rig.set (ps::params::layerVoiceMode (2), mode);
+        rig.set (ps::params::layerDecay (2), 100.0f);
+        rig.set (ps::params::layerSustain (2), 25.0f);
+        return rig.render (48000, { { 0, on (60) }, { 24000, on (62) } });
+    };
+    auto leg = run (legato);
+    auto mon = run (mono);
+    const float sustained = peak (leg, 20000, 24000);
+    CHECK (peak (leg, 24000, 26400) < sustained * 1.1f, "legato keeps the envelope where it is");
+    CHECK (peak (mon, 24000, 26400) > sustained * 3.0f, "mono retriggers the envelope");
+    CHECK (maxStep (leg) < 0.05f && maxStep (mon) < 0.05f, "both are click-free");
+}
+
+void testGlide()
+{
+    Rig rig;
+    rig.set (ps::params::layerVoiceMode (2), mono);
+    rig.set (ps::params::layerGlide (2), 200.0f);
+    auto x = rig.render (72000, { { 0, on (57) }, { 24000, on (69) } });
+    const double mid = estimateFrequency (x, 24000 + 4320, 24000 + 5280);   // around 100 ms into the glide
+    CHECK (mid > 280.0 && mid < 340.0, "glide is halfway (in pitch) halfway through (" + std::to_string (mid) + " Hz)");
+    CHECK (std::abs (estimateFrequency (x, 24000 + 9800, 72000) - 440.0) < 0.1, "glide lands exactly on the note after its time");
+    CHECK (maxStep (x) < 0.05f, "glide is click-free");
+
+    Rig leg;
+    leg.set (ps::params::layerVoiceMode (2), legato);
+    leg.set (ps::params::layerGlide (2), 200.0f);
+    auto y = leg.render (48000, { { 0, on (57) }, { 12000, off (57) }, { 24000, on (69) } });
+    CHECK (std::abs (estimateFrequency (y, 24000 + 500, 24000 + 4000) - 440.0) < 0.5, "legato does not glide between separate notes");
+}
+
+void testPolyGlide()
+{
+    Rig rig;
+    rig.set (ps::params::layerGlide (2), 300.0f);
+    auto x = rig.render (72000, { { 0, on (57) }, { 12000, off (57) }, { 24000, on (69) } });
+    CHECK (estimateFrequency (x, 24000 + 480, 24000 + 2400) < 300.0, "poly glide starts a new voice from the last note");
+    CHECK (std::abs (estimateFrequency (x, 24000 + 15000, 72000) - 440.0) < 0.1, "and lands on its own note");
+}
+
+void testVoiceModeSwitchWhileSounding()
+{
+    Rig rig;
+    auto x = rig.render (12000, { { 0, on (60) }, { 10, on (64) }, { 20, on (67) } });
+    rig.set (ps::params::layerVoiceMode (2), mono);
+    auto y = rig.render (24000, { { 6000, on (72) } });
+    rig.set (ps::params::layerVoiceMode (2), poly);
+    auto z = rig.render (24000, { { 100, off (60) }, { 200, off (64) }, { 300, off (67) }, { 400, off (72) } });
+    x.insert (x.end(), y.begin(), y.end());
+    x.insert (x.end(), z.begin(), z.end());
+    CHECK (maxStep (x) < 0.05f, "switching voice mode while playing is click-free");
+    CHECK (std::abs (estimateFrequency (y, 8000, 24000) - 523.251) < 0.1, "mono plays after a switch from poly");
+    CHECK (peak (z, 12000, 24000) < 1.0e-4f, "no voice hangs after switching back");
+}
+
 void testOddBlockSizes()
 {
     Rig rig;
@@ -346,6 +421,11 @@ int main()
     testPan();
     testTune();
     testOldStateLoadsDefaults();
+    testMonoLastNotePriority();
+    testLegatoDoesNotRetrigger();
+    testGlide();
+    testPolyGlide();
+    testVoiceModeSwitchWhileSounding();
     testOddBlockSizes();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
