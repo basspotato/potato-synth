@@ -105,6 +105,10 @@ public:
 
     virtual void setSlot (int slot, float normalisedValue) { juce::ignoreUnused (slot, normalisedValue); }
 
+    // For the Harmony Engine's beat ceiling: the widest pitch gap between neighbouring unison voices, in cents,
+    // if the engine's detune-role slot were at this value (other settings as they are now). 0 = no unison.
+    virtual float detuneSpacingCents (float detuneValue) const { juce::ignoreUnused (detuneValue); return 0.0f; }
+
     // Called once before the voices of each rendered chunk (numSamples at most the prepared block size), for
     // engine-wide work at control rate (the Spectral engine rebuilds its spectrum here).
     virtual void beginBlock (int numSamples) { juce::ignoreUnused (numSamples); }

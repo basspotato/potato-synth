@@ -117,7 +117,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     padXSmoothed = padX->load();
     padYSmoothed = padY->load();
     superSmoothed = superKnob->load();
-    driftState = driftSmoothed = 0.0f;
+    driftTime = 0.0;
     // Every layer and role starts at its own point of the cycle (golden-angle offsets)
     for (int l = 0; l < ps::params::numLayers; ++l)
         for (int r = 0; r < ps::numSlotRoles; ++r)
@@ -535,19 +535,18 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
         if (roles[(size_t) i] == ps::params::Role::sub || roles[(size_t) i] == ps::params::Role::body)
             offsets.slot[(size_t) i][(size_t) ps::SlotRole::subOctave] += 0.5f * d;
 
-    // BLOOM. Drift: one Ornstein-Uhlenbeck walk for the stack (mean reversion theta at about 0.3 Hz, stationary
-    // deviation sigma), sampled exactly at block rate, then a 2 Hz low-pass so the pitch glides between blocks.
+    // BLOOM. Drift: one slow wobble for the whole stack, never random (user, 2026-10-22): two sines at 0.17 Hz and
+    // 0.17 x golden ratio (unit RMS, so the knob's cents are its standard deviation). It restarts from zero
+    // whenever the stack falls silent, so every phrase moves the same way.
     // Motion: each slot role swings on a slow sine, the rates spaced by powers of the golden ratio so the
     // layers' movements never line up into an obvious loop.
     const float dt = (float) numSamples / (float) getSampleRate();
-    const float decay = std::exp (-juce::MathConstants<float>::twoPi * 0.3f * dt);
-    const float smooth = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * 2.0f * dt);
-    {
-        const float u1 = juce::jmax (1.0e-7f, driftRandom.nextFloat()), u2 = driftRandom.nextFloat();
-        const float gauss = std::sqrt (-2.0f * std::log (u1)) * std::cos (juce::MathConstants<float>::twoPi * u2);
-        driftState = driftState * decay + std::sqrt (1.0f - decay * decay) * gauss;   // unit stationary deviation
-        driftSmoothed += (driftState - driftSmoothed) * smooth;
-    }
+    if (stack.activeNoteCount() == 0)
+        driftTime = 0.0;
+    else
+        driftTime += dt;
+    const float driftWobble = (float) (std::sin (juce::MathConstants<double>::twoPi * 0.17 * driftTime)
+                                       + std::sin (juce::MathConstants<double>::twoPi * 0.17 * 1.618034 * driftTime));
     for (int l = 0; l < ps::params::numLayers; ++l)
     {
         for (int r = 0; r < ps::numSlotRoles; ++r)
@@ -573,9 +572,10 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
+        stack.layer (i).setBeatCeiling (offsets.beatCeiling);
         stack.layer (i).setOnsetDuck (offsets.onsetDuckDb[(size_t) i], offsets.onsetDuckMs);
         stack.layer (i).setCarveGains (carve[(size_t) i], carving);
-        stack.layer (i).setChainDrift (offsets.driftCents[(size_t) i] * driftSmoothed);
+        stack.layer (i).setChainDrift (offsets.driftCents[(size_t) i] * driftWobble);
         stack.layer (i).setChainInserts (offsets.layerDrive[(size_t) i], offsets.layerChorus[(size_t) i]);
     }
     return offsets;

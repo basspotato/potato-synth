@@ -2135,6 +2135,60 @@ void benchmarkDirt()
     CHECK (best < 20.0, "Dirt stack CPU is within budget");
 }
 
+// BLOOM's pitch motion is a fixed wobble, never random: the same playing renders the same samples
+void testBloomIsRepeatable()
+{
+    auto play = []
+    {
+        Rig rig;
+        rig.set (ps::params::chainKnob (ps::chain::bloom), 1.0f);
+        rig.render (48000);   // the knob glides in
+        return rig.render (96000, { { 0, on (57) }, { 48000, on (64) } });
+    };
+    CHECK (play() == play(), "BLOOM: the stack's pitch motion repeats exactly (no random drift)");
+
+    // ...and it restarts with every phrase: the same moment of a phrase after the stack falls silent has the
+    // same pitch offset
+    Rig rig;
+    rig.set (ps::params::chainKnob (ps::chain::bloom), 1.0f);
+    rig.render (48000);
+    rig.render (36000, { { 0, on (57) } });
+    const float first = rig.proc->getStack().layer (2).chainDrift();
+    rig.render (48000 * 15, { { 0, off (57) } });   // the space's tail dies away
+    rig.render (36000, { { 0, on (57) } });
+    const float second = rig.proc->getStack().layer (2).chainDrift();
+    CHECK (std::abs (first - second) < 1.0e-4f && std::abs (first) > 0.1f,
+           "BLOOM: the wobble restarts with every phrase (" + std::to_string (first) + " ct, then " + std::to_string (second) + " ct)");
+}
+
+// Invariant 5: SCALE's added detune stops at the beat ceiling (CLARITY lowers it); the patch's own detune is
+// never changed
+void testBeatCeiling()
+{
+    ps::JpEngine reference;
+    auto sentDetune = [] (float patchDetune, float scale, float clarity)
+    {
+        JpRig rig ({ { Jp::detune, patchDetune } });
+        rig.set (ps::params::layerRole (2), (float) ps::params::Role::mid);
+        rig.set (ps::params::chainKnob (ps::chain::scale), scale);
+        rig.set (ps::params::chainKnob (ps::chain::clarity), clarity);
+        rig.render (48000, { { 0, on (60) } });   // the knobs glide
+        return rig.proc->getStack().layer (2).sentSlot (Jp::detune);
+    };
+    const float free = sentDetune (0.5f, 1.0f, 0.0f);
+    CHECK (std::abs (free - 0.7f) < 1.0e-3f, "beat ceiling: SCALE adds its full detune below the ceiling (" + std::to_string (free) + ")");
+    const float capped = sentDetune (0.9f, 1.0f, 0.0f);
+    const float cents = reference.detuneSpacingCents (capped);
+    CHECK (capped > 0.9f && cents <= 48.4f && cents > 47.0f,
+           "beat ceiling: SCALE stops at 48 cents between neighbouring voices (" + std::to_string (cents) + " ct)");
+    const float clear = sentDetune (0.85f, 1.0f, 1.0f);
+    const float clearCents = reference.detuneSpacingCents (clear);
+    CHECK (clearCents <= std::max (29.2f, reference.detuneSpacingCents (0.85f)) + 0.1f,
+           "beat ceiling: CLARITY lowers the ceiling to 29 cents (" + std::to_string (clearCents) + " ct)");
+    CHECK (std::abs (sentDetune (1.0f, 0.0f, 0.0f) - 1.0f) < 1.0e-6f && std::abs (sentDetune (1.0f, 1.0f, 0.0f) - 1.0f) < 1.0e-6f,
+           "beat ceiling: the patch's own detune is never reduced");
+}
+
 // ---- Genome engine ---------------------------------------------------------------------------------------
 
 using Genome = ps::GenomeEngine;
@@ -3173,6 +3227,8 @@ int main()
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_CHAIN_ONLY", {}).isNotEmpty())   // iterating on the knobs
     {
         testChainPaths();
+        testBeatCeiling();
+        testBloomIsRepeatable();
         testBassHarmonics();
         testOnsetDuck();
         testBloomSpace();
@@ -3231,6 +3287,8 @@ int main()
     testDirtSwitchesDoNotClick();
     testGenomeEngine();
     testGenomeSwitchesDoNotClick();
+    testBeatCeiling();
+    testBloomIsRepeatable();
     testArpeggiator();
     testStepSequencer();
     testArpThroughTheSynth();

@@ -88,6 +88,13 @@ public:
 
     void setTune (float semitones) override { tune = semitones; }
 
+    float detuneSpacingCents (float detuneValue) const override
+    {
+        UnisonLayout layout;
+        layout.set ((UnisonLayout::Mode) choice (target[unison], numUnison), detuneValue, 1.0f, 0.0f);
+        return layout.widestGapCents();
+    }
+
     void setSlot (int slot, float value) override
     {
         if (slot < 0 || slot >= numUsedSlots)

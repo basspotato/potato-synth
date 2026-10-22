@@ -86,6 +86,9 @@ public:
     void endVoice (int index) override { resetVoice (voices[(size_t) index]); }
     void setTune (float semitones) override { tune = semitones; }
 
+    // Jupiter's side oscillators sit this far either side of the core
+    float detuneSpacingCents (float detuneValue) const override { return detuneCents (detuneValue); }
+
     void setSlot (int slot, float value) override
     {
         if (slot >= 0 && slot < numUsedSlots)

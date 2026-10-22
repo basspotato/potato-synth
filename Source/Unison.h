@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_core/juce_core.h>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include "Simd.h"
@@ -77,6 +78,18 @@ struct UnisonLayout
         const float norm = 1.0f / std::sqrt (power);
         for (int i = 0; i < count; ++i)
             gain[(size_t) i] *= norm;
+    }
+
+    // The widest gap between neighbouring voices in pitch, in cents (0 without unison): what sets the fastest
+    // beating between adjacent partials, for the Harmony Engine's beat ceiling
+    float widestGapCents() const noexcept
+    {
+        std::array<float, maxVoices> sorted = ratio;
+        std::sort (sorted.begin(), sorted.begin() + count);
+        float widest = 0.0f;
+        for (int i = 1; i < count; ++i)
+            widest = std::max (widest, sorted[(size_t) i] / sorted[(size_t) i - 1]);
+        return count > 1 ? 1200.0f * std::log2 (widest) : 0.0f;
     }
 
     // Szabo (2010): measured JP-8000 detune knob response, 0..1 in, 0..1 out

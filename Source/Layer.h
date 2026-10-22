@@ -152,8 +152,20 @@ public:
         chainSlots = slotOffsets;
     }
 
+    // Invariant 5, consonant beating: the knobs may add detune only while the widest gap between neighbouring
+    // unison voices stays under share x ERB at the top of the useful partial range (5 kHz, where the rule binds:
+    // 48 cents at 0.25, 29 at 0.15). The patch's own detune is never touched; above the ceiling the knobs add none.
+    void setBeatCeiling (float share) noexcept
+    {
+        beatCeilingCents = 1200.0f * std::log2 (1.0f + share * (0.1079f + 24.7f / 5000.0f));
+    }
+
+    // The value last sent to the engine for a slot (patch value plus the knobs' offset)
+    float sentSlot (int slot) const noexcept { return lastSlot[(size_t) slot]; }
+
     // BLOOM's pitch drift on top of the layer's tune, in cents (the engines' setTune is phase-continuous)
     void setChainDrift (float cents) noexcept { chainDriftCents = cents; }
+    float chainDrift() const noexcept { return chainDriftCents; }
 
     // The chain knobs' drive and chorus on top of the patch's (0..1 each)
     void setChainInserts (float drive, float chorusAmount) noexcept
@@ -897,7 +909,10 @@ private:
                 continue;
             float v = params.slots[k]->load();
             if (k < infoSlots.size() && infoSlots[k].role != SlotRole::none)
-                v = juce::jlimit (0.0f, 1.0f, v + chainSlots[(size_t) infoSlots[k].role]);
+            {
+                const float offset = chainSlots[(size_t) infoSlots[k].role];
+                v = juce::jlimit (0.0f, 1.0f, infoSlots[k].role == SlotRole::detune && offset > 0.0f ? v + ceilingLimited (v, offset) : v + offset);
+            }
             if (! slotsSent || v < lastSlot[k] || v > lastSlot[k])
             {
                 active->setSlot ((int) k, v);
@@ -905,6 +920,23 @@ private:
             }
         }
         slotsSent = true;
+    }
+
+    // The share of a positive detune offset the beat ceiling allows from the patch's value (bisection: the
+    // spacing rises with detune)
+    float ceilingLimited (float base, float offset) const noexcept
+    {
+        const float allowed = juce::jmax (beatCeilingCents, active->detuneSpacingCents (base));
+        const float top = juce::jmin (1.0f, base + offset);
+        if (active->detuneSpacingCents (top) <= allowed)
+            return offset;
+        float lo = base, hi = top;
+        for (int i = 0; i < 14; ++i)
+        {
+            const float mid = 0.5f * (lo + hi);
+            (active->detuneSpacingCents (mid) <= allowed ? lo : hi) = mid;
+        }
+        return lo - base;
     }
 
     // When the engine's voice budget is full, the oldest sounding voice fades out to make room.
@@ -939,6 +971,7 @@ private:
     std::array<float, Engine::numSlots> lastSlot {};   // audio thread only
     float chainLevelDb = 0.0f;
     std::array<float, numSlotRoles> chainSlots {};
+    float beatCeilingCents = 48.0f;
     OnsetDuck duck;
     float chainDriftCents = 0.0f, chainDrive = 0.0f, chainChorus = 0.0f;
     harmony::CarveBank carve;

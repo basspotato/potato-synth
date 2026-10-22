@@ -91,7 +91,7 @@ enum class Target
     carveDepthDb,      // band ownership: the most a non-owning layer is dipped, dB (HarmonyEngine.h)
     carveTemperature,  // band ownership softmax temperature: high = soft, low = one sharp owner per band
     deHarsh,           // the 2-5 kHz dynamic bell's amount, 0..1 (StackBus.h DeHarsh)
-    driftCents,        // matching layers' pitch drift, standard deviation in cents (Ornstein-Uhlenbeck)
+    driftCents,        // matching layers' pitch drift, RMS in cents (a slow, repeating wobble)
     slotMotion,        // a slot role on matching layers swings by this much (slow LFOs, golden-ratio rates)
     spaceWet,          // the shared reverb's return, linear gain (Space.h)
     spaceRt60,         // its decay, seconds
@@ -99,6 +99,7 @@ enum class Target
     layerDrive,        // matching layers' drive (Drive.h LayerDrive), added to the patch's, 0..1
     layerChorus,       // matching layers' chorus amount (Inserts.h), added to the patch's, 0..1
     loudnessLiftDb,    // the loudness the Harmony Engine holds, raised by this much (kept inside +-0.5 LU)
+    beatCeiling,       // invariant 5: the knobs' added detune keeps beating under this share of a critical band
 };
 
 // Which layers a route applies to: a bit per params::Role
@@ -182,6 +183,7 @@ inline const std::vector<Route>& routes()
         // Less detune beats slower but reads quieter (0.67 LU at -0.15 on the init stack): a lighter pull, and a lift
         { clarity, Target::slot, anyRole, SlotRole::detune, Path ({ 0.0f, -0.02f, -0.04f, -0.06f, -0.08f }) },
         { clarity, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.19f, 0.25f }) },
+        { clarity, Target::beatCeiling, anyRole, SlotRole::none, Path ({ 0.25f, 0.225f, 0.2f, 0.175f, 0.15f }) },
 
         // BLOOM: life and motion. The whole stack drifts together: a drift between layers would slowly phase
         // their sum in every band they share (the sub/body crossover first), costing punch and up to 3 dB at
@@ -231,6 +233,7 @@ struct Offsets
     float spaceWet = 0.0f, spaceRt60 = 0.8f, spaceDuck = 0.0f;
     std::array<float, params::numLayers> layerDrive {}, layerChorus {};
     float loudnessLiftDb = 0.0f;
+    float beatCeiling = 0.25f;
 };
 
 // u: each knob's position 0..1 (SUPER already folded in); roles: each layer's role
@@ -262,6 +265,7 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
             case Target::spaceRt60:       o.spaceRt60 = v; break;
             case Target::spaceDuck:       o.spaceDuck += v; break;
             case Target::loudnessLiftDb:  o.loudnessLiftDb += v; break;
+            case Target::beatCeiling:     o.beatCeiling = v; break;
             case Target::driftCents:
             case Target::layerDrive:
             case Target::layerChorus:
