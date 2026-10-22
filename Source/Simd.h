@@ -59,6 +59,7 @@ namespace simd
     {
         __m256i v;
         I (__m256i x) : v (x) {}
+        friend I operator+ (I a, I b) { return _mm256_add_epi32 (a.v, b.v); }
     };
     inline I truncate (F x)                       { return _mm256_cvttps_epi32 (x.v); }
     inline F toFloat (I x)                        { return _mm256_cvtepi32_ps (x.v); }
@@ -105,6 +106,7 @@ namespace simd
     {
         int v;
         I (int x) : v (x) {}
+        friend I operator+ (I a, I b) { return a.v + b.v; }
     };
     inline I truncate (F x)                       { return (int) x.v; }
     inline F toFloat (I x)                        { return (float) x.v; }

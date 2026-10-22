@@ -991,6 +991,32 @@ void testWavetableEngine()
     }
 
     {
+        // Warp: bends a sine into a brighter wave, stays band-limited at its widest, and keeps the level near
+        WtRig plain ({ { Wt::unison, off } }), bent ({ { Wt::unison, off }, { Wt::warp, 1.0f } });
+        auto a = plain.render (36000, { { 0, on (45) } });
+        auto b = bent.render (36000, { { 0, on (45) } });
+        CHECK (bandEnergy (b, 12000, 300.0, 20000.0) > 100.0f * bandEnergy (a, 12000, 300.0, 20000.0), "Warp adds harmonics");
+        const float levelChange = juce::Decibels::gainToDecibels (rms (b, 12000, 36000) / rms (a, 12000, 36000));
+        std::cout << "info: full Warp moves the level " << levelChange << " dB\n";
+        CHECK (std::abs (levelChange) < 1.0f, "Warp keeps the level within 1 dB (" + std::to_string (levelChange) + " dB)");
+        for (float w : { 0.0f, 1.0f })
+            for (int note : { 40, 96 })
+            {
+                WtRig rig ({ { Wt::unison, off }, { Wt::table, tableValue (5) }, { Wt::position, 1.0f }, { Wt::warp, w } });
+                auto x = rig.render (48000, { { 0, on (note, 1.0f) } });
+                const float db = worstAliasDb (x, 24000, 440.0 * std::pow (2.0, (note - 69) / 12.0));
+                CHECK (db < -60.0f, "Digital at full " + std::string (w > 0.5f ? "+" : "-") + "Warp, note " + std::to_string (note)
+                                        + ", is band-limited (" + std::to_string (db) + " dB)");
+            }
+    }
+    {
+        // Pos Spread: Modern 8 on a sine frame, fanned across Basic, reads brighter frames on its outer voices
+        WtRig narrow, fanned ({ { Wt::posSpread, 1.0f } });
+        auto a = narrow.render (36000, { { 0, on (45) } });
+        auto b = fanned.render (36000, { { 0, on (45) } });
+        CHECK (bandEnergy (b, 12000, 300.0, 20000.0) > 100.0f * bandEnergy (a, 12000, 300.0, 20000.0), "Pos Spread fans the voices across the table");
+    }
+    {
         // A glide up through every band limit (each change crossfades between the two copies)
         WtRig rig ({ { Wt::unison, off }, { Wt::position, 0.67f } });
         rig.set (ps::params::layerVoiceMode (2), mono);
@@ -1001,9 +1027,9 @@ void testWavetableEngine()
         CHECK (worstAliasDb (x, 70000, 440.0 * std::pow (2.0, (96 - 69) / 12.0)) < -60.0f, "and lands band-limited");
     }
 
-    const char* names[] = { "table", "unison mode", "position", "detune" };
+    const char* names[] = { "table", "unison mode", "position", "detune", "warp", "pos spread" };
     const std::pair<int, float> moves[] = { { Wt::table, tableValue (3) }, { Wt::unison, Wt::choiceValue (4, Wt::numUnison) },
-                                            { Wt::position, 1.0f }, { Wt::detune, 1.0f } };
+                                            { Wt::position, 1.0f }, { Wt::detune, 1.0f }, { Wt::warp, 0.0f }, { Wt::posSpread, 1.0f } };
     for (size_t m = 0; m < std::size (moves); ++m)
     {
         WtRig rig ({ { Wt::position, 0.3f } });

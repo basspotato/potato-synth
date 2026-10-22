@@ -20,6 +20,8 @@ class Wavetables
 {
 public:
     static constexpr int frameSize = 2048, numFrames = 32, numLevels = 20, maxHarmonic = frameSize / 2, stride = frameSize + 3;
+    static constexpr int numWarpPoints = 17;
+    static constexpr float maxWarp = 0.95f;
 
     // Harmonics kept at a level: 1023, 724, 512, 362, ... 1
     static int harmonicsAt (int level) noexcept
@@ -34,10 +36,25 @@ public:
         // index reads straight through without wrapping
         std::vector<float> data;
 
+        // Gain that loudness-matches a frame under Warp depth b (see warpGain below), at numWarpPoints depths
+        std::vector<float> warpGains;   // [frame][numWarpPoints]
+
         // Points at x[0] of a frame
         const float* frame (int f, int level) const noexcept
         {
             return data.data() + ((size_t) f * numLevels + (size_t) level) * stride + 1;
+        }
+
+        // The Warp loudness match at a (fractional) frame position and depth b in [-maxWarp, maxWarp]
+        float warpGain (float framePos, float b) const noexcept
+        {
+            const float w = juce::jlimit (0.0f, (float) (numWarpPoints - 1), (b / maxWarp + 1.0f) * 0.5f * (float) (numWarpPoints - 1));
+            const int f0 = juce::jlimit (0, numFrames - 2, (int) framePos), w0 = juce::jmin (numWarpPoints - 2, (int) w);
+            const float ff = juce::jlimit (0.0f, 1.0f, framePos - (float) f0), wf = w - (float) w0;
+            auto at = [this] (int f, int k) { return warpGains[(size_t) (f * numWarpPoints + k)]; };
+            const float g0 = at (f0, w0) + (at (f0, w0 + 1) - at (f0, w0)) * wf;
+            const float g1 = at (f0 + 1, w0) + (at (f0 + 1, w0 + 1) - at (f0 + 1, w0)) * wf;
+            return g0 + (g1 - g0) * ff;
         }
     };
 
@@ -60,11 +77,21 @@ public:
 
     // The band-limit level for a fundamental: its highest harmonic stays at or below sampleRate - 20 kHz, so
     // anything past Nyquist folds back above 20 kHz and stays inaudible.
-    static int levelFor (float f0, float sampleRate) noexcept
+    //
+    // Under Warp depth b, harmonic h is phase-modulated with index beta = h |b|, and its sidebands J_n(beta)
+    // spread n harmonics either side. They fall below -60 dB (J_n < 1e-3) once n > beta + 3 beta^(1/3) + 2
+    // (checked against the Bessel functions for beta up to 1000), so the top harmonic plus that spread must fit.
+    static int levelFor (float f0, float sampleRate, float warp = 0.0f) noexcept
     {
         const float highest = juce::jmax (1.0f, (sampleRate - 20000.0f) / juce::jmax (1.0f, f0));
+        const float b = std::abs (warp);
+        auto reach = [b] (float h)
+        {
+            const float beta = h * b;
+            return beta > 0.0f ? h + beta + 3.0f * std::cbrt (beta) + 2.0f : h;
+        };
         int level = 0;
-        while (level < numLevels - 1 && (float) harmonicsAt (level) > highest)
+        while (level < numLevels - 1 && reach ((float) harmonicsAt (level)) > highest)
             ++level;
         return level;
     }
@@ -125,7 +152,39 @@ private:
                 out[frameSize + 1] = out[1];
             }
         }
+        measureWarpGains (t);
         tables.push_back (std::move (t));
+    }
+
+    // Warp reads a frame at phi(t) = t + b/(2 pi) sin(2 pi t), which moves its RMS by an amount that depends on
+    // where the frame's energy sits in its cycle (a sine loses about 1.7 dB at full depth). Measure it once per
+    // frame and depth on a 256-harmonic copy, so the engine can play every warp at the frame's own level.
+    static void measureWarpGains (Table& t)
+    {
+        t.warpGains.assign ((size_t) numFrames * numWarpPoints, 1.0f);
+        constexpr int points = 4 * frameSize, level = 4;
+        for (int f = 0; f < numFrames; ++f)
+        {
+            const float* x = t.frame (f, level);
+            for (int k = 0; k < numWarpPoints; ++k)
+            {
+                const double b = maxWarp * (2.0 * k / (numWarpPoints - 1) - 1.0);
+                double plain = 0.0, warped = 0.0;
+                for (int i = 0; i < points; ++i)
+                {
+                    const double ph = (double) i / points;
+                    double phi = ph + b / juce::MathConstants<double>::twoPi * std::sin (juce::MathConstants<double>::twoPi * ph);
+                    phi -= std::floor (phi);
+                    const double idx = phi * frameSize;
+                    const int i0 = juce::jmin (frameSize - 1, (int) idx);
+                    const double s = x[i0] + (x[i0 + 1] - x[i0]) * (idx - i0);
+                    const double p = x[(i / 4) % frameSize];
+                    warped += s * s;
+                    plain += p * p;
+                }
+                t.warpGains[(size_t) (f * numWarpPoints + k)] = warped > 1.0e-12 ? (float) std::sqrt (plain / warped) : 1.0f;
+            }
+        }
     }
 
     // ---- Factory spectra ---------------------------------------------------------------------------------
