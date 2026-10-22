@@ -63,6 +63,10 @@ private:
     void applyLayerEnginesFromState();
     juce::String slotText (int layer, int slot, float value) const;
     void migrateState (juce::ValueTree& state) const;
+    // BUILD and DROP (momentary): build ramps up over two bars while held; drop engages on the next bar line
+    // while the host plays (at once when it doesn't) and lets go on release
+    struct Performance { float build = 0.0f, drop = 0.0f; bool dropArmed = false, dropOn = false; };
+    void updatePerformance (int numSamples, double bpm, double ppq, double barStart, double barLength);
     ps::chain::Offsets updateChainKnobs (int numSamples);
 
     ps::LayerStack stack;
@@ -73,12 +77,17 @@ private:
     std::atomic<float>* safeOutputOn = nullptr;
     std::array<std::atomic<float>*, ps::params::numChainKnobs> chainKnobs {};
     std::atomic<float>* superKnob = nullptr;
+    std::atomic<float>* buildButton = nullptr;
+    std::atomic<float>* dropButton = nullptr;
+    Performance performance;
+    float dropSmoothed = 0.0f;
     std::array<float, ps::params::numChainKnobs> knobPosition {};   // smoothed, audio thread
     ps::LowFocus lowFocus;
     ps::Pressure pressure;
     ps::Tilt tilt;
     ps::DeHarsh deHarsh;
     ps::Space space;
+    ps::BuildStage buildStage;
     // BLOOM's motion: the stack's drift (Ornstein-Uhlenbeck, then smoothed) and slow slot LFO phases
     float driftState = 0.0f, driftSmoothed = 0.0f;
     std::array<std::array<float, ps::numSlotRoles>, ps::params::numLayers> motionPhase {};

@@ -26,6 +26,9 @@ namespace ps::params
     }
     inline const char* const chainKnobNames[numChainKnobs] = { "MASS", "SCALE", "PRESSURE", "GROOVE", "CLARITY", "SHINE", "MORPH", "BLOOM" };
     inline const juce::ParameterID super { "super", 7 };
+    // Momentary performance buttons (ChainKnobs.h Performance)
+    inline const juce::ParameterID build { "build", 8 };
+    inline const juce::ParameterID drop { "drop", 8 };
 
     // Per-layer parameters follow the pattern L{n}_name with n = 1..4 (expandable to 8)
     inline juce::ParameterID layerParam (int layerIndex, const char* name, int version)
@@ -119,6 +122,8 @@ namespace ps::params
         for (int k = 0; k < numChainKnobs; ++k)
             layout.add (std::make_unique<juce::AudioParameterFloat> (chainKnob (k), chainKnobNames[k], juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, percentText));
         layout.add (std::make_unique<juce::AudioParameterFloat> (super, "SUPER", juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, percentText));
+        layout.add (std::make_unique<juce::AudioParameterBool> (build, "BUILD", false));
+        layout.add (std::make_unique<juce::AudioParameterBool> (drop, "DROP", false));
 
         for (int i = 0; i < numLayers; ++i)
             layout.add (std::make_unique<juce::AudioParameterFloat> (

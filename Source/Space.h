@@ -75,7 +75,11 @@ public:
         wet = 0.0f;
         envelope = 0.0f;
         running = false;
+        killing = 0;
     }
+
+    // DROP: the tail is cut over 20 ms, then the network starts clean; the return comes back with new sound
+    void killTail() noexcept { killing = (int) (0.02f * sr); }
 
     // wetGain: the return's level (linear); rt60: seconds; damping: RT60 ratio at 8 kHz (0..1);
     // duck: 0..1, how far the return dips under the dry signal. Adds the return into left/right.
@@ -157,7 +161,13 @@ public:
             wet += step;
             const float mid = (float) returnMidHigh.process (0.5f * (outL + outR)).high;
             const float side = (float) returnSideHigh.process (0.5f * (outL - outR));
-            const float gw = wet * duckGain;
+            float gw = wet * duckGain;
+            if (killing > 0)
+            {
+                gw *= (float) killing / (0.02f * sr);
+                if (--killing == 0)
+                    clearLines();
+            }
             left[n] += gw * (mid + side);
             right[n] += gw * (mid - side);
         }
@@ -168,6 +178,15 @@ public:
 
 private:
     static constexpr float modDepthMs = 0.25f;
+
+    void clearLines() noexcept
+    {
+        for (auto& line : lines)
+            std::fill (line.begin(), line.end(), 0.0f);
+        for (auto& p : preDelay)
+            std::fill (p.begin(), p.end(), 0.0f);
+        damp.fill (0.0f);
+    }
 
     // In-place 8-point fast Walsh-Hadamard, scaled by 1/sqrt(8) so it is unitary
     static void hadamard (std::array<float, numLines>& x) noexcept
@@ -200,6 +219,7 @@ private:
     int mask = 0, writePos = 0, preMask = 0, prePos = 0, preDelaySamples = 0;
     float dampG = 0.5f, wet = 0.0f, envelope = 0.0f, envAttack = 0.01f, envRelease = 0.001f;
     bool running = false;
+    int killing = 0;
     std::array<SvfFilter, 2> sendHigh {};
     SvfFilter returnMidHigh;
     LinkwitzRiley4 returnSideHigh { LinkwitzRiley4::Type::highPass };

@@ -22,6 +22,8 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     for (int k = 0; k < ps::params::numChainKnobs; ++k)
         chainKnobs[(size_t) k] = apvts.getRawParameterValue (ps::params::chainKnob (k).getParamID());
     superKnob = apvts.getRawParameterValue (ps::params::super.getParamID());
+    buildButton = apvts.getRawParameterValue (ps::params::build.getParamID());
+    dropButton = apvts.getRawParameterValue (ps::params::drop.getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         namespace p = ps::params;
@@ -59,6 +61,8 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     tilt.prepare (sampleRate);
     deHarsh.prepare (sampleRate);
     space.prepare (sampleRate, samplesPerBlock);
+    buildStage.prepare (sampleRate);
+    performance = {};
     driftState = driftSmoothed = 0.0f;
     // Every layer and role starts at its own point of the cycle (golden-angle offsets)
     for (int l = 0; l < ps::params::numLayers; ++l)
@@ -136,11 +140,8 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     auto* left = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (1);
 
-    const auto offsets = updateChainKnobs (n);
-    stack.process (buffer, midi);
-
-    // The host's tempo and beat position (120 BPM, free-running, without a host transport)
-    double bpm = 120.0, ppq = -1.0;
+    // The host's tempo, beat and bar position (120 BPM 4/4, free-running, without a host transport)
+    double bpm = 120.0, ppq = -1.0, barStart = 0.0, barLength = 4.0;
     if (auto* playHead = getPlayHead())
         if (const auto position = playHead->getPosition())
         {
@@ -148,7 +149,15 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 bpm = *b;
             if (const auto p = position->getPpqPosition(); p && position->getIsPlaying())
                 ppq = *p;
+            if (const auto bar = position->getPpqPositionOfLastBarStart())
+                barStart = *bar;
+            if (const auto sig = position->getTimeSignature(); sig && sig->denominator > 0)
+                barLength = 4.0 * sig->numerator / sig->denominator;
         }
+
+    updatePerformance (n, bpm, ppq, barStart, barLength);
+    const auto offsets = updateChainKnobs (n);
+    stack.process (buffer, midi);
 
     // Stack sum with sqrt-weights: the layers are scaled by 1 / sqrt(n), n the number of layers counted by
     // their level (a layer at 0 dB counts 1, a fading one less), so adding or fading in a layer keeps the
@@ -164,6 +173,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // The bus stages the knobs drive, measured in and out for the loudness trim (only while one is working)
     knobStagesIn.process (left, right, n);
     bool active = lowFocus.process (left, right, n, offsets.lowFocusDb);
+    active = buildStage.process (left, right, n, performance.build, 0.5f * knobStagesIn.getPower(), bpm) || active;
     active = tilt.process (left, right, n, offsets.tiltDbPerOct) || active;
     active = space.process (left, right, n, offsets.spaceWet, offsets.spaceRt60, 0.5f, offsets.spaceDuck) || active;
     active = deHarsh.process (left, right, n, offsets.deHarsh) || active;
@@ -191,8 +201,10 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         knobGain[(size_t) i] = layer.knobGain() * std::sqrt (layer.carvePowerRatio());
     }
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
-                         (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio()
-                         / pump.powerRatio(), n);   // applied inside the clipper, after its knob stages
+                         (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n);
+    // The pump's makeup is exact and immediate (no meter to wait for), so it rides on top of the smoothed trim.
+    // Both go in inside the clipper, after its knob stages.
+    const float trim = juce::jlimit (0.25f, 4.0f, loudnessTrim.getGain() / std::sqrt (pump.powerRatio()));
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
     masterGain.applyGain (buffer, buffer.getNumSamples());
@@ -201,8 +213,41 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // guarantees the -1 dBTP ceiling the clipper's decimation filter can overshoot. The loudness trim goes in
     // just before the clipper's curve.
     const bool safe = safeOutputOn->load() > 0.5f;
-    clipper.process (buffer, safe, pressure.getAmount(), offsets.exciter, loudnessTrim.getGain());
+    clipper.process (buffer, safe, pressure.getAmount(), offsets.exciter, trim);
     limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
+}
+
+void PotatoSynthProcessor::updatePerformance (int numSamples, double bpm, double ppq, double barStart, double barLength)
+{
+    auto& p = performance;
+    const double beats = numSamples * juce::jlimit (20.0, 400.0, bpm) / 60.0 / getSampleRate();
+
+    // BUILD rises over 8 beats while held and falls over one when let go
+    const bool building = buildButton->load() > 0.5f;
+    p.build = juce::jlimit (0.0f, 1.0f, p.build + (float) (building ? beats / 8.0 : -beats));
+
+    // DROP waits for the next bar line (the block holding it) while the transport runs
+    const bool held = dropButton->load() > 0.5f;
+    if (! held)
+        p.dropArmed = p.dropOn = false;
+    else if (! p.dropOn)
+    {
+        p.dropArmed = true;
+        bool onBar = ppq < 0.0;
+        if (! onBar && barLength > 0.0)
+        {
+            const double sinceBar = std::fmod (ppq - barStart, barLength);
+            const double toNext = sinceBar < 1.0e-9 ? 0.0 : barLength - sinceBar;
+            onBar = toNext < beats;
+        }
+        if (onBar)
+        {
+            p.dropOn = true;
+            p.dropArmed = false;
+            space.killTail();
+        }
+    }
+    p.drop = p.dropOn ? 1.0f : 0.0f;
 }
 
 // Chain knob positions are smoothed (30 ms) at block rate, SUPER is folded in, and the offsets go to the layers
@@ -215,12 +260,28 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     {
         auto& p = knobPosition[(size_t) k];
         p += (chainKnobs[(size_t) k]->load() - p) * coef;
-        u[(size_t) k] = juce::jlimit (0.0f, 1.0f, p + ps::chain::superContribution ((ps::chain::Knob) k, super));
+        u[(size_t) k] = p + ps::chain::superContribution ((ps::chain::Knob) k, super);
     }
+    // BUILD widens, blooms and opens the top; DROP hits with mass and pressure and snaps GROOVE to full.
+    // The drop is smoothed like the knobs, so it lands within 30 ms and never clicks.
+    dropSmoothed += (performance.drop - dropSmoothed) * coef;
+    const float b = performance.build, d = dropSmoothed;
+    u[ps::chain::scale] += 0.5f * b;
+    u[ps::chain::bloom] += 0.5f * b;
+    u[ps::chain::shine] += 0.6f * b;
+    u[ps::chain::mass] += 0.4f * d;
+    u[ps::chain::pressure] += 0.4f * d;
+    u[ps::chain::groove] += d * (1.0f - u[ps::chain::groove]);
+    for (auto& v : u)
+        v = juce::jlimit (0.0f, 1.0f, v);
     std::array<ps::params::Role, ps::params::numLayers> roles {};
     for (int i = 0; i < ps::params::numLayers; ++i)
         roles[(size_t) i] = stack.layer (i).role();
     auto offsets = ps::chain::compute (u, roles);
+    // DROP's -1 octave: the Sub and Body layers bring in their sub-octave
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        if (roles[(size_t) i] == ps::params::Role::sub || roles[(size_t) i] == ps::params::Role::body)
+            offsets.slot[(size_t) i][(size_t) ps::SlotRole::subOctave] += 0.5f * d;
 
     // BLOOM. Drift: one Ornstein-Uhlenbeck walk for the stack (mean reversion theta at about 0.3 Hz, stationary
     // deviation sigma), sampled exactly at block rate, then a 2 Hz low-pass so the pitch glides between blocks.

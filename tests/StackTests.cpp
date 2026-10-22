@@ -1216,6 +1216,53 @@ void testBloomSpace()
     CHECK (wet > dry + 10.0f && wet < -10.0f, "BLOOM's space rings on after the release (" + std::to_string (dry) + " -> " + std::to_string (wet) + " dB)");
 }
 
+// A host transport at 120 BPM in 4/4 that advances one block per processBlock call
+struct FakeTransport : juce::AudioPlayHead
+{
+    juce::int64 samples = 0;
+    juce::Optional<PositionInfo> getPosition() const override
+    {
+        PositionInfo p;
+        p.setBpm (120.0);
+        p.setTimeSignature (TimeSignature { 4, 4 });
+        p.setIsPlaying (true);
+        const double ppq = (double) samples / sampleRate * 2.0;
+        p.setPpqPosition (ppq);
+        p.setPpqPositionOfLastBarStart (4.0 * std::floor (ppq / 4.0));
+        const_cast<FakeTransport*> (this)->samples += blockSize;
+        return p;
+    }
+};
+
+void testDropOnTheBar()
+{
+    // DROP pressed at beat 1.3 waits for the bar line at beat 4 (sample 96000 at 120 BPM): the -1 octave and
+    // MASS come in there, not when the button goes down. Compared with an untouched rig on the same transport.
+    auto play = [] (bool press)
+    {
+        StackRig rig;
+        FakeTransport transport;
+        rig.proc->setPlayHead (&transport);
+        auto x = rig.render (31200, StackRig::chord());   // to beat 1.3
+        if (press)
+            rig.set (ps::params::drop, 1.0f);
+        auto y = rig.render (160800);                      // to beat 8
+        x.insert (x.end(), y.begin(), y.end());
+        rig.proc->setPlayHead (nullptr);
+        return x;
+    };
+    const auto control = play (false), dropped = play (true);
+    auto lift = [&] (size_t from, size_t to)
+    {
+        auto band = [&] (const std::vector<float>& x) { return bandEnergy (std::vector<float> (x.begin() + (long) from, x.begin() + (long) to), 0, 40.0, 80.0); };
+        return 10.0 * std::log10 (band (dropped) / band (control));
+    };
+    // After: beats 6 to 8 (on beat 4 the pump ducks the downbeat, as a sidechain under the kick would)
+    const double waiting = lift (36000, 95000), after = lift (144000, 192000);
+    CHECK (std::abs (waiting) < 0.5 && after > 1.0, "DROP waits for the next bar line (" + std::to_string (waiting) + " dB before it, +"
+                                                        + std::to_string (after) + " dB after)");
+}
+
 void testChainKnobInvariants()
 {
     // A control rig plays the same notes with the knobs untouched: the loudness change is measured against it at
@@ -1233,10 +1280,16 @@ void testChainKnobInvariants()
         CHECK (side < -40.0f, "the default stack's lows are mono (side " + std::to_string (side) + " dB below 120 Hz)");
     }
 
-    auto knobId = [] (int k) { return k < ps::params::numChainKnobs ? ps::params::chainKnob (k) : ps::params::super; };
-    for (int k = 0; k <= ps::params::numChainKnobs; ++k)
+    // Every knob, then SUPER, BUILD and DROP (the buttons are pressed halfway through the sweep and held)
+    auto knobId = [] (int k)
     {
-        const std::string name = k < ps::params::numChainKnobs ? ps::params::chainKnobNames[k] : "SUPER";
+        const int n = ps::params::numChainKnobs;
+        return k < n ? ps::params::chainKnob (k) : k == n ? ps::params::super : k == n + 1 ? ps::params::build : ps::params::drop;
+    };
+    for (int k = 0; k <= ps::params::numChainKnobs + 2; ++k)
+    {
+        const char* extra[] = { "SUPER", "BUILD", "DROP" };
+        const std::string name = k < ps::params::numChainKnobs ? ps::params::chainKnobNames[k] : extra[k - ps::params::numChainKnobs];
         StackRig rig;
         auto a = rig.render (settle + measure, StackRig::chord());
         auto aR = rig.right;
@@ -1326,6 +1379,17 @@ void testChainKnobInvariants()
                 dipped = std::min (dipped, rig.proc->getStack().layer (i).carvePowerRatio());
             CHECK (dipped < 0.95f, "CLARITY gives contested bands one owner (a layer gives way: "
                                        + std::to_string (juce::Decibels::gainToDecibels (dipped, -100.0f) * 0.5f) + " dB)");
+        }
+        if (name == "BUILD")
+        {
+            const double thinner = bandShare (cm, 40.0, 80.0) - bandShare (bm, 40.0, 80.0);
+            CHECK (thinner > 3.0, "BUILD thins the low end toward the drop (-" + std::to_string (thinner) + " dB at 40-80 Hz)");
+        }
+        if (name == "DROP")
+        {
+            // Mass, the -1 octave and the full pump: more weight in the tactile band at the same loudness
+            const double lift = 10.0 * std::log10 (bandEnergy (bm, (size_t) settle, 40.0, 80.0) / bandEnergy (cm, (size_t) settle, 40.0, 80.0));
+            CHECK (lift > 1.0, "DROP lands heavier (+" + std::to_string (lift) + " dB at 40-80 Hz)");
         }
         if (name == "SHINE")
         {
@@ -1430,6 +1494,7 @@ int main()
         testChainPaths();
         testOnsetDuck();
         testBloomSpace();
+        testDropOnTheBar();
         testChainKnobInvariants();
         return failures == 0 ? 0 : 1;
     }
@@ -1478,6 +1543,7 @@ int main()
     testChainPaths();
     testOnsetDuck();
     testBloomSpace();
+    testDropOnTheBar();
     testChainKnobInvariants();
     benchmarkJp();
     benchmarkWavetable();

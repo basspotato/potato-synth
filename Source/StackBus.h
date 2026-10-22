@@ -471,6 +471,102 @@ private:
     float bandPower = 0.0f, fullPower = 0.0f, gain = 1.0f, amount = 0.0f;
 };
 
+// BUILD's two bus stages. The rise: a 12 dB/oct high-pass that climbs from 20 Hz to 400 Hz with the build,
+// thinning the low end so the drop lands with it. The Shepard riser: ten octave-spaced sines under a Gaussian
+// envelope in log-frequency (centre 800 Hz, 1.2 octaves), all gliding up together at one octave per two bars;
+// each one fades in at the bottom as it fades out at the top, so the pitch rises forever and never jumps.
+// The riser plays at a fixed share of the stack's own short-term level, so it sits the same on any patch.
+// Both are identical on the two channels and the riser carries nothing under 120 Hz worth hearing (its
+// envelope is 4 octaves down there), so the lows stay mono.
+class BuildStage
+{
+public:
+    static constexpr int numPartials = 10;
+    static constexpr float lowestHz = 20.0f, centreOctave = 5.32f, widthOctaves = 1.2f;   // 20 * 2^5.32 = 800 Hz
+
+    void prepare (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        reset();
+    }
+
+    void reset()
+    {
+        for (auto& f : highPass)
+            f.reset();
+        glide = 0.0;
+        phases.fill (0.0);
+        amount = 0.0f;
+        cutoffG = tptGain (lowestHz, sr);
+    }
+
+    // b: the build 0..1 (already ramped); levelPower: the stack's short-term power (mean of L^2 and R^2)
+    bool process (float* left, float* right, int numSamples, float b, float levelPower, double bpm) noexcept
+    {
+        if (b < 1.0e-4f && amount < 1.0e-4f)
+        {
+            if (amount != 0.0f)
+                reset();
+            return false;
+        }
+        const float from = amount;
+        amount = b;
+        const double octavesPerSample = (juce::jlimit (20.0, 400.0, bpm) / 60.0) / 8.0 / sr;
+        const float levelAmp = std::sqrt (juce::jmax (0.0f, levelPower));
+        for (int start = 0; start < numSamples; start += subBlock)
+        {
+            const int end = std::min (numSamples, start + subBlock);
+            const float a = from + (b - from) * (float) end / (float) numSamples;
+            cutoffG = tptGain (lowestHz * std::pow (20.0f, a), sr);   // 20 Hz .. 400 Hz
+            // Partial amplitudes and increments for this sub-block
+            std::array<float, numPartials> amp {};
+            std::array<double, numPartials> inc {};
+            for (int k = 0; k < numPartials; ++k)
+            {
+                const double octave = (double) k + glide;
+                const double f = lowestHz * std::exp2 (octave);
+                const double z = (octave - centreOctave) / widthOctaves;
+                amp[(size_t) k] = f < 0.45 * sr ? (float) std::exp (-0.5 * z * z) : 0.0f;
+                inc[(size_t) k] = f / sr;
+            }
+            const float riserGain = 0.25f * a * a * levelAmp;
+            for (int i = start; i < end; ++i)
+            {
+                float riser = 0.0f;
+                for (int k = 0; k < numPartials; ++k)
+                {
+                    auto& ph = phases[(size_t) k];
+                    ph += inc[(size_t) k];
+                    if (ph >= 1.0)
+                        ph -= 1.0;
+                    riser += amp[(size_t) k] * (float) std::sin (juce::MathConstants<double>::twoPi * ph);
+                }
+                float* io[2] = { left, right };
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const float x = highPass[(size_t) ch].process (io[ch][i], cutoffG, juce::MathConstants<float>::sqrt2).high;
+                    io[ch][i] = x + riserGain * riser;
+                }
+            }
+            glide += octavesPerSample * (end - start);
+            if (glide >= 1.0)
+            {
+                // Every partial moves down one slot: the top one (silent) wraps to the bottom (silent too)
+                glide -= 1.0;
+                std::rotate (phases.rbegin(), phases.rbegin() + 1, phases.rend());
+            }
+        }
+        return true;
+    }
+
+private:
+    static constexpr int subBlock = 32;
+    std::array<ZdfSvf, 2> highPass {};
+    std::array<double, numPartials> phases {};
+    double glide = 0.0;
+    float sr = 48000.0f, amount = 0.0f, cutoffG = 0.001f;
+};
+
 // GROOVE's tempo pump, the sidechain duck of a four-on-the-floor kick: on every beat the gain falls over 4 ms
 // and recovers, g = 1 - D env(p) with p the phase in the beat. The recovery morphs from a half cosine (smooth)
 // to a normalised exponential exp(-t / tau), tau = k * beat (hard), shifted so it reaches 0 exactly at the
