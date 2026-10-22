@@ -230,6 +230,45 @@ void testStateRoundTrip()
            "layer levels survive a save and reload");
 }
 
+void testEngineSlots()
+{
+    namespace p = ps::params;
+    {
+        Rig rig;
+        rig.set (p::layerSlot (2, 0), 1.0f);
+        auto x = rig.render (24000, { { 0, on (69) } });
+        CHECK (std::abs (estimateFrequency (x, 4000, 24000) - 1760.0) < 0.5, "engine slot 1 reaches the engine (+2 oct)");
+        rig.set (p::layerSlot (2, 0), 0.25f);
+        auto y = rig.render (24000);
+        CHECK (std::abs (estimateFrequency (y, 4000, 24000) - 220.0) < 0.2, "slot changes reach held notes (-1 oct)");
+    }
+    {
+        Rig rig;
+        auto* slot = rig.proc->apvts.getParameter (p::layerSlot (2, 0).getParamID());
+        CHECK (slot->getText (1.0f, 32) == "+2 oct" && slot->getText (0.5f, 32) == "0 oct",
+               "slot value text comes from the engine");
+        CHECK (rig.proc->apvts.getParameter (p::layerSlot (2, 5).getParamID())->getText (0.3f, 32) == "-",
+               "slots the engine does not use read as unused");
+        CHECK (rig.proc->apvts.getParameter (p::layerSlot (0, 0).getParamID())->getText (0.5f, 32) == "-",
+               "an empty layer's slots read as unused");
+
+        rig.set (p::layerSlot (2, 0), 1.0f);
+        rig.proc->setLayerEngine (2, "test.sine");
+        CHECK (std::abs (rig.get (p::layerSlot (2, 0)) - 0.5f) < 1.0e-6f, "picking an engine resets its slots to the engine's defaults");
+    }
+    {
+        Rig rig;
+        rig.set (p::layerSlot (2, 0), 0.75f);
+        juce::MemoryBlock state;
+        rig.proc->getStateInformation (state);
+        Rig other;
+        other.proc->setStateInformation (state.getData(), (int) state.getSize());
+        CHECK (std::abs (other.get (p::layerSlot (2, 0)) - 0.75f) < 1.0e-4f, "slot values survive a save and reload");
+        auto x = other.render (24000, { { 0, on (69) } });
+        CHECK (std::abs (estimateFrequency (x, 4000, 24000) - 880.0) < 0.5, "a reloaded slot value reaches the engine");
+    }
+}
+
 void testAttackDecaySustain()
 {
     Rig rig;
@@ -654,6 +693,7 @@ int main()
     testEngineSwapWhileSounding();
     testLayersStack();
     testStateRoundTrip();
+    testEngineSlots();
     testAttackDecaySustain();
     testReleaseTime();
     testRetriggerDuringRelease();

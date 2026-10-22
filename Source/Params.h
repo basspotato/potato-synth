@@ -6,9 +6,9 @@
 namespace ps::params
 {
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
-    // 4: layer roles, crossovers and mono bass. 5: safe output.
+    // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 5;
+    inline constexpr int stateVersion = 6;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -33,6 +33,16 @@ namespace ps::params
     inline juce::ParameterID layerVoiceMode (int i) { return layerParam (i, "voice", 3); }
     inline juce::ParameterID layerGlide (int i)   { return layerParam (i, "glide", 3); }
     inline juce::ParameterID layerRole (int i)    { return layerParam (i, "role", 4); }
+
+    // Engine slots: 16 generic 0..1 parameters per layer. Each engine says what its slots mean.
+    inline constexpr int numEngineSlots = 16;
+    inline juce::ParameterID layerSlot (int i, int slot)
+    {
+        return { "L" + juce::String (i + 1) + "_e" + juce::String (slot + 1), 6 };
+    }
+
+    // Display text for a slot value, supplied by the processor from the layer's current engine
+    using SlotText = std::function<juce::String (int layer, int slot, float normalised)>;
 
     // Role tags set a layer's band. Order is permanent: it is saved as an index.
     //   Sub: low-pass at the low crossover.   Body: low crossover to high crossover.
@@ -72,7 +82,7 @@ namespace ps::params
         }
     }
 
-    inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
+    inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout (SlotText slotText = {})
     {
         juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
@@ -127,6 +137,11 @@ namespace ps::params
                 detail::msAttributes()));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerVoiceMode (i), role + " Voice Mode", voiceModeNames, 0));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerRole (i), role + " Role", roleNames, i));
+            for (int k = 0; k < numEngineSlots; ++k)
+                layout.add (std::make_unique<Float> (layerSlot (i, k), role + " Engine " + juce::String (k + 1),
+                    juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f,
+                    juce::AudioParameterFloatAttributes().withStringFromValueFunction ([slotText, i, k] (float v, int) {
+                        return slotText ? slotText (i, k, v) : juce::String (juce::roundToInt (v * 100.0f)) + " %"; })));
             layout.add (std::make_unique<Float> (layerGlide (i), role + " Glide", detail::timeRange (0.0f, 5000.0f, 250.0f), 0.0f,
                 detail::msAttributes().withStringFromValueFunction ([] (float v, int) {
                     return v < 0.05f ? juce::String ("OFF") : detail::formatMs (v); })));

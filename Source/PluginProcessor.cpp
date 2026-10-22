@@ -13,7 +13,7 @@ namespace
 
 PotatoSynthProcessor::PotatoSynthProcessor()
     : AudioProcessor (BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "PotatoSynth", ps::params::createLayout())
+      apvts (*this, nullptr, "PotatoSynth", ps::params::createLayout ([this] (int layer, int slot, float v) { return slotText (layer, slot, v); }))
 {
     masterDb = apvts.getRawParameterValue (ps::params::master.getParamID());
     crossoverLowHz = apvts.getRawParameterValue (ps::params::crossoverLow.getParamID());
@@ -27,7 +27,9 @@ PotatoSynthProcessor::PotatoSynthProcessor()
                                          raw (p::layerSemi (i)), raw (p::layerFine (i)), raw (p::layerAttack (i)),
                                          raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)),
                                          raw (p::layerVoiceMode (i)), raw (p::layerGlide (i)), raw (p::layerRole (i)),
-                                         raw (p::crossoverLow), raw (p::crossoverHigh) });
+                                         raw (p::crossoverLow), raw (p::crossoverHigh), {} });
+        for (int k = 0; k < p::numEngineSlots; ++k)
+            stack.layer (i).setSlotParameter (k, raw (p::layerSlot (i, k)));
     }
 
     auto layers = apvts.state.getOrCreateChildWithName (layersNode, nullptr);
@@ -52,7 +54,31 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 void PotatoSynthProcessor::setLayerEngine (int layerIndex, const juce::String& engineId)
 {
     apvts.state.getOrCreateChildWithName (layersNode, nullptr).setProperty (engineProperty (layerIndex), engineId, nullptr);
-    stack.layer (layerIndex).requestEngine (ps::engines::create (engineId), engineId);
+    auto engine = ps::engines::create (engineId);
+
+    // A newly picked engine starts from its own defaults (loading state keeps the saved slot values instead)
+    const auto* info = engine != nullptr ? &engine->info() : nullptr;
+    for (int k = 0; k < ps::params::numEngineSlots; ++k)
+    {
+        auto* p = apvts.getParameter (ps::params::layerSlot (layerIndex, k).getParamID());
+        const float value = info != nullptr && k < (int) info->slots.size() ? info->slots[(size_t) k].defaultValue : 0.5f;
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (value);
+        p->endChangeGesture();
+    }
+
+    engineInfos[(size_t) layerIndex] = info;
+    stack.layer (layerIndex).requestEngine (std::move (engine), engineId);
+    updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));   // slot value text follows the engine
+}
+
+juce::String PotatoSynthProcessor::slotText (int layer, int slot, float value) const
+{
+    const auto* info = engineInfos[(size_t) layer].load();
+    if (info == nullptr || slot >= (int) info->slots.size())
+        return "-";
+    const auto& s = info->slots[(size_t) slot];
+    return s.toText ? s.toText (value) : juce::String (juce::roundToInt (value * 100.0f)) + " %";
 }
 
 void PotatoSynthProcessor::applyLayerEnginesFromState()
@@ -62,8 +88,13 @@ void PotatoSynthProcessor::applyLayerEnginesFromState()
     {
         const auto id = layers.getProperty (engineProperty (i)).toString();
         if (id != stack.layer (i).getEngineId())
-            stack.layer (i).requestEngine (ps::engines::create (id), id);
+        {
+            auto engine = ps::engines::create (id);
+            engineInfos[(size_t) i] = engine != nullptr ? &engine->info() : nullptr;
+            stack.layer (i).requestEngine (std::move (engine), id);
+        }
     }
+    updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
 }
 
 bool PotatoSynthProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const

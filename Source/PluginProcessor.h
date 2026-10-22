@@ -37,6 +37,12 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+private:
+    // Each layer's current engine description, read by slot parameters to show engine-specific text.
+    // Declared before apvts, whose parameters refer to it.
+    std::array<std::atomic<const ps::EngineInfo*>, ps::params::numLayers> engineInfos {};
+
+public:
     juce::AudioProcessorValueTreeState apvts;
 
     // Message thread: put an engine (by registry ID, empty string = none) into a layer
@@ -48,6 +54,7 @@ public:
 private:
     void timerCallback() override { collectRetiredEngines(); }
     void applyLayerEnginesFromState();
+    juce::String slotText (int layer, int slot, float value) const;
     void migrateState (juce::ValueTree& state) const;
 
     ps::LayerStack stack;
