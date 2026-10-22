@@ -2135,6 +2135,89 @@ void benchmarkDirt()
     CHECK (best < 20.0, "Dirt stack CPU is within budget");
 }
 
+// The patch's master chain: OTT, glue, width
+void testMasterChain()
+{
+    namespace p = ps::params;
+    auto levelDb = [] (std::initializer_list<std::pair<juce::ParameterID, float>> settings, float velocity)
+    {
+        Rig rig;
+        for (auto& [id, v] : settings)
+            rig.set (id, v);
+        auto x = rig.render (48000, { { 0, on (57, velocity) } });
+        return juce::Decibels::gainToDecibels (rms (x, 24000, 48000));
+    };
+    // OTT: quiet notes come up, loud ones go down, so the range between them shrinks
+    const float rangeDry = levelDb ({}, 1.0f) - levelDb ({}, 0.15f);
+    const float rangeOtt = levelDb ({ { p::ottAmount, 100.0f } }, 1.0f) - levelDb ({ { p::ottAmount, 100.0f } }, 0.15f);
+    CHECK (rangeOtt < rangeDry - 3.0f, "OTT squeezes the dynamic range (" + std::to_string (rangeDry) + " -> " + std::to_string (rangeOtt) + " dB)");
+    // Upward lifts only what is well under the thresholds: a very quiet note
+    const float lifted = levelDb ({ { p::ottAmount, 100.0f } }, 0.01f) - levelDb ({ { p::ottAmount, 100.0f }, { p::ottUpward, 0.0f } }, 0.01f);
+    CHECK (lifted > 3.0f, "OTT Upward lifts the quiet parts, and 0 % turns that off (" + std::to_string (lifted) + " dB)");
+
+    // Glue: about its set reduction on a steady note
+    const float glued = levelDb ({ { p::glueAmount, 6.0f } }, 0.8f) - levelDb ({}, 0.8f);
+    CHECK (glued < -2.0f && glued > -9.0f, "Glue pulls the level down by its amount (" + std::to_string (glued) + " dB)");
+
+    // Width: the side above 250 Hz scales with Width; the lows stay mono
+    auto sideRatio = [] (float width)
+    {
+        JpRig rig ({ { Jp::spread, 1.0f } });
+        rig.set (p::stackWidth, width);
+        auto l = rig.render (48000, { { 0, on (45) } });
+        double side = 0.0, mid = 0.0;
+        for (size_t i = 24000; i < l.size(); ++i)
+        {
+            side += juce::square (0.5 * (l[i] - rig.right[i]));
+            mid += juce::square (0.5 * (l[i] + rig.right[i]));
+        }
+        return std::sqrt (side / mid);
+    };
+    const double s0 = sideRatio (0.0f), s100 = sideRatio (100.0f), s200 = sideRatio (200.0f);
+    CHECK (s0 < 1.0e-4 && std::abs (s200 / s100 - 2.0) < 0.05,
+           "Width scales the side signal (0 %: " + std::to_string (s0) + ", 200 %: " + std::to_string (s200 / s100) + "x)");
+
+    // Turning the chain up mid-note doesn't click
+    {
+        Rig rig;
+        auto x = rig.render (24000, { { 0, on (45) } });
+        const float steady = maxStep (std::vector<float> (x.begin() + 12000, x.end()));
+        rig.set (p::ottAmount, 100.0f);
+        rig.set (p::glueAmount, 6.0f);
+        rig.set (p::stackWidth, 200.0f);
+        auto y = rig.render (4800);
+        CHECK (maxStep (y) < steady * 1.5f, "the master chain switches in without a click (" + std::to_string (maxStep (y) / steady) + "x)");
+    }
+}
+
+// The sub ducks the body's lows while it sounds; without a sub the body is untouched
+void testSubDuck()
+{
+    auto render = [] (bool withSub, bool withBody, float duck)
+    {
+        Rig rig (false);
+        rig.set (ps::params::monoBass, 0.0f);
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            rig.proc->setLayerEngine (i, i == 0 && withSub ? "sub" : i == 1 && withBody ? "test.sine" : "");
+        rig.render (blockSize);
+        rig.collectRetired();
+        rig.set (ps::params::subDuck, duck);
+        return rig.render (48000, { { 0, on (48) } });
+    };
+    const auto subOnly = render (true, false, 0.0f), dry = render (true, true, 0.0f), ducked = render (true, true, 100.0f);
+    std::vector<float> bodyDry (dry.size()), bodyDucked (dry.size());
+    for (size_t i = 0; i < dry.size(); ++i)
+    {
+        bodyDry[i] = dry[i] - subOnly[i];
+        bodyDucked[i] = ducked[i] - subOnly[i];
+    }
+    const float dip = juce::Decibels::gainToDecibels (rms (bodyDucked, 24000, 48000) / rms (bodyDry, 24000, 48000));
+    CHECK (dip < -3.0f && dip > -9.5f, "Sub Duck: the body's lows give way to the sub (" + std::to_string (dip) + " dB)");
+    CHECK (render (false, true, 100.0f) == render (false, true, 0.0f), "Sub Duck: without a sub the body is untouched");
+    const float steady = maxStep (std::vector<float> (dry.begin() + 24000, dry.end()));
+    CHECK (maxStep (std::vector<float> (ducked.begin() + 2000, ducked.end())) < 1.5f * steady, "Sub Duck: ducking never clicks");
+}
+
 // BLOOM's pitch motion is a fixed wobble, never random: the same playing renders the same samples
 void testBloomIsRepeatable()
 {
@@ -3197,6 +3280,12 @@ int main()
         benchmarkDirt();
         return failures == 0 ? 0 : 1;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_MASTER_ONLY", {}).isNotEmpty())
+    {
+        testMasterChain();
+        testSubDuck();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_GENOME_ONLY", {}).isNotEmpty())
     {
         testGenomeEngine();
@@ -3289,6 +3378,8 @@ int main()
     testGenomeSwitchesDoNotClick();
     testBeatCeiling();
     testBloomIsRepeatable();
+    testMasterChain();
+    testSubDuck();
     testArpeggiator();
     testStepSequencer();
     testArpThroughTheSynth();

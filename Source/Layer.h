@@ -102,6 +102,8 @@ public:
         numVoices = voices;
         scratchL.assign ((size_t) maxBlock, 0.0f);
         scratchR.assign ((size_t) maxBlock, 0.0f);
+        lowDuck.prepare (sr);
+        lowDuck.subEnvelope = 0.0f;
         voiceL.assign ((size_t) maxBlock, 0.0f);
         voiceR.assign ((size_t) maxBlock, 0.0f);
         startOrder.assign ((size_t) voices, 0);
@@ -180,6 +182,17 @@ public:
     {
         duck.depth = 1.0f - juce::Decibels::decibelsToGain (-juce::jmax (0.0f, depthDb));
         duck.releaseSamples = juce::jmax (1.0f, windowMs * 0.001f * duckRate);
+    }
+
+    // The sub ducks the body's lows (an internal sidechain, LayerStack.h): a Sub layer writes its output's level
+    // envelope into `out` as it renders; a Body layer reads it and dips its own lows (a 250 Hz low shelf, by up
+    // to 9 dB x depth) by the sub's share of the two layers' low-band power, so the sub owns the shared octave
+    // while it sounds and the body gets it back between sub notes. Identity at depth 0.
+    void setLowDuck (float* envelopeOut, const float* subEnvelope, float depth) noexcept
+    {
+        duckEnvelopeOut = envelopeOut;
+        duckSubEnvelope = subEnvelope;
+        lowDuckDepth = juce::jlimit (0.0f, 1.0f, depth);
     }
 
     // The patch's own level and the chain knobs' extra gain, for the Harmony Engine's loudness model
@@ -473,6 +486,7 @@ public:
         }
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
+        processLowDuck (numSamples);
         chorus.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.chorus, 0.0f) * 0.01f + chainChorus),
                         load (params.chorusRateHz, 0.4f), load (params.chorusDepth, 50.0f) * 0.01f);
         meter.process (scratchL.data(), scratchR.data(), numSamples);
@@ -922,6 +936,43 @@ private:
         slotsSent = true;
     }
 
+    void processLowDuck (int n) noexcept
+    {
+        const float gain = level.getCurrentValue();
+        if (duckEnvelopeOut != nullptr)
+            for (int i = 0; i < n; ++i)
+            {
+                const float a = 0.5f * gain * (std::abs (scratchL[(size_t) i]) + std::abs (scratchR[(size_t) i]));
+                lowDuck.subEnvelope += (a - lowDuck.subEnvelope) * (a > lowDuck.subEnvelope ? lowDuck.attack : lowDuck.release);
+                duckEnvelopeOut[i] = lowDuck.subEnvelope;
+            }
+        const bool wanted = duckSubEnvelope != nullptr && lowDuckDepth > 0.0f;
+        if (! wanted && lowDuck.gain >= 1.0f)
+        {
+            if (lowDuck.running)
+                lowDuck.reset();
+            return;
+        }
+        lowDuck.running = true;
+        const auto c = ZdfSvf::Coeffs::make (lowDuck.g, 1.41421356f);
+        const float maxDb = 9.0f * (wanted ? lowDuckDepth : 0.0f);
+        for (int i = 0; i < n; ++i)
+        {
+            const float lowL = lowDuck.filters[0].process (scratchL[(size_t) i], c).low;
+            const float lowR = lowDuck.filters[1].process (scratchR[(size_t) i], c).low;
+            const float a = 0.5f * gain * (std::abs (lowL) + std::abs (lowR));
+            lowDuck.bodyEnvelope += (a - lowDuck.bodyEnvelope) * (a > lowDuck.bodyEnvelope ? lowDuck.attack : lowDuck.release);
+            const float sub = wanted ? duckSubEnvelope[i] : 0.0f;
+            const float share = sub * sub / (sub * sub + lowDuck.bodyEnvelope * lowDuck.bodyEnvelope + 1.0e-12f);
+            const float target = std::exp2 (-maxDb * share * (1.0f / 6.0206f));
+            lowDuck.gain += (target - lowDuck.gain) * lowDuck.smooth;
+            if (! wanted && lowDuck.gain > 0.99999f)
+                lowDuck.gain = 1.0f;
+            scratchL[(size_t) i] += (lowDuck.gain - 1.0f) * lowL;
+            scratchR[(size_t) i] += (lowDuck.gain - 1.0f) * lowR;
+        }
+    }
+
     // The share of a positive detune offset the beat ceiling allows from the patch's value (bisection: the
     // spacing rises with detune)
     float ceilingLimited (float base, float offset) const noexcept
@@ -971,6 +1022,25 @@ private:
     std::array<float, Engine::numSlots> lastSlot {};   // audio thread only
     float chainLevelDb = 0.0f;
     std::array<float, numSlotRoles> chainSlots {};
+    struct LowDuckState
+    {
+        std::array<ZdfSvf, 2> filters {};
+        float g = 0.0f, attack = 0.0f, release = 0.0f, smooth = 0.0f;
+        float subEnvelope = 0.0f, bodyEnvelope = 0.0f, gain = 1.0f;
+        bool running = false;
+        void prepare (double sr)
+        {
+            g = tptGain (250.0f, (float) sr);
+            attack = 1.0f - std::exp (-1.0f / (0.005f * (float) sr));
+            release = 1.0f - std::exp (-1.0f / (0.12f * (float) sr));
+            smooth = 1.0f - std::exp (-1.0f / (0.002f * (float) sr));
+            reset();
+        }
+        void reset() { for (auto& f : filters) f.reset(); bodyEnvelope = 0.0f; gain = 1.0f; running = false; }
+    } lowDuck;
+    float* duckEnvelopeOut = nullptr;
+    const float* duckSubEnvelope = nullptr;
+    float lowDuckDepth = 0.0f;
     float beatCeilingCents = 48.0f;
     OnsetDuck duck;
     float chainDriftCents = 0.0f, chainDrive = 0.0f, chainChorus = 0.0f;

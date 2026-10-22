@@ -287,16 +287,73 @@ public:
     // patch as to a loud one. 0 dB at the level the stages were tuned on (a -10 LUFS stack); at most -30/+6 dB.
     float levelShiftDb() const noexcept
     {
+        if (! followLevel)
+            return 0.0f;
         return juce::jlimit (-30.0f, 6.0f, 10.0f * std::log10 (levelPower + 1.0e-12f) - referenceDb);
     }
 
     float getAmount() const noexcept { return amount; }
 
+    // The patch's own master chain (an instance of its own, outside the knob stages; call prepareMaster). OTT at
+    // depth 0..1 with fixed thresholds (it squeezes quiet and loud notes together, as a mastering OTT does), its
+    // times scaled and its upward lift scaled by upward (0..1); then glue at glueDb of reduction with its own
+    // release. Each amount glides over 30 ms, and the chain crossfades in and out from the dry signal over 20 ms
+    // (its band split changes the phase, so a hard switch would click). Bypassed and reset once out.
+    void prepareMaster (double sampleRate, int maxBlock)
+    {
+        prepare (sampleRate);
+        followLevel = false;
+        dryL.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
+        dryR.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
+    }
+
+    bool processMaster (float* left, float* right, int numSamples, float ottDepth, float timeScale, float upward,
+                        float glueDb, float glueReleaseSeconds) noexcept
+    {
+        const bool wanted = ottDepth > 0.0f || glueDb > 0.0f;
+        if (! wanted && masterFade <= 0.0f)
+        {
+            if (wasActive)
+            {
+                reset();
+                masterOtt = masterGlue = 0.0f;
+            }
+            wasActive = false;
+            return false;
+        }
+        wasActive = true;
+        const float fadeStep = 1.0f / (0.02f * sr);
+        for (int pos = 0; pos < numSamples; pos += (int) dryL.size())
+        {
+            const int n = juce::jmin ((int) dryL.size(), numSamples - pos);
+            float* l = left + pos;
+            float* r = right + pos;
+            std::copy_n (l, n, dryL.data());
+            std::copy_n (r, n, dryR.data());
+            trackLevel (l, r, n);
+            const float coef = 1.0f - std::exp (-(float) n / (0.03f * sr));
+            masterOtt += (juce::jlimit (0.0f, 1.0f, ottDepth) - masterOtt) * coef;
+            masterGlue += (juce::jlimit (0.0f, 12.0f, glueDb) - masterGlue) * coef;
+            ott (l, r, n, masterOtt, juce::jlimit (0.25f, 4.0f, timeScale), juce::jlimit (0.0f, 1.0f, upward));
+            glue (l, r, n, masterGlue, glueReleaseSeconds);
+            for (int i = 0; i < n; ++i)
+            {
+                masterFade = juce::jlimit (0.0f, 1.0f, masterFade + (wanted ? fadeStep : -fadeStep));
+                l[i] = dryL[(size_t) i] + (l[i] - dryL[(size_t) i]) * masterFade;
+                r[i] = dryR[(size_t) i] + (r[i] - dryR[(size_t) i]) * masterFade;
+            }
+        }
+        return true;
+    }
+
 private:
+    float masterOtt = 0.0f, masterGlue = 0.0f, masterFade = 0.0f;
+    bool followLevel = true;
+    std::vector<float> dryL, dryR;
     // OTT: 3 bands (LR4 at 88 Hz and 2.5 kHz), each compressed downward above -22 dB (4:1) and upward below
     // -40 dB (3:1, at most +12 dB, never below -70 dB, so silence isn't pumped up), all thresholds moved by
     // levelShiftDb(). depth scales the gain in dB.
-    void ott (float* left, float* right, int n, float depth) noexcept
+    void ott (float* left, float* right, int n, float depth, float timeScale = 1.0f, float upward = 1.0f) noexcept
     {
         const float shift = levelShiftDb();
         const float downDb = -22.0f + shift, upDb = -40.0f + shift, gateDb = -70.0f + shift;
@@ -305,8 +362,8 @@ private:
         float attack[3], release[3];
         for (int b = 0; b < 3; ++b)
         {
-            attack[b] = 1.0f - std::exp (-1.0f / (attackMs[b] * 0.001f * sr));
-            const float ms = releaseMs[b] + tempoLock * (sixteenthMs - releaseMs[b]);
+            attack[b] = 1.0f - std::exp (-1.0f / (timeScale * attackMs[b] * 0.001f * sr));
+            const float ms = timeScale * releaseMs[b] + tempoLock * (sixteenthMs - timeScale * releaseMs[b]);
             release[b] = 1.0f - std::exp (-1.0f / (ms * 0.001f * sr));
         }
         for (int i = 0; i < n; ++i)
@@ -333,7 +390,7 @@ private:
                 if (db > downDb)
                     gainDb = (downDb - db) * 0.75f;
                 else if (db < upDb && db > gateDb)
-                    gainDb = std::min (12.0f, (upDb - db) * (2.0f / 3.0f));
+                    gainDb = upward * std::min (12.0f, (upDb - db) * (2.0f / 3.0f));
                 const float gain = std::exp2 (gainDb * depth * (1.0f / 6.0206f));
                 outL += band[b][0] * gain;
                 outR += band[b][1] * gain;
@@ -353,11 +410,11 @@ private:
 
     // Glue: 2:1 with a 6 dB soft knee, 30 ms attack, 200 ms release, linked. Its threshold sits 2x the target
     // reduction under the short-term (400 ms) level, so it lands on its share of G(u) whatever the patch's level.
-    void glue (float* left, float* right, int n, float targetDb) noexcept
+    void glue (float* left, float* right, int n, float targetDb, float baseReleaseSeconds = 0.2f) noexcept
     {
         const float rmsCoef = 1.0f - std::exp (-1.0f / (0.01f * sr)), shortCoef = 1.0f - std::exp (-1.0f / (0.4f * sr));
         const float attack = 1.0f - std::exp (-1.0f / (0.03f * sr));
-        const float releaseSeconds = 0.2f + tempoLock * (0.5f * beatSeconds - 0.2f);
+        const float releaseSeconds = baseReleaseSeconds + tempoLock * (0.5f * beatSeconds - baseReleaseSeconds);
         const float release = 1.0f - std::exp (-1.0f / (releaseSeconds * sr));
         for (int i = 0; i < n; ++i)
         {
@@ -391,6 +448,38 @@ private:
     std::array<Pair, 2> lowAllpass { Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) }, Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) } };
     std::array<float, 3> bandEnvelope {};
     float glueDetector = 0.0f, glueShortTerm = 0.0f, glueGainDb = 0.0f;
+};
+
+// The patch's stereo width on the summed stack: the side signal scaled by 0..2 (glided over 30 ms). The bus has
+// already high-passed the side at about 250 Hz (the width floor), so this widens or narrows only above it and the
+// lows stay mono. The mid is untouched, so a mono fold-down sounds the same at any width. Exactly bypassed at 100 %.
+class BusWidth
+{
+public:
+    void prepare (double sampleRate) noexcept
+    {
+        coef = 1.0f - std::exp (-1.0f / (0.03f * (float) sampleRate));
+        current = 1.0f;
+    }
+
+    void process (float* left, float* right, int numSamples, float width) noexcept
+    {
+        const float target = juce::jlimit (0.0f, 2.0f, width);
+        if (std::abs (current - 1.0f) < 1.0e-6f && std::abs (target - 1.0f) < 1.0e-6f)
+            return;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            current += (target - current) * coef;
+            const float mid = 0.5f * (left[i] + right[i]), side = 0.5f * (left[i] - right[i]) * current;
+            left[i] = mid + side;
+            right[i] = mid - side;
+        }
+        if (std::abs (current - target) < 1.0e-5f)
+            current = target;
+    }
+
+private:
+    float coef = 0.001f, current = 1.0f;
 };
 
 // SHINE's spectral tilt: three first-order high shelves at 500 Hz, 2 kHz and 8 kHz, each lifting by the same

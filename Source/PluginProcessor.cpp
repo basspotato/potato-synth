@@ -51,6 +51,11 @@ PotatoSynthProcessor::PotatoSynthProcessor()
                        raw (p::delayPingPong), raw (p::delayDuck) };
     }
     padY = apvts.getRawParameterValue (ps::params::padY.getParamID());
+    {
+        namespace p = ps::params;
+        auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
+        masterParams = { raw (p::ottAmount), raw (p::ottTime), raw (p::ottUpward), raw (p::glueAmount), raw (p::glueRelease), raw (p::stackWidth), raw (p::subDuck) };
+    }
     for (int i = 0; i < ps::params::numLayers; ++i)
         anchors[(size_t) i] = apvts.getRawParameterValue (ps::params::layerAnchor (i).getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
@@ -103,6 +108,8 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     lowFocus.prepare (sampleRate);
     bassHarmonics.prepare (sampleRate);
     pressure.prepare (sampleRate);
+    masterDynamics.prepareMaster (sampleRate, samplesPerBlock);
+    busWidth.prepare (sampleRate);
     tilt.prepare (sampleRate);
     deHarsh.prepare (sampleRate);
     space.prepare (sampleRate, samplesPerBlock);
@@ -314,6 +321,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         s.hostTrigger = arpParams.trigger->load() > 0.5f;
         noteGenerator.process (played, generatedMidi, n, bpm, ppq, s);
     }
+    stack.setLowDuck (masterParams.subDuck->load() * 0.01f);
     stack.process (buffer, generatedMidi);
 
     // Stack sum with sqrt-weights: the layers are scaled by 1 / sqrt(n), n the number of layers counted by
@@ -329,6 +337,15 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // CUTOFF and RESO: before the sends, so the reverb and delay hear the filtered stack, as on a hardware synth
     sweep.setPosition (cutoffKnob->load() * 0.01f + laneOffsets[ps::ModLanes::cutoffTarget], resoKnob->load() * 0.01f);
     sweep.process (left, right, n);
+
+    // The patch's master chain: OTT, glue, width. Part of the patch's sound, so it sits before the sends and
+    // outside the knob stages the loudness trim measures.
+    {
+        const auto& m = masterParams;
+        masterDynamics.processMaster (left, right, n, m.ott->load() * 0.01f, m.ottTime->load() * 0.01f, m.ottUpward->load() * 0.01f,
+                                      m.glue->load(), m.glueRelease->load() * 0.001f);
+        busWidth.process (left, right, n, m.width->load() * 0.01f);
+    }
 
     // The shared sends, fed from the dry stack; the patch's own send levels go in here, before the knob stages
     // are measured, since they are part of the patch's loudness

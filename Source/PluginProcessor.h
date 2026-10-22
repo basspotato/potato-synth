@@ -127,6 +127,10 @@ private:
     ps::LowFocus lowFocus;
     ps::BassHarmonics bassHarmonics;
     ps::Pressure pressure;
+    ps::Pressure masterDynamics;   // the patch's own OTT and glue (bus_ott, bus_glue)
+    ps::BusWidth busWidth;
+    struct MasterParams { std::atomic<float>* ott, *ottTime, *ottUpward, *glue, *glueRelease, *width, *subDuck; };
+    MasterParams masterParams {};
     ps::Tilt tilt;
     ps::DeHarsh deHarsh;
     ps::Space space;

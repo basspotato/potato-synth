@@ -22,6 +22,7 @@ public:
         rate = sampleRate;
         for (auto& l : layers)
             l.prepare (sampleRate, maxBlock, numNoteSlots);
+        subEnvelope.assign ((size_t) maxBlock, 0.0f);
         clock = 0;
         signature = 0.0;
         reset();
@@ -66,6 +67,9 @@ public:
         freeFinishedSlots();
         updateAlignment();
     }
+
+    // How far the sub ducks the body's lows, 0..1 (Layer::setLowDuck)
+    void setLowDuck (float depth) noexcept { lowDuckDepth = depth; }
 
     // Sub/body phase alignment strength, 0..1 (PhaseAlign.h)
     void setAlignStrength (float s) noexcept
@@ -267,8 +271,27 @@ private:
             updateExpression (n);
             float* l = buffer.getWritePointer (0, start);
             float* r = buffer.getWritePointer (1, start);
-            for (auto& layer : layers)
+            // The first playing Sub layer renders first, so the Body layers can duck under it in the same block
+            int sub = -1;
+            if (lowDuckDepth > 0.0f)
+                for (int i = 0; i < numLayers && sub < 0; ++i)
+                    if (layers[(size_t) i].role() == params::Role::sub && layers[(size_t) i].canPlay())
+                        sub = i;
+            if (sub >= 0)
             {
+                auto& s = layers[(size_t) sub];
+                s.setLowDuck (subEnvelope.data(), nullptr, 0.0f);
+                s.setClock (clock);
+                s.render (l, r, n);
+            }
+            const float* envelope = sub >= 0 && ! layers[(size_t) sub].isIdle() ? subEnvelope.data() : nullptr;
+            for (int i = 0; i < numLayers; ++i)
+            {
+                if (i == sub)
+                    continue;
+                auto& layer = layers[(size_t) i];
+                const bool body = layer.role() == params::Role::body;
+                layer.setLowDuck (nullptr, body ? envelope : nullptr, body ? lowDuckDepth : 0.0f);
                 layer.setClock (clock);
                 layer.render (l, r, n);
             }
@@ -328,5 +351,7 @@ private:
     float bendRange = 2.0f, mpeRange = 48.0f;
     bool mpe = false;
     int maxBlock = 512;
+    std::vector<float> subEnvelope;
+    float lowDuckDepth = 0.0f;
 };
 }

@@ -12,7 +12,7 @@ namespace ps::params
     // 10: HOLD, the main page's CUTOFF and RESO, pitch bend / MPE, mod wheel and aftertouch.
     // 11: layers 5-8.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 11;
+    inline constexpr int stateVersion = 12;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -59,6 +59,14 @@ namespace ps::params
     inline const juce::ParameterID delayTone { "fx_dly_tone", 8 };        // feedback high cut, Hz
     inline const juce::ParameterID delayPingPong { "fx_dly_pingpong", 8 };
     inline const juce::ParameterID delayDuck { "fx_dly_duck", 8 };
+    // The patch's master chain on the summed stack, before the sends (StackBus.h Pressure::processMaster, BusWidth)
+    inline const juce::ParameterID ottAmount { "bus_ott", 12 };          // percent
+    inline const juce::ParameterID ottTime { "bus_ott_time", 12 };       // percent of the default attack/release
+    inline const juce::ParameterID ottUpward { "bus_ott_up", 12 };       // percent: how much the quiet parts are lifted
+    inline const juce::ParameterID glueAmount { "bus_glue", 12 };        // dB of gain reduction
+    inline const juce::ParameterID glueRelease { "bus_glue_rel", 12 };   // ms
+    inline const juce::ParameterID stackWidth { "bus_width", 12 };       // percent of the side signal above 250 Hz
+    inline const juce::ParameterID subDuck { "sub_duck", 12 };           // percent: the sub ducks the body's lows
     // The note generator (Arp.h): Off, Arp or Seq, on one step grid
     inline const juce::ParameterID arpMode { "arp_mode", 9 };
     inline const juce::ParameterID arpRate { "arp_rate", 9 };            // DelayDivision index
@@ -244,6 +252,21 @@ namespace ps::params
                     return v < 1000.0f ? juce::String (juce::roundToInt (v)) + " Hz" : juce::String (v * 0.001f, 1) + " kHz"; })));
             layout.add (std::make_unique<juce::AudioParameterBool> (delayPingPong, "Delay Ping-Pong", true));
             layout.add (std::make_unique<Float> (delayDuck, "Delay Duck", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
+
+            juce::NormalisableRange<float> ottTimeRange (25.0f, 400.0f, 1.0f);
+            ottTimeRange.setSkewForCentre (100.0f);
+            juce::NormalisableRange<float> glueReleaseRange (50.0f, 1000.0f, 1.0f);
+            glueReleaseRange.setSkewForCentre (200.0f);
+            auto ms = juce::AudioParameterFloatAttributes().withLabel ("ms")
+                          .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " ms"; });
+            layout.add (std::make_unique<Float> (ottAmount, "OTT", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+            layout.add (std::make_unique<Float> (ottTime, "OTT Time", ottTimeRange, 100.0f, percent));
+            layout.add (std::make_unique<Float> (ottUpward, "OTT Upward", juce::NormalisableRange<float> (0.0f, 100.0f), 100.0f, percent));
+            layout.add (std::make_unique<Float> (glueAmount, "Glue", juce::NormalisableRange<float> (0.0f, 6.0f, 0.01f), 0.0f,
+                juce::AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " dB"; })));
+            layout.add (std::make_unique<Float> (glueRelease, "Glue Release", glueReleaseRange, 200.0f, ms));
+            layout.add (std::make_unique<Float> (stackWidth, "Width", juce::NormalisableRange<float> (0.0f, 200.0f), 100.0f, percent));
+            layout.add (std::make_unique<Float> (subDuck, "Sub Duck", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
 
             layout.add (std::make_unique<juce::AudioParameterChoice> (arpMode, "Arp Mode", arpModeNames, 0));
             layout.add (std::make_unique<juce::AudioParameterChoice> (arpRate, "Arp Rate", delayDivisionNames, 2));
