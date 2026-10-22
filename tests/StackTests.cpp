@@ -1517,6 +1517,146 @@ void benchmarkJp()
     CHECK (modern16 < 30.0, "the heaviest unison stays under 30% of one core");
 }
 
+// ---- Layer filter and drive ---------------------------------------------------------------------------
+
+float filterTypeValue (ps::params::FilterType t) { return (float) (int) t; }
+
+void testLayerFilter()
+{
+    namespace p = ps::params;
+    // Share of the energy above 2 kHz for a JP saw (A2) through layer 3's filter
+    auto bright = [] (std::initializer_list<std::pair<juce::ParameterID, float>> settings, int note = 45)
+    {
+        JpRig rig ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) } });
+        for (auto& [id, v] : settings)
+            rig.set (id, v);
+        auto x = rig.render (24000, { { 0, on (note) } });
+        return bandEnergy (x, 12000, 2000.0, 20000.0) / bandEnergy (x, 12000, 50.0, 20000.0);
+    };
+    const float open = bright ({});
+    const float ladder = bright ({ { p::layerFilterType (2), filterTypeValue (p::FilterType::ladder24) }, { p::layerCutoff (2), 300.0f }, { p::layerKeyTrack (2), 0.0f } });
+    const float lp12 = bright ({ { p::layerFilterType (2), filterTypeValue (p::FilterType::lowPass12) }, { p::layerCutoff (2), 300.0f }, { p::layerKeyTrack (2), 0.0f } });
+    const float hp = bright ({ { p::layerFilterType (2), filterTypeValue (p::FilterType::highPass) }, { p::layerCutoff (2), 3000.0f }, { p::layerKeyTrack (2), 0.0f } });
+    std::cout << "info: layer filter highs share: open " << open << ", ladder " << ladder << ", LP12 " << lp12 << ", HP " << hp << "\n";
+    CHECK (ladder < open * 1.0e-3f, "layer ladder 24 at 300 Hz removes the highs (30 dB down)");
+    CHECK (lp12 > ladder && lp12 < open * 0.1f, "layer LP 12 is gentler than the ladder");
+    CHECK (hp > 4.0f * open, "layer HP keeps the highs and removes the lows");
+
+    // Band-pass: most of the energy sits within an octave of the cutoff
+    {
+        JpRig rig ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) } });
+        rig.set (p::layerFilterType (2), filterTypeValue (p::FilterType::bandPass));
+        rig.set (p::layerCutoff (2), 1000.0f);
+        rig.set (p::layerKeyTrack (2), 0.0f);
+        rig.set (p::layerResonance (2), 60.0f);
+        auto x = rig.render (24000, { { 0, on (45) } });
+        const float share = bandEnergy (x, 12000, 700.0, 1400.0) / bandEnergy (x, 12000, 50.0, 20000.0);
+        CHECK (share > 0.5f, "layer BP keeps the band around its cutoff (" + std::to_string (share) + " of the energy)");
+    }
+
+    // Key track 100 %: the cutoff follows the note, so two octaves apart the tone keeps its balance
+    auto keyed = [&] (float key, int note)
+    {
+        JpRig rig ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) } });
+        rig.set (p::layerFilterType (2), filterTypeValue (p::FilterType::ladder24));
+        rig.set (p::layerCutoff (2), 400.0f);
+        rig.set (p::layerKeyTrack (2), key);
+        auto x = rig.render (24000, { { 0, on (note) } });
+        const double f0 = 440.0 * std::pow (2.0, (note - 69) / 12.0);
+        return bandEnergy (x, 12000, 3.5 * f0, 20000.0) / bandEnergy (x, 12000, 0.5 * f0, 20000.0);
+    };
+    const float trackedLow = keyed (100.0f, 45), trackedHigh = keyed (100.0f, 69);
+    const float fixedLow = keyed (0.0f, 45), fixedHigh = keyed (0.0f, 69);
+    const float trackedDb = std::abs (juce::Decibels::gainToDecibels (trackedHigh / trackedLow));
+    const float fixedDb = std::abs (juce::Decibels::gainToDecibels (fixedHigh / fixedLow));
+    std::cout << "info: key track: upper-harmonic share changes " << trackedDb << " dB tracked, " << fixedDb << " dB fixed over 2 octaves\n";
+    CHECK (trackedDb < 3.0f && fixedDb > trackedDb + 10.0f, "key track 100 % keeps the tone across the keyboard");
+
+    // Filter envelope: bright at the attack, dark once decayed to its zero sustain
+    {
+        JpRig rig ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) } });
+        rig.set (p::layerFilterType (2), filterTypeValue (p::FilterType::ladder24));
+        rig.set (p::layerCutoff (2), 200.0f);
+        rig.set (p::layerKeyTrack (2), 0.0f);
+        rig.set (p::layerFilterEnv (2), 48.0f);
+        rig.set (p::layerFilterDecay (2), 150.0f);
+        auto x = rig.render (48000, { { 0, on (45) } });
+        CHECK (bandEnergy (x, 0, 1000.0, 20000.0) > 30.0f * bandEnergy (x, 36000, 1000.0, 20000.0), "the layer filter envelope opens and closes the filter");
+    }
+
+    // Full resonance with full drive on every type stays bounded
+    for (int type = 1; type <= 4; ++type)
+    {
+        JpRig rig;
+        rig.set (p::layerFilterType (2), (float) type);
+        rig.set (p::layerCutoff (2), 800.0f);
+        rig.set (p::layerResonance (2), 100.0f);
+        rig.set (p::layerDrive (2), 100.0f);
+        auto x = rig.render (48000, { { 0, on (40, 1.0f) }, { 0, on (64, 1.0f) }, { 0, on (71, 1.0f) } });
+        CHECK (allFinite (x) && peak (x) < 4.0f, "layer filter at full resonance and drive stays bounded (type " + std::to_string (type) + ")");
+    }
+
+    // Switching the type while a note sounds crossfades: no step bigger than the tone's own slope
+    {
+        Rig rig;
+        rig.set (p::layerCutoff (2), 2000.0f);
+        rig.set (p::layerKeyTrack (2), 0.0f);
+        auto steady = rig.render (12000, { { 0, on (57) } });
+        const float base = maxStep (std::vector<float> (steady.begin() + 6000, steady.end()));
+        float worst = 0.0f;
+        for (int type : { 1, 2, 4, 3, 0, 4, 1 })
+        {
+            rig.set (p::layerFilterType (2), (float) type);
+            auto x = rig.render (4800);
+            worst = std::max (worst, maxStep (x));
+        }
+        CHECK (worst < 1.6f * base, "switching the layer filter type does not click (" + std::to_string (worst / base) + "x the tone's slope)");
+    }
+}
+
+void testLayerDrive()
+{
+    namespace p = ps::params;
+    auto play = [] (float drive, int note, std::vector<float>* rightOut = nullptr)
+    {
+        Rig rig;
+        rig.set (p::layerDrive (2), drive);
+        auto x = rig.render (48000, { { 0, on (note, 1.0f) } });
+        if (rightOut != nullptr)
+            *rightOut = rig.right;
+        return x;
+    };
+    const auto clean = play (0.0f, 57), driven = play (100.0f, 57);
+    const float third = bandEnergy (driven, 24000, 600.0, 720.0) / bandEnergy (driven, 24000, 180.0, 260.0);
+    const float cleanThird = bandEnergy (clean, 24000, 600.0, 720.0) / bandEnergy (clean, 24000, 180.0, 260.0);
+    std::cout << "info: drive 100 % third harmonic " << juce::Decibels::gainToDecibels (third) * 0.5f << " dB (clean "
+              << juce::Decibels::gainToDecibels (cleanThird) * 0.5f << " dB)\n";
+    CHECK (third > 1.0e-3f && cleanThird < 1.0e-8f, "drive adds harmonics, drive 0 adds none");
+    const float levelDb = juce::Decibels::gainToDecibels (rms (driven, 24000, 48000) / rms (clean, 24000, 48000));
+    CHECK (std::abs (levelDb) < 3.0f, "full drive stays within 3 dB of the clean level (" + std::to_string (levelDb) + " dB)");
+
+    const int note = 99;   // 2.49 kHz
+    const auto high = play (100.0f, note);
+    const float alias = worstAliasDb (high, 24000, 440.0 * std::pow (2.0, (note - 69) / 12.0));
+    std::cout << "info: drive 100 % at 2.5 kHz, worst alias " << alias << " dB\n";
+    CHECK (alias < -60.0f, "full drive at 2.5 kHz keeps aliases below -60 dB");
+
+    // Turning the drive up and down while the note sounds steps nowhere: the slope while the drive moves stays
+    // within the steeper of the tone's slopes before and after (saturation itself steepens the edges)
+    Rig rig;
+    auto steady = rig.render (12000, { { 0, on (57, 1.0f) } });
+    float before = maxStep (std::vector<float> (steady.begin() + 9600, steady.end())), worst = 0.0f;
+    for (float d : { 100.0f, 0.0f, 60.0f, 3.0f, 100.0f })
+    {
+        rig.set (p::layerDrive (2), d);
+        auto x = rig.render (4800);
+        const float after = maxStep (std::vector<float> (x.begin() + 2400, x.end()));
+        worst = std::max (worst, maxStep (std::vector<float> (x.begin(), x.begin() + 600)) / std::max (before, after));
+        before = after;
+    }
+    CHECK (worst < 1.1f, "jumping the drive does not click (" + std::to_string (worst) + "x the steadier slope)");
+}
+
 void testOddBlockSizes()
 {
     Rig rig;
@@ -1535,6 +1675,12 @@ int main()
     {
         benchmarkJp();
         return 0;
+    }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_LAYER_ONLY", {}).isNotEmpty())   // filter and drive
+    {
+        testLayerFilter();
+        testLayerDrive();
+        return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_CHAIN_ONLY", {}).isNotEmpty())   // iterating on the knobs
     {
@@ -1588,6 +1734,8 @@ int main()
     testJpSwitchesDoNotClick();
     testSubEngine();
     testWavetableEngine();
+    testLayerFilter();
+    testLayerDrive();
     testChainPaths();
     testOnsetDuck();
     testBloomSpace();

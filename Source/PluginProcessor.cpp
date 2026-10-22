@@ -36,7 +36,11 @@ PotatoSynthProcessor::PotatoSynthProcessor()
                                          raw (p::layerSemi (i)), raw (p::layerFine (i)), raw (p::layerAttack (i)),
                                          raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)),
                                          raw (p::layerVoiceMode (i)), raw (p::layerGlide (i)), raw (p::layerRole (i)),
-                                         raw (p::crossoverLow), raw (p::crossoverHigh), {} });
+                                         raw (p::crossoverLow), raw (p::crossoverHigh), {},
+                                         raw (p::layerFilterType (i)), raw (p::layerCutoff (i)), raw (p::layerResonance (i)),
+                                         raw (p::layerFilterEnv (i)), raw (p::layerKeyTrack (i)), raw (p::layerFilterAttack (i)),
+                                         raw (p::layerFilterDecay (i)), raw (p::layerFilterSustain (i)), raw (p::layerFilterRelease (i)),
+                                         raw (p::layerDrive (i)) });
         for (int k = 0; k < p::numEngineSlots; ++k)
             stack.layer (i).setSlotParameter (k, raw (p::layerSlot (i, k)));
     }
@@ -81,7 +85,8 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     loudnessTrim.prepare (sampleRate, samplesPerBlock);
     for (int k = 0; k < ps::params::numChainKnobs; ++k)
         knobPosition[(size_t) k] = chainKnobs[(size_t) k]->load();
-    setLatencySamples (clipper.getLatencySamples() + limiter.getLatencySamples());   // constant for a given sample rate
+    setLatencySamples (juce::roundToInt (stack.layer (0).driveLatencySamples())
+                       + clipper.getLatencySamples() + limiter.getLatencySamples());   // constant for a given sample rate
     stackGain.reset (sampleRate, 0.05);
     masterGain.reset (sampleRate, 0.02);
     masterGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));

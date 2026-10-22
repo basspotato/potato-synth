@@ -52,6 +52,19 @@ namespace ps::params
     inline juce::ParameterID layerGlide (int i)   { return layerParam (i, "glide", 3); }
     inline juce::ParameterID layerRole (int i)    { return layerParam (i, "role", 4); }
     inline juce::ParameterID layerAnchor (int i)  { return layerParam (i, "anchor", 8); }   // XY pad leaves it at full
+    // Per-layer filter (per voice, its own envelope) and drive (Layer.h)
+    inline juce::ParameterID layerFilterType (int i)    { return layerParam (i, "flt_type", 8); }
+    inline juce::ParameterID layerCutoff (int i)        { return layerParam (i, "flt_cutoff", 8); }
+    inline juce::ParameterID layerResonance (int i)     { return layerParam (i, "flt_reso", 8); }
+    inline juce::ParameterID layerFilterEnv (int i)     { return layerParam (i, "flt_env", 8); }
+    inline juce::ParameterID layerKeyTrack (int i)      { return layerParam (i, "flt_key", 8); }
+    inline juce::ParameterID layerFilterAttack (int i)  { return layerParam (i, "flt_attack", 8); }
+    inline juce::ParameterID layerFilterDecay (int i)   { return layerParam (i, "flt_decay", 8); }
+    inline juce::ParameterID layerFilterSustain (int i) { return layerParam (i, "flt_sustain", 8); }
+    inline juce::ParameterID layerFilterRelease (int i) { return layerParam (i, "flt_release", 8); }
+    inline juce::ParameterID layerDrive (int i)         { return layerParam (i, "drive", 8); }
+    enum class FilterType { off, ladder24, lowPass12, bandPass, highPass };
+    inline const juce::StringArray filterTypeNames { "Off", "Ladder 24", "LP 12", "BP", "HP" };
 
     // Engine slots: 16 generic 0..1 parameters per layer. Each engine says what its slots mean.
     inline constexpr int numEngineSlots = 24;
@@ -167,6 +180,25 @@ namespace ps::params
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerVoiceMode (i), role + " Voice Mode", voiceModeNames, 0));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerRole (i), role + " Role", roleNames, i));
             layout.add (std::make_unique<juce::AudioParameterBool> (layerAnchor (i), role + " Anchor", i == 0));   // the Sub holds the floor
+            {
+                auto percent = juce::AudioParameterFloatAttributes().withLabel ("%")
+                                   .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; });
+                juce::NormalisableRange<float> hz (20.0f, 20000.0f);
+                hz.setSkewForCentre (1000.0f);
+                layout.add (std::make_unique<juce::AudioParameterChoice> (layerFilterType (i), role + " Filter", filterTypeNames, 0));
+                layout.add (std::make_unique<Float> (layerCutoff (i), role + " Cutoff", hz, 20000.0f,
+                    juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction ([] (float v, int) {
+                        return v < 1000.0f ? juce::String (juce::roundToInt (v)) + " Hz" : juce::String (v * 0.001f, 2) + " kHz"; })));
+                layout.add (std::make_unique<Float> (layerResonance (i), role + " Resonance", juce::NormalisableRange<float> (0.0f, 100.0f), 10.0f, percent));
+                layout.add (std::make_unique<Float> (layerFilterEnv (i), role + " Filter Env", juce::NormalisableRange<float> (-48.0f, 48.0f, 0.1f), 0.0f,
+                    juce::AudioParameterFloatAttributes().withLabel ("st")));
+                layout.add (std::make_unique<Float> (layerKeyTrack (i), role + " Key Track", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
+                layout.add (std::make_unique<Float> (layerFilterAttack (i), role + " Filter Attack", detail::timeRange (0.0f, 10000.0f, 200.0f), 2.0f, detail::msAttributes()));
+                layout.add (std::make_unique<Float> (layerFilterDecay (i), role + " Filter Decay", detail::timeRange (1.0f, 20000.0f, 500.0f), 600.0f, detail::msAttributes()));
+                layout.add (std::make_unique<Float> (layerFilterSustain (i), role + " Filter Sustain", juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 0.0f, percent));
+                layout.add (std::make_unique<Float> (layerFilterRelease (i), role + " Filter Release", detail::timeRange (1.0f, 30000.0f, 500.0f), 300.0f, detail::msAttributes()));
+                layout.add (std::make_unique<Float> (layerDrive (i), role + " Drive", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+            }
             for (int k = 0; k < numEngineSlots; ++k)
                 layout.add (std::make_unique<Float> (layerSlot (i, k), role + " Engine " + juce::String (k + 1),
                     juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f,

@@ -1,6 +1,8 @@
 #pragma once
 #include "Engine.h"
 #include "Envelope.h"
+#include "Filter.h"
+#include "Drive.h"
 #include "RoleBand.h"
 #include "HarmonyEngine.h"
 #include "Params.h"
@@ -29,6 +31,16 @@ struct LayerParams
     std::atomic<float>* crossoverLowHz = nullptr;  // global, shared by every layer
     std::atomic<float>* crossoverHighHz = nullptr;
     std::array<std::atomic<float>*, Engine::numSlots> slots {};   // engine slots e1..e24, meaning set by the engine
+    std::atomic<float>* filterType = nullptr;          // params::FilterType index
+    std::atomic<float>* cutoffHz = nullptr;
+    std::atomic<float>* resonance = nullptr;           // percent
+    std::atomic<float>* filterEnvSemis = nullptr;
+    std::atomic<float>* keyTrack = nullptr;            // percent
+    std::atomic<float>* filterAttackMs = nullptr;
+    std::atomic<float>* filterDecayMs = nullptr;
+    std::atomic<float>* filterSustainPercent = nullptr;
+    std::atomic<float>* filterReleaseMs = nullptr;
+    std::atomic<float>* drive = nullptr;               // percent
 };
 
 // One slot of the stack: an engine plus its per-layer controls.
@@ -90,6 +102,11 @@ public:
         startOrder.assign ((size_t) voices, 0);
         envelopes.assign ((size_t) voices, {});
         outgoingEnvelopes.assign ((size_t) voices, {});
+        voiceFilters.assign ((size_t) voices, {});
+        outgoingFilters.assign ((size_t) voices, {});
+        filterType = currentFilterType();
+        filterFade = 0;
+        layerDrive.prepare (maxBlock);
         level.reset (sr, 0.02);
         level.setCurrentAndTargetValue (targetGain());
         for (auto* g : { &panL, &panR })
@@ -153,6 +170,9 @@ public:
     {
         return carving ? 1.0f / (float) harmony::stageRatio (meter, carvedMeter) : 1.0f;
     }
+    // The drive's oversampler delay, the same on every layer (each sounding layer runs through it)
+    float driveLatencySamples() const noexcept { return layerDrive.getLatencySamples(); }
+
     params::Role role() const noexcept
     {
         return (params::Role) juce::jlimit (0, 4, juce::roundToInt (load (params.role, (float) params::Role::full)));
@@ -163,6 +183,8 @@ public:
     {
         for (auto& e : envelopes)
             e.reset();
+        for (auto& f : voiceFilters)
+            f.reset();
         if (active != nullptr)
             active->reset();
         clearMonoNotes();
@@ -187,6 +209,8 @@ public:
                         outgoingEnvelopes[(size_t) v] = envelopes[(size_t) v];
                         outgoingEnvelopes[(size_t) v].steal();
                         envelopes[(size_t) v].reset();
+                        outgoingFilters[(size_t) v] = voiceFilters[(size_t) v];
+                        voiceFilters[(size_t) v].reset();
                     }
                     outgoing = active;
                 }
@@ -201,6 +225,7 @@ public:
         updateVoiceMode();
         updateBand (false);
         updateEnvelopeSettings();
+        updateFilterType();
         if (active != nullptr)
         {
             active->setTune (tune.load() + 0.01f * chainDriftCents);
@@ -236,6 +261,7 @@ public:
             enforceVoiceCap (slot);
             startOrder[(size_t) slot] = order;
             active->noteOn (slot, { note, velocity, glideSeconds(), lastNote, false });
+            voiceFilters[(size_t) slot].start (note, envelopes[(size_t) slot].isActive());
             envelopes[(size_t) slot].trigger();
         }
         else
@@ -261,6 +287,7 @@ public:
             if (env.isActive() && ! env.isStealing())
             {
                 env.release();
+                voiceFilters[(size_t) slot].env.release();
                 active->noteOff (slot);
             }
             return;
@@ -277,6 +304,7 @@ public:
         else if (envelopes[0].isActive() && ! envelopes[0].isStealing())
         {
             envelopes[0].release();
+            voiceFilters[0].env.release();
             active->noteOff (0);
         }
     }
@@ -305,10 +333,14 @@ public:
         std::fill_n (scratchR.data(), numSamples, 0.0f);
 
         if (active != nullptr && ! isMuted())
-            renderVoices (*active, envelopes, numSamples);
+            renderVoices (*active, envelopes, voiceFilters, numSamples);
 
-        if (outgoing != nullptr && ! renderVoices (*outgoing, outgoingEnvelopes, numSamples))
+        if (outgoing != nullptr && ! renderVoices (*outgoing, outgoingEnvelopes, outgoingFilters, numSamples))
             retireNow (std::exchange (outgoing, nullptr));
+        if (filterFade > 0)
+            filterFade = std::max (0, filterFade - numSamples);
+
+        layerDrive.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.drive, 0.0f) * 0.01f));
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
         meter.process (scratchL.data(), scratchR.data(), numSamples);
@@ -414,8 +446,141 @@ private:
         return n;
     }
 
-    // Renders every sounding voice through its envelope into the scratch sum. Returns false once all are silent.
-    bool renderVoices (Engine& e, std::vector<AmpEnvelope>& envs, int numSamples)
+    // One voice's filter: its own envelope, a ladder and an SVF per channel (each runs only while selected)
+    struct VoiceFilter
+    {
+        AmpEnvelope env;
+        std::array<ZdfLadder, 2> ladder {};
+        std::array<ZdfSvf, 2> svf {};
+        float note = 60.0f;
+
+        // A fresh voice starts from clean filter states; a retrigger keeps them, so it glides without a click
+        void start (int midiNote, bool sounding) noexcept
+        {
+            if (! sounding)
+                reset();
+            note = (float) midiNote;
+            env.trigger();
+        }
+
+        void reset() noexcept
+        {
+            env.reset();
+            for (auto& l : ladder) l.reset();
+            for (auto& f : svf) f.reset();
+        }
+    };
+
+    params::FilterType currentFilterType() const noexcept
+    {
+        return (params::FilterType) juce::jlimit (0, 4, juce::roundToInt (load (params.filterType, 0.0f)));
+    }
+
+    static bool isSvf (params::FilterType t) noexcept { return t != params::FilterType::off && t != params::FilterType::ladder24; }
+
+    // A type change crossfades over 5 ms from the old response; the incoming filter starts from clean states
+    void updateFilterType() noexcept
+    {
+        const auto t = currentFilterType();
+        if (t == filterType)
+            return;
+        const bool ladderIn = t == params::FilterType::ladder24 && filterType != params::FilterType::ladder24;
+        const bool svfIn = isSvf (t) && ! isSvf (filterType);
+        for (auto* bank : { &voiceFilters, &outgoingFilters })
+            for (auto& f : *bank)
+            {
+                if (ladderIn) for (auto& l : f.ladder) l.reset();
+                if (svfIn)    for (auto& s : f.svf) s.reset();
+            }
+        previousFilterType = filterType;
+        filterType = t;
+        filterFade = filterFadeSamples();
+    }
+
+    int filterFadeSamples() const noexcept { return std::max (1, (int) (0.005 * sampleRate.load())); }
+
+    struct FilterOutputs { float dry, ladder; ZdfSvf::Outputs svf; float bandGain; };
+
+    static float select (params::FilterType t, const FilterOutputs& o) noexcept
+    {
+        switch (t)
+        {
+            case params::FilterType::off:       return o.dry;
+            case params::FilterType::ladder24:  return o.ladder;
+            case params::FilterType::lowPass12: return o.svf.low;
+            case params::FilterType::bandPass:  return o.svf.band * o.bandGain;   // unity at the centre
+            case params::FilterType::highPass:  return o.svf.high;
+        }
+        return o.dry;
+    }
+
+    // Filters one voice in place. The cutoff (patch + key track + envelope) is computed every 4 samples and
+    // the TPT gain interpolated between, so envelope sweeps stay smooth at a quarter of the cost.
+    void filterVoice (VoiceFilter& f, int numSamples) noexcept
+    {
+        const bool fading = filterFade > 0;
+        if (filterType == params::FilterType::off && ! (fading && previousFilterType != params::FilterType::off))
+        {
+            for (int i = 0; i < numSamples; ++i)
+                f.env.next (filterAdsr);   // keep the envelope running so switching the filter on mid-note is in step
+            return;
+        }
+        const float sr = (float) sampleRate.load();
+        const float baseSemis = 12.0f * std::log2 (juce::jlimit (20.0f, 20000.0f, load (params.cutoffHz, 20000.0f)) / 440.0f)
+                              + load (params.keyTrack, 50.0f) * 0.01f * (f.note - 60.0f);
+        const float envSemis = load (params.filterEnvSemis, 0.0f);
+        const float r = juce::jlimit (0.0f, 1.0f, load (params.resonance, 10.0f) * 0.01f);
+        const float ladderK = 3.9f * r, svfK = juce::MathConstants<float>::sqrt2 * (1.0f - 0.97f * r);
+        auto gainFor = [&] (float envLevel)
+        {
+            const float semis = juce::jlimit (-60.0f, 60.0f, baseSemis + envLevel * envSemis);
+            return tptGain (440.0f * fastExp2 (semis * (1.0f / 12.0f)), sr);
+        };
+
+        int fadeLeft = filterFade;
+        const auto prev = fading ? previousFilterType : filterType;
+        const bool runLadder = filterType == params::FilterType::ladder24 || prev == params::FilterType::ladder24;
+        const bool runSvf = isSvf (filterType) || isSvf (prev);
+        const float fadeStep = 1.0f / (float) filterFadeSamples();
+        float g0 = gainFor (f.env.getLevel());
+        for (int start = 0; start < numSamples; start += 4)
+        {
+            const int n = std::min (4, numSamples - start);
+            float envLevel = 0.0f;
+            for (int j = 0; j < n; ++j)
+                envLevel = f.env.next (filterAdsr);
+            const float g1 = gainFor (envLevel);
+            for (int j = 0; j < n; ++j)
+            {
+                const float g = g0 + (g1 - g0) * (float) (j + 1) / (float) n;
+                const auto lc = ZdfLadder::Coeffs::make (g, ladderK);
+                const auto sc = ZdfSvf::Coeffs::make (g, svfK);
+                const int i = start + j;
+                float y[2] = { voiceL[(size_t) i], voiceR[(size_t) i] };
+                const float w = fadeLeft > 0 ? 0.5f - 0.5f * std::cos (juce::MathConstants<float>::pi * (1.0f - (float) fadeLeft * fadeStep)) : 1.0f;
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    FilterOutputs o { y[ch], 0.0f, { 0.0f, 0.0f, 0.0f }, sc.k };
+                    if (runLadder)
+                        // Half level into the soft-clipped loop for headroom; part of the resonance's passband loss made up
+                        o.ladder = 2.0f * f.ladder[(size_t) ch].process (0.5f * y[ch] * (1.0f + 0.5f * ladderK), lc);
+                    if (runSvf)
+                        o.svf = f.svf[(size_t) ch].process (y[ch], sc);
+                    const float now = select (filterType, o);
+                    y[ch] = fadeLeft > 0 ? select (previousFilterType, o) + w * (now - select (previousFilterType, o)) : now;
+                }
+                if (fadeLeft > 0)
+                    --fadeLeft;
+                const float yl = y[0], yr = y[1];
+                voiceL[(size_t) i] = yl;
+                voiceR[(size_t) i] = yr;
+            }
+            g0 = g1;
+        }
+    }
+
+    // Renders every sounding voice through its filter and envelope into the scratch sum. Returns false once all are silent.
+    bool renderVoices (Engine& e, std::vector<AmpEnvelope>& envs, std::vector<VoiceFilter>& filters, int numSamples)
     {
         bool anySounding = false;
         for (int v = 0; v < numVoices; ++v)
@@ -427,6 +592,7 @@ private:
             std::fill_n (voiceL.data(), numSamples, 0.0f);
             std::fill_n (voiceR.data(), numSamples, 0.0f);
             e.render (v, voiceL.data(), voiceR.data(), numSamples);
+            filterVoice (filters[(size_t) v], numSamples);
             for (int i = 0; i < numSamples; ++i)
             {
                 const float g = env.next (adsr);
@@ -453,7 +619,12 @@ private:
 
         active->noteOn (0, { n.note, n.velocity, glide ? glideSeconds() : 0.0, lastNote, legatoMove });
         if (! legatoMove)
+        {
+            voiceFilters[0].start (n.note, env.isActive());
             env.trigger();
+        }
+        else
+            voiceFilters[0].note = (float) n.note;
         monoOwner = n.slot;
     }
 
@@ -532,6 +703,8 @@ private:
     {
         adsr.set (sampleRate.load(), load (params.attackMs, 2.0f), load (params.decayMs, 400.0f),
                   load (params.sustainPercent, 100.0f) * 0.01f, load (params.releaseMs, 300.0f));
+        filterAdsr.set (sampleRate.load(), load (params.filterAttackMs, 2.0f), load (params.filterDecayMs, 600.0f),
+                        load (params.filterSustainPercent, 0.0f) * 0.01f, load (params.filterReleaseMs, 300.0f));
     }
 
     // Sends slot values that moved since the last block (all of them after an engine swap): the patch's
@@ -599,9 +772,13 @@ private:
     bool voicesClearedWhileMuted = false;
     juce::SmoothedValue<float> level { 1.0f }, panL { 1.0f }, panR { 1.0f };
     std::atomic<float> tune { 0.0f };   // semitones; written by the audio thread, read when a new engine is prepared
-    AdsrSettings adsr;
+    AdsrSettings adsr, filterAdsr;
     RoleBandLimit band;
     std::vector<AmpEnvelope> envelopes, outgoingEnvelopes;
+    std::vector<VoiceFilter> voiceFilters, outgoingFilters;
+    params::FilterType filterType = params::FilterType::off, previousFilterType = params::FilterType::off;
+    int filterFade = 0;
+    LayerDrive layerDrive;
     std::vector<float> scratchL, scratchR, voiceL, voiceR;
     std::vector<uint32_t> startOrder;
 
