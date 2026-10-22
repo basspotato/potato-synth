@@ -38,7 +38,8 @@ namespace
 }
 
 PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts), arpPage (p)
+    : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts), arpPage (p),
+      mixPage (p.apvts, p.getMixHealth(), [this] (int l) { return "Layer " + juce::String (l + 1) + " (" + roleTitle (layerRole (l)) + ")"; })
 {
     processor.getMixHealth().setActive (true);
     setLookAndFeel (&look);
@@ -62,8 +63,9 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     xyPad.attach (*processor.apvts.getParameter (ps::params::padX.getParamID()), *processor.apvts.getParameter (ps::params::padY.getParamID()));
     addChildComponent (layerPage);
     addChildComponent (arpPage);
+    addChildComponent (mixPage);
     layerPage.onEngineClick = [this] { showEngineMenu (selectedLayer); };
-    for (auto* tab : { &stackTab, &layerTab, &arpTab })
+    for (auto* tab : { &stackTab, &layerTab, &arpTab, &mixTab })
     {
         tab->setClickingTogglesState (false);
         addAndMakeVisible (*tab);
@@ -71,6 +73,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     stackTab.onClick = [this] { showPage (Page::stack); };
     arpTab.onClick = [this] { showPage (Page::arp); };
     layerTab.onClick = [this] { showPage (Page::layer); };
+    mixTab.onClick = [this] { showPage (Page::mix); };
     selectLayer (selectedLayer);
     showPage (Page::stack);
 
@@ -230,12 +233,15 @@ void PotatoSynthEditor::showPage (Page page)
 {
     layerPage.setVisible (page == Page::layer);
     arpPage.setVisible (page == Page::arp);
+    mixPage.setVisible (page == Page::mix);
     xyPad.setVisible (page == Page::stack);
     stackTab.setColour (juce::TextButton::buttonColourId, page == Page::stack ? ps::theme::air : ps::theme::panel);
     arpTab.setColour (juce::TextButton::buttonColourId, page == Page::arp ? ps::theme::mid : ps::theme::panel);
     layerTab.setAlpha (page == Page::layer ? 1.0f : 0.6f);
     stackTab.setAlpha (page == Page::stack ? 1.0f : 0.6f);
     arpTab.setAlpha (page == Page::arp ? 1.0f : 0.6f);
+    mixTab.setColour (juce::TextButton::buttonColourId, page == Page::mix ? ps::theme::body : ps::theme::panel);
+    mixTab.setAlpha (page == Page::mix ? 1.0f : 0.6f);
 }
 
 void PotatoSynthEditor::showEngineMenu (int layerIndex)
@@ -344,11 +350,13 @@ void PotatoSynthEditor::resized()
     auto right = area.removeFromRight (scaled (220));
     area.removeFromRight (scaled (20));
     auto tabs = area.withY (frame.getY() + scaled (24)).withHeight (scaled (34));
-    stackTab.setBounds (tabs.removeFromLeft (scaled (120)));
+    stackTab.setBounds (tabs.removeFromLeft (scaled (90)));
     tabs.removeFromLeft (scaled (8));
-    layerTab.setBounds (tabs.removeFromLeft (scaled (180)));
+    layerTab.setBounds (tabs.removeFromLeft (scaled (160)));
     tabs.removeFromLeft (scaled (8));
-    arpTab.setBounds (tabs.removeFromLeft (scaled (110)));
+    arpTab.setBounds (tabs.removeFromLeft (scaled (96)));
+    tabs.removeFromLeft (scaled (8));
+    mixTab.setBounds (tabs.removeFromLeft (scaled (60)));
 
     // Stack bus controls, top right
     auto bus = juce::Rectangle<int> (area.getRight() - scaled (420), frame.getY() + scaled (20), scaled (420) + scaled (240), scaled (42));
@@ -364,6 +372,7 @@ void PotatoSynthEditor::resized()
     xyPad.setBounds (area);
     layerPage.setBounds (area);
     arpPage.setBounds (area);
+    mixPage.setBounds (area);
 
     auto superArea = right.removeFromTop (scaled (210));
     super.label.setBounds (superArea.removeFromBottom (scaled (20)));

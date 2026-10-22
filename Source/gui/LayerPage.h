@@ -2,6 +2,7 @@
 #include "Theme.h"
 #include "../Params.h"
 #include "../Engine.h"
+#include "../Inserts.h"
 
 namespace ps
 {
@@ -70,7 +71,7 @@ private:
 };
 
 // Detail page for one layer: engine picker, the engine's own controls (its slots) or the layer's filter, drive and
-// chorus, voice mode, amp envelope, pan, tune and glide.
+// chorus, its two insert slots, voice mode, amp envelope, pan, tune and glide.
 class LayerPage : public juce::Component,
                   private juce::Timer
 {
@@ -139,7 +140,26 @@ public:
             b.onClick = [this, t] { setChoice (params::layerFilterType (layer), t); };
             addChildComponent (b);
         }
-        const char* const sectionNames[] = { "ENGINE", "FILTER / FX", "AMP / VOICE" };
+        // Insert slots: a type menu, Amount and the type's three controls per slot, and the order
+        for (int k = 0; k < params::numInsertSlots; ++k)
+        {
+            auto& slot = insertSlots[(size_t) k];
+            slot.type.onClick = [this, k] { showInsertMenu (k); };
+            addChildComponent (slot.type);
+            for (auto* knob : { &slot.amount, &slot.controls[0], &slot.controls[1], &slot.controls[2] })
+            {
+                knob->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 14);
+                knob->label.setJustificationType (juce::Justification::centred);
+                knob->label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                addChildComponent (knob->slider);
+                addChildComponent (knob->label);
+            }
+            slot.amount.label.setText ("AMOUNT", juce::dontSendNotification);
+        }
+        insertSwap.setButtonText ("SWAP ORDER");
+        insertSwap.setClickingTogglesState (true);
+        addChildComponent (insertSwap);
+        const char* const sectionNames[] = { "ENGINE", "FILTER / FX", "INSERTS", "AMP / VOICE" };
         for (int i = 0; i < (int) sectionButtons.size(); ++i)
         {
             auto& b = sectionButtons[(size_t) i];
@@ -189,6 +209,31 @@ public:
             auto* p = apvts.getParameter (fxIds[i].getParamID());
             k.slider.setDoubleClickReturnValue (true, p->convertFrom0to1 (p->getDefaultValue()));
         }
+        for (int k = 0; k < params::numInsertSlots; ++k)
+        {
+            auto& slot = insertSlots[(size_t) k];
+            slot.amount.attachment.reset();
+            slot.amount.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+                apvts, params::layerInsertAmount (index, k).getParamID(), slot.amount.slider);
+            slot.amount.slider.setDoubleClickReturnValue (true, 50.0);
+            for (int c = 0; c < 3; ++c)
+            {
+                auto& knob = slot.controls[(size_t) c];
+                knob.attachment.reset();
+                knob.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+                    apvts, params::layerInsertControl (index, k, c).getParamID(), knob.slider);
+            }
+            for (auto* knob : { &slot.amount, &slot.controls[0], &slot.controls[1], &slot.controls[2] })
+            {
+                knob->slider.setColour (juce::Slider::rotarySliderFillColourId, colour);
+                knob->label.setColour (juce::Label::textColourId, colour.interpolatedWith (theme::text, 0.35f));
+            }
+            slot.shownType = -1;
+        }
+        insertSwapAttachment.reset();
+        insertSwapAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+            apvts, params::layerInsertSwap (index).getParamID(), insertSwap);
+        insertSwap.setColour (juce::TextButton::buttonOnColourId, colour);
         slotsStale = true;   // reattached for this layer by the next setEngine()
         timerCallback();
         repaint();
@@ -229,7 +274,7 @@ public:
         engineButton.setBounds (header.removeFromRight (juce::jmin (260, header.getWidth() / 2)));
         r.removeFromTop (8);
         auto roleRow = r.removeFromTop (26);
-        auto sections = roleRow.removeFromRight (roleRow.getWidth() / 2);
+        auto sections = roleRow.removeFromRight (roleRow.getWidth() * 3 / 5);
         roleRow.removeFromRight (12);
         const int sw = sections.getWidth() / (int) sectionButtons.size();
         for (auto& b : sectionButtons)
@@ -308,10 +353,87 @@ private:
         layoutSlots();
     }
 
+    // The insert type menu; picking a type also sets its controls to that type's starting values
+    void showInsertMenu (int k)
+    {
+        juce::PopupMenu menu;
+        const int current = juce::roundToInt (apvts.getRawParameterValue (params::layerInsertType (layer, k).getParamID())->load());
+        for (int t = 0; t < inserts::numTypes; ++t)
+            menu.addItem (t + 1, params::insertTypeNames[t], true, t == current);
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&insertSlots[(size_t) k].type),
+                            [safe = juce::Component::SafePointer<LayerPage> (this), k, forLayer = layer] (int result)
+                            {
+                                if (safe == nullptr || result == 0 || safe->layer != forLayer)
+                                    return;
+                                const int t = result - 1;
+                                safe->setChoice (params::layerInsertType (forLayer, k), t);
+                                for (int c = 0; c < 3; ++c)
+                                {
+                                    auto* p = safe->apvts.getParameter (params::layerInsertControl (forLayer, k, c).getParamID());
+                                    p->beginChangeGesture();
+                                    p->setValueNotifyingHost (p->convertTo0to1 (inserts::controls[(size_t) t][(size_t) c].defaultValue));
+                                    p->endChangeGesture();
+                                }
+                                safe->timerCallback();
+                            });
+    }
+
+    // Names, value text and visibility of an insert slot's controls follow its type
+    void updateInsertSlot (int k)
+    {
+        auto& slot = insertSlots[(size_t) k];
+        const int type = juce::jlimit (0, inserts::numTypes - 1,
+                                       juce::roundToInt (apvts.getRawParameterValue (params::layerInsertType (layer, k).getParamID())->load()));
+        const bool shown = section == 2;
+        if (type != slot.shownType)
+        {
+            slot.shownType = type;
+            slot.type.setButtonText ("INSERT " + juce::String (k + 1) + ":  " + params::insertTypeNames[type].toUpperCase()
+                                     + juce::String (juce::CharPointer_UTF8 ("  \xe2\x96\xbe")));
+            for (int c = 0; c < 3; ++c)
+            {
+                auto& knob = slot.controls[(size_t) c];
+                const auto& info = inserts::controls[(size_t) type][(size_t) c];
+                knob.label.setText (juce::String (info.name).toUpperCase(), juce::dontSendNotification);
+                knob.slider.textFromValueFunction = [type, c] (double v) { return inserts::controlText ((inserts::Type) type, c, (float) v); };
+                knob.slider.setDoubleClickReturnValue (true, info.defaultValue);
+                knob.slider.updateText();
+            }
+        }
+        slot.type.setVisible (shown);
+        highlight (slot.type, type != 0, accent);
+        for (auto* knob : { &slot.amount, &slot.controls[0], &slot.controls[1], &slot.controls[2] })
+        {
+            knob->slider.setVisible (shown && type != 0);
+            knob->label.setVisible (shown && type != 0);
+        }
+    }
+
+    void layoutInserts()
+    {
+        auto area = slotArea.reduced (8, 8);
+        insertSwap.setBounds (area.removeFromBottom (26).removeFromRight (160));
+        area.removeFromBottom (6);
+        const int h = area.getHeight() / params::numInsertSlots;
+        for (auto& slot : insertSlots)
+        {
+            auto row = area.removeFromTop (h).reduced (0, 4);
+            slot.type.setBounds (row.removeFromLeft (juce::jmin (240, row.getWidth() / 3)).withSizeKeepingCentre (juce::jmin (240, row.getWidth() / 3), 30));
+            row.removeFromLeft (8);
+            const int w = row.getWidth() / 4;
+            for (auto* knob : { &slot.amount, &slot.controls[0], &slot.controls[1], &slot.controls[2] })
+            {
+                auto cell = row.removeFromLeft (w).reduced (4, 0);
+                knob->label.setBounds (cell.removeFromTop (12));
+                knob->slider.setBounds (cell);
+            }
+        }
+    }
+
     void showSection (int index)
     {
         section = index;
-        const bool filter = section == 1, voice = section == 2;
+        const bool filter = section == 1, voice = section == 3;
         envelope.setVisible (voice);
         for (auto& k : knobs)
         {
@@ -333,6 +455,7 @@ private:
             slotKnobs[(size_t) k].label.setVisible (section == 0 && k < usedSlots);
         }
         noSlots.setVisible (section == 0 && usedSlots == 0);
+        insertSwap.setVisible (section == 2);
         timerCallback();
     }
 
@@ -357,6 +480,7 @@ private:
     void layoutSlots()
     {
         layoutFx();
+        layoutInserts();
         auto area = slotArea.reduced (8, 10);
         noSlots.setBounds (slotArea);
         constexpr int perRow = 8;
@@ -390,6 +514,8 @@ private:
         const int role = juce::roundToInt (value (params::layerRole (layer)));
         for (int r = 0; r < (int) roleButtons.size(); ++r)
             highlight (roleButtons[(size_t) r], r == role, theme::roleColour (r));
+        for (int k = 0; k < params::numInsertSlots; ++k)
+            updateInsertSlot (k);
     }
 
     static void highlight (juce::TextButton& b, bool on, juce::Colour colour)
@@ -424,7 +550,17 @@ private:
     std::array<juce::TextButton, 5> roleButtons;
     std::array<Knob, 12> fxKnobs;
     std::array<juce::TextButton, 5> filterTypeButtons;
-    std::array<juce::TextButton, 3> sectionButtons;
-    int section = 0;   // engine, filter / FX, amp / voice
+    std::array<juce::TextButton, 4> sectionButtons;
+    int section = 0;   // engine, filter / FX, inserts, amp / voice
+    struct InsertSlot
+    {
+        juce::TextButton type;
+        Knob amount;
+        std::array<Knob, 3> controls;
+        int shownType = -1;
+    };
+    std::array<InsertSlot, params::numInsertSlots> insertSlots;
+    juce::TextButton insertSwap;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> insertSwapAttachment;
 };
 }
