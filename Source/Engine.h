@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_core/juce_core.h>
+#include <functional>
 
 namespace ps
 {
@@ -9,7 +10,8 @@ namespace ps
 struct SlotInfo
 {
     juce::String name;
-    float defaultValue = 0.0f;   // normalised 0..1
+    float defaultValue = 0.0f;                       // normalised 0..1
+    std::function<juce::String (float)> toText;      // normalised value to display text; percent if empty
 };
 
 // A note starting (or moving) on a voice.

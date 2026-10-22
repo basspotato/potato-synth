@@ -27,6 +27,7 @@ struct LayerParams
     std::atomic<float>* role = nullptr;            // params::Role index
     std::atomic<float>* crossoverLowHz = nullptr;  // global, shared by every layer
     std::atomic<float>* crossoverHighHz = nullptr;
+    std::array<std::atomic<float>*, Engine::numSlots> slots {};   // engine slots e1..e16, meaning set by the engine
 };
 
 // One slot of the stack: an engine plus its per-layer controls.
@@ -61,6 +62,9 @@ public:
             engine = std::make_unique<Empty>();   // an explicit "no engine" so the old one still fades out
         engine->prepare (sampleRate.load(), blockSize.load(), numVoices);
         engine->setTune (tune.load());
+        for (int k = 0; k < Engine::numSlots; ++k)
+            if (params.slots[(size_t) k] != nullptr)
+                engine->setSlot (k, params.slots[(size_t) k]->load());
         delete pending.exchange (engine.release());
     }
 
@@ -106,6 +110,7 @@ public:
     }
 
     void setParameters (const LayerParams& p) { params = p; }
+    void setSlotParameter (int slot, std::atomic<float>* p) { params.slots[(size_t) slot] = p; }
 
     void reset()
     {
@@ -137,6 +142,7 @@ public:
                 }
                 clearMonoNotes();
                 active = isEmpty (next) ? (retireNow (next), nullptr) : next;
+                slotsSent = false;
             }
         }
 
@@ -146,7 +152,10 @@ public:
         updateBand (false);
         updateEnvelopeSettings();
         if (active != nullptr)
+        {
             active->setTune (tune.load());
+            updateSlots();
+        }
 
         // Once the level has faded fully down, drop the voices (silent at zero gain) so they free their slots
         if (! isMuted())
@@ -409,6 +418,23 @@ private:
                   load (params.sustainPercent, 100.0f) * 0.01f, load (params.releaseMs, 300.0f));
     }
 
+    // Sends slot values that moved since the last block (all of them after an engine swap)
+    void updateSlots()
+    {
+        for (size_t k = 0; k < lastSlot.size(); ++k)
+        {
+            if (params.slots[k] == nullptr)
+                continue;
+            const float v = params.slots[k]->load();
+            if (! slotsSent || v < lastSlot[k] || v > lastSlot[k])
+            {
+                active->setSlot ((int) k, v);
+                lastSlot[k] = v;
+            }
+        }
+        slotsSent = true;
+    }
+
     // When the engine's voice budget is full, the oldest sounding voice fades out to make room.
     void enforceVoiceCap (int newVoice)
     {
@@ -438,6 +464,8 @@ private:
     int numVoices = 16;
 
     LayerParams params;
+    std::array<float, Engine::numSlots> lastSlot {};   // audio thread only
+    bool slotsSent = false;
     bool voicesClearedWhileMuted = false;
     juce::SmoothedValue<float> level { 1.0f }, panL { 1.0f }, panR { 1.0f };
     std::atomic<float> tune { 0.0f };   // semitones; written by the audio thread, read when a new engine is prepared

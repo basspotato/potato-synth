@@ -13,7 +13,7 @@ class TestSineEngine final : public Engine
 public:
     const EngineInfo& info() const override
     {
-        static const EngineInfo i { "test.sine", "Test Sine", 16, { { "Octave", 0.5f } } };
+        static const EngineInfo i { "test.sine", "Test Sine", 16, { { "Octave", 0.5f, octaveText } } };
         return i;
     }
 
@@ -61,8 +61,12 @@ public:
 
     void setSlot (int slot, float value) override
     {
-        if (slot == 0)
-            octaveShift = juce::roundToInt (value * 4.0f) - 2;
+        if (slot != 0)
+            return;
+        octaveShift = juce::roundToInt (value * 4.0f) - 2;
+        for (auto& v : voices)
+            if (v.active)
+                v.increment = incrementFor (v.pitch.getCurrent());
     }
 
     void render (int voice, float* left, float* right, int numSamples) override
@@ -86,6 +90,12 @@ public:
     }
 
 private:
+    static juce::String octaveText (float value)
+    {
+        const int oct = juce::roundToInt (value * 4.0f) - 2;
+        return (oct > 0 ? "+" : "") + juce::String (oct) + " oct";
+    }
+
     struct Voice
     {
         double phase = 0.0, increment = 0.0;
