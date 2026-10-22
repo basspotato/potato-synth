@@ -153,6 +153,13 @@ public:
     // BLOOM's pitch drift on top of the layer's tune, in cents (the engines' setTune is phase-continuous)
     void setChainDrift (float cents) noexcept { chainDriftCents = cents; }
 
+    // The chain knobs' drive and chorus on top of the patch's (0..1 each)
+    void setChainInserts (float drive, float chorusAmount) noexcept
+    {
+        chainDrive = drive;
+        chainChorus = chorusAmount;
+    }
+
     // GROOVE's inter-layer ducking: each new note dips this layer by depthDb for about windowMs, so the
     // transient layers' attacks read through it (forward masking). 0 dB turns it off.
     void setOnsetDuck (float depthDb, float windowMs) noexcept
@@ -403,10 +410,10 @@ public:
         if (filterFade > 0)
             filterFade = std::max (0, filterFade - numSamples);
 
-        layerDrive.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.drive, 0.0f) * 0.01f));
+        layerDrive.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.drive, 0.0f) * 0.01f + chainDrive));
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
-        chorus.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.chorus, 0.0f) * 0.01f),
+        chorus.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.chorus, 0.0f) * 0.01f + chainChorus),
                         load (params.chorusRateHz, 0.4f), load (params.chorusDepth, 50.0f) * 0.01f);
         meter.process (scratchL.data(), scratchR.data(), numSamples);
         const bool carved = carve.process (scratchL.data(), scratchR.data(), numSamples, carveTargets, carveAnalyse);
@@ -860,7 +867,7 @@ private:
     float chainLevelDb = 0.0f;
     std::array<float, numSlotRoles> chainSlots {};
     OnsetDuck duck;
-    float chainDriftCents = 0.0f;
+    float chainDriftCents = 0.0f, chainDrive = 0.0f, chainChorus = 0.0f;
     harmony::CarveBank carve;
     harmony::KPowerMeter carvedMeter;
     std::array<float, harmony::CarveBank::numBands> carveTargets { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };

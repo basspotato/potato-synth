@@ -244,7 +244,8 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                          (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n);
     // The pump's makeup is exact and immediate (no meter to wait for), so it rides on top of the smoothed trim.
     // Both go in inside the clipper, after its knob stages.
-    const float trim = juce::jlimit (0.25f, 4.0f, loudnessTrim.getGain() / std::sqrt (pump.powerRatio()));
+    const float trim = juce::jlimit (0.25f, 4.0f, loudnessTrim.getGain() / std::sqrt (pump.powerRatio())
+                                                      * juce::Decibels::decibelsToGain (offsets.loudnessLiftDb));
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
     masterGain.applyGain (buffer, buffer.getNumSamples());
@@ -434,6 +435,7 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
         stack.layer (i).setOnsetDuck (offsets.onsetDuckDb[(size_t) i], offsets.onsetDuckMs);
         stack.layer (i).setCarveGains (carve[(size_t) i], carving);
         stack.layer (i).setChainDrift (offsets.driftCents[(size_t) i] * driftSmoothed);
+        stack.layer (i).setChainInserts (offsets.layerDrive[(size_t) i], offsets.layerChorus[(size_t) i]);
     }
     return offsets;
 }

@@ -519,6 +519,7 @@ private:
         s[spread]      = { "Spread", 0.7f, percent };
         s[morph].role = SlotRole::position;
         s[tilt].role = SlotRole::brightness;
+        s[formant].role = SlotRole::formant;
         s[detune].role = SlotRole::detune;
         s[mix].role = SlotRole::unisonMix;
         s[spread].role = SlotRole::stereoSpread;

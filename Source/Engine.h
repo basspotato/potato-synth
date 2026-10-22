@@ -22,9 +22,11 @@ enum class SlotRole
     brightness,    // main filter cutoff or tone
     position,      // wavetable position
     warp,          // phase warp (bipolar, 0.5 = none)
-    positionSpread // wavetable position spread across unison
+    positionSpread,// wavetable position spread across unison
+    crossMod,      // oscillator cross-modulation depth
+    formant        // formant shift (bipolar, 0.5 = none)
 };
-inline constexpr int numSlotRoles = (int) SlotRole::positionSpread + 1;
+inline constexpr int numSlotRoles = (int) SlotRole::formant + 1;
 
 struct SlotInfo
 {

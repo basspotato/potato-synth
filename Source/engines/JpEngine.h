@@ -200,6 +200,7 @@ private:
         s[spread].role = SlotRole::stereoSpread;
         s[drive].role = SlotRole::drive;
         s[cutoff].role = SlotRole::brightness;
+        s[xmodDepth].role = SlotRole::crossMod;
         return s;
     }
 

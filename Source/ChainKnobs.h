@@ -95,6 +95,9 @@ enum class Target
     spaceWet,          // the shared reverb's return, linear gain (Space.h)
     spaceRt60,         // its decay, seconds
     spaceDuck,         // how far the return dips under the dry signal, 0..1
+    layerDrive,        // matching layers' drive (Drive.h LayerDrive), added to the patch's, 0..1
+    layerChorus,       // matching layers' chorus amount (Inserts.h), added to the patch's, 0..1
+    loudnessLiftDb,    // the loudness the Harmony Engine holds, raised by this much (kept inside +-0.5 LU)
 };
 
 // Which layers a route applies to: a bit per params::Role
@@ -118,14 +121,22 @@ inline const std::vector<Route>& routes()
         // MASS: more felt low end at the same meter level
         // (Translate's harmonics spend loudness the trim then takes back from the whole stack, so MASS leans on
         // the low focus, which K-weighting barely counts, and uses Translate lightly)
-        { mass, Target::slot, sub, SlotRole::translate, Path ({ 0.0f, 0.15f, 0.3f, 0.4f, 0.5f }) },
-        { mass, Target::lowFocusDb, anyRole, SlotRole::none, Path ({ 0.0f, 1.2f, 2.5f, 3.6f, 4.5f }) },
+        // Listening (2026-10-22): the first tuning was too subtle. The body's drive now goes through the layer
+        // drive, so it works on every engine (the init body, a Wavetable, has no drive slot).
+        { mass, Target::slot, sub, SlotRole::translate, Path ({ 0.0f, 0.2f, 0.4f, 0.6f, 0.75f }) },
+        { mass, Target::lowFocusDb, anyRole, SlotRole::none, Path ({ 0.0f, 1.8f, 3.5f, 5.0f, 6.0f }) },
         { mass, Target::slot, body, SlotRole::drive, Path ({ 0.0f, 0.08f, 0.17f, 0.26f, 0.35f }) },
-        { mass, Target::slot, body, SlotRole::subOctave, Path ({ 0.0f, 0.1f, 0.25f, 0.38f, 0.5f }) },
+        { mass, Target::layerDrive, body, SlotRole::none, Path ({ 0.0f, 0.1f, 0.2f, 0.3f, 0.4f }) },
+        { mass, Target::slot, body, SlotRole::subOctave, Path ({ 0.0f, 0.15f, 0.35f, 0.55f, 0.7f }) },
         { mass, Target::monoBassOctaves, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.18f, 0.22f }) },
+        // The body's drive and the limiter on the bigger sub peaks cost loudness the open-loop trim can't see
+        { mass, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
 
         // PRESSURE: distributed gain reduction across saturation, OTT, glue and clipper (the stage owns the split)
         { pressure, Target::pressure, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
+        // Listening: at the same meter loudness, the denser sound read as quieter (the trim had also settled
+        // 0.35 LU low). It now ends 0.3 LU up: louder by a hair, as a mastered sound is, and inside the band.
+        { pressure, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.15f, 0.3f, 0.48f, 0.65f }) },
 
         // SCALE: wider and bigger on the upper roles; the lows are untouched
         { scale, Target::slot, upper, SlotRole::detune, Path ({ 0.0f, 0.08f, 0.16f, 0.24f, 0.3f }) },
@@ -150,26 +161,36 @@ inline const std::vector<Route>& routes()
 
         // CLARITY: harmony, not mud. One owner per band, a calmer presence band, and slower beating (detune
         // pulled back on every role, so pairs of partials beat further under the critical-band roughness peak).
-        { clarity, Target::carveDepthDb, anyRole, SlotRole::none, Path ({ 0.0f, 1.5f, 3.0f, 4.5f, 6.0f }) },
+        // Listening: "doing something, not sure what". Deeper carve and slower beating. (A low-mid mud cut was
+        // tried: it raises the presence band's share, the opposite of what CLARITY promises.)
+        { clarity, Target::carveDepthDb, anyRole, SlotRole::none, Path ({ 0.0f, 2.5f, 5.0f, 7.0f, 9.0f }) },
         { clarity, Target::carveTemperature, anyRole, SlotRole::none, Path ({ 1.0f, 0.75f, 0.55f, 0.4f, 0.3f }) },
         { clarity, Target::deHarsh, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
-        { clarity, Target::slot, anyRole, SlotRole::detune, Path ({ 0.0f, -0.02f, -0.05f, -0.08f, -0.1f }) },
+        { clarity, Target::slot, anyRole, SlotRole::detune, Path ({ 0.0f, -0.03f, -0.07f, -0.11f, -0.15f }) },
 
         // BLOOM: life and motion. The whole stack drifts together: a drift between layers would slowly phase
         // their sum in every band they share (the sub/body crossover first), costing punch and up to 3 dB at
         // a crossover. The layers' own motion comes from the slot swings, and the stack opens into a space
         // that ducks under the dry signal.
-        { bloom, Target::driftCents, anyRole, SlotRole::none, Path ({ 0.0f, 1.5f, 3.0f, 4.5f, 6.0f }) },
-        { bloom, Target::slotMotion, anyRole, SlotRole::position, Path ({ 0.0f, 0.03f, 0.06f, 0.09f, 0.12f }) },
-        { bloom, Target::slotMotion, upper, SlotRole::brightness, Path ({ 0.0f, 0.015f, 0.03f, 0.045f, 0.06f }) },
-        { bloom, Target::slotMotion, upper, SlotRole::stereoSpread, Path ({ 0.0f, 0.03f, 0.06f, 0.09f, 0.12f }) },
-        { bloom, Target::spaceWet, anyRole, SlotRole::none, Path ({ 0.0f, 0.05f, 0.1f, 0.16f, 0.22f }) },
-        { bloom, Target::spaceRt60, anyRole, SlotRole::none, Path ({ 0.8f, 1.4f, 2.2f, 3.2f, 4.5f }) },
+        // Listening: hard to hear. Twice the motion, a much bigger space, and chorus on the upper roles.
+        { bloom, Target::driftCents, anyRole, SlotRole::none, Path ({ 0.0f, 2.0f, 4.0f, 6.0f, 8.0f }) },
+        { bloom, Target::slotMotion, anyRole, SlotRole::position, Path ({ 0.0f, 0.06f, 0.12f, 0.18f, 0.25f }) },
+        { bloom, Target::slotMotion, upper, SlotRole::brightness, Path ({ 0.0f, 0.03f, 0.06f, 0.09f, 0.12f }) },
+        { bloom, Target::slotMotion, upper, SlotRole::stereoSpread, Path ({ 0.0f, 0.06f, 0.12f, 0.18f, 0.25f }) },
+        { bloom, Target::layerChorus, upper, SlotRole::none, Path ({ 0.0f, 0.2f, 0.4f, 0.55f, 0.7f }) },
+        { bloom, Target::spaceWet, anyRole, SlotRole::none, Path ({ 0.0f, 0.1f, 0.2f, 0.32f, 0.45f }) },
+        { bloom, Target::spaceRt60, anyRole, SlotRole::none, Path ({ 0.8f, 1.8f, 3.0f, 4.5f, 6.0f }) },
         { bloom, Target::spaceDuck, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.7f, 0.85f }) },
 
         // MORPH: every layer's spectral identity moves together
-        { morph, Target::slot, anyRole, SlotRole::position, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
-        { morph, Target::slot, anyRole, SlotRole::warp, Path ({ 0.0f, 0.05f, 0.12f, 0.2f, 0.3f }) },
+        // Listening: hard to hear, since only Wavetable layers followed. Now the full table sweep, more warp,
+        // JP cross-mod on every non-sub role, and the Spectral engine's formant (0 -> +5 st) with its A/B morph.
+        { morph, Target::slot, anyRole, SlotRole::position, Path ({ 0.0f, 0.22f, 0.45f, 0.65f, 0.85f }) },
+        { morph, Target::slot, anyRole, SlotRole::warp, Path ({ 0.0f, 0.1f, 0.2f, 0.3f, 0.4f }) },
+        { morph, Target::slot, body | upper, SlotRole::crossMod, Path ({ 0.0f, 0.06f, 0.13f, 0.2f, 0.26f }) },
+        { morph, Target::slot, anyRole, SlotRole::formant, Path ({ 0.0f, 0.026f, 0.052f, 0.078f, 0.104f }) },
+        // Frames are loudness-matched full band, but the roles' band limits pass more of the brighter ones
+        { morph, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, -0.08f, -0.16f, -0.24f, -0.3f }) },
     };
     return table;
 }
@@ -192,6 +213,8 @@ struct Offsets
     std::array<float, params::numLayers> driftCents {};
     std::array<std::array<float, numSlotRoles>, params::numLayers> slotMotion {};
     float spaceWet = 0.0f, spaceRt60 = 0.8f, spaceDuck = 0.0f;
+    std::array<float, params::numLayers> layerDrive {}, layerChorus {};
+    float loudnessLiftDb = 0.0f;
 };
 
 // u: each knob's position 0..1 (SUPER already folded in); roles: each layer's role
@@ -221,7 +244,10 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
             case Target::spaceWet:        o.spaceWet += v; break;
             case Target::spaceRt60:       o.spaceRt60 = v; break;
             case Target::spaceDuck:       o.spaceDuck += v; break;
+            case Target::loudnessLiftDb:  o.loudnessLiftDb += v; break;
             case Target::driftCents:
+            case Target::layerDrive:
+            case Target::layerChorus:
             case Target::slotMotion:
             case Target::onsetDuckDb:
             case Target::layerLevelDb:
@@ -236,6 +262,10 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
                         o.onsetDuckDb[(size_t) l] += v;
                     else if (r.target == Target::driftCents)
                         o.driftCents[(size_t) l] += v;
+                    else if (r.target == Target::layerDrive)
+                        o.layerDrive[(size_t) l] += v;
+                    else if (r.target == Target::layerChorus)
+                        o.layerChorus[(size_t) l] += v;
                     else if (r.target == Target::slotMotion)
                         o.slotMotion[(size_t) l][(size_t) r.slotRole] += v;
                     else
