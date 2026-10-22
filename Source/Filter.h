@@ -129,6 +129,71 @@ struct ZdfSvf
     float s1 = 0.0f, s2 = 0.0f;
 };
 
+// The main page's CUTOFF and RESO: a stereo 12 dB low-pass sweep over the whole stack, 20 kHz down to 180 Hz on
+// an exponential knob. RESO runs Q from 0.8 (no peak) to 6. At RESO 0, 180 Hz keeps the Sub's lows: at 120 Hz
+// and below it is within 0.2 dB of flat. The top 5 % of the cutoff knob blends from the filtered to the dry
+// signal, so fully open is exactly the dry sound. Both glide (30 ms; cutoff in octaves); g is updated every 8
+// samples.
+class SweepFilter
+{
+public:
+    void prepare (double sampleRate) noexcept
+    {
+        sr = sampleRate;
+        glide = 1.0f - std::exp (-1.0f / (0.03f * (float) sampleRate));
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        for (auto& f : filters)
+            f.reset();
+        position = target = 1.0f;
+        reso = resoTarget;
+    }
+
+    void setPosition (float knob, float resonance) noexcept
+    {
+        target = juce::jlimit (0.0f, 1.0f, knob);
+        resoTarget = juce::jlimit (0.0f, 1.0f, resonance);
+    }
+
+    void process (float* left, float* right, int numSamples) noexcept
+    {
+        if (position >= 1.0f && target >= 1.0f)
+            return;   // fully open: dry, no cost (states are cleared on the way out below)
+        ZdfSvf::Coeffs c {};
+        float wet = 0.0f;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            position += (target - position) * glide;
+            if (std::abs (target - position) < 1.0e-5f)
+                position = target;
+            reso += (resoTarget - reso) * glide;
+            if ((i & 7) == 0)
+            {
+                const double hz = minHz * std::pow (maxHz / minHz, (double) position);
+                const auto g = (float) std::tan (juce::MathConstants<double>::pi * juce::jmin (hz, sr * 0.45) / sr);
+                c = ZdfSvf::Coeffs::make (g, kOpen * std::pow (kPeak / kOpen, reso));
+            }
+            wet = juce::jlimit (0.0f, 1.0f, (1.0f - position) * 20.0f);
+            const float l = filters[0].process (left[i], c).low, r = filters[1].process (right[i], c).low;
+            left[i] += (l - left[i]) * wet;
+            right[i] += (r - right[i]) * wet;
+        }
+        if (position >= 1.0f)
+            for (auto& f : filters)
+                f.reset();   // back to dry: the next sweep starts from clean states, at 20 kHz, so it can't click
+    }
+
+private:
+    static constexpr double minHz = 180.0, maxHz = 20000.0;
+    static constexpr float kOpen = 1.25f, kPeak = 1.0f / 6.0f;   // 1 / Q
+    std::array<ZdfSvf, 2> filters;
+    double sr = 48000.0;
+    float glide = 0.001f, position = 1.0f, target = 1.0f, reso = 0.0f, resoTarget = 0.0f;
+};
+
 // 4-pole low-pass ladder (four one-pole TPT stages in a feedback loop, the OTA cascade behind most 24 dB
 // VA filters). The feedback loop is solved without delay, then the stage input is soft-clipped, so high
 // resonance saturates instead of running away. k = 0..4 (4 = self-oscillation).

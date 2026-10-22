@@ -9,8 +9,9 @@ namespace ps::params
     // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots. 7: chain knobs and SUPER.
     // 8: BUILD, DROP, the XY pad, layer anchors, layer filter and drive, reverb and delay sends.
     // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
+    // 10: HOLD and the main page's CUTOFF and RESO.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 9;
+    inline constexpr int stateVersion = 10;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -32,6 +33,9 @@ namespace ps::params
     // Momentary performance buttons (ChainKnobs.h Performance)
     inline const juce::ParameterID build { "build", 8 };
     inline const juce::ParameterID drop { "drop", 8 };
+    inline const juce::ParameterID hold { "hold", 10 };              // a latched sustain pedal
+    inline const juce::ParameterID cutoff { "cutoff", 10 };          // stack low-pass sweep, percent (100 = open)
+    inline const juce::ParameterID resonance { "reso", 10 };         // its resonance, percent
     // The stack XY pad (StackMorph.h): 0..1 each way, the centre is the full stack
     inline const juce::ParameterID padX { "xy_x", 8 };
     inline const juce::ParameterID padY { "xy_y", 8 };
@@ -188,6 +192,13 @@ namespace ps::params
         layout.add (std::make_unique<juce::AudioParameterFloat> (super, "SUPER", juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, percentText));
         layout.add (std::make_unique<juce::AudioParameterBool> (build, "BUILD", false));
         layout.add (std::make_unique<juce::AudioParameterBool> (drop, "DROP", false));
+        layout.add (std::make_unique<juce::AudioParameterBool> (hold, "HOLD", false));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (cutoff, "Cutoff", juce::NormalisableRange<float> (0.0f, 100.0f), 100.0f,
+            juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) {
+                const double hz = 180.0 * std::pow (20000.0 / 180.0, v * 0.01);
+                return v >= 99.95f ? juce::String ("OPEN") : hz < 1000.0 ? juce::String (juce::roundToInt (hz)) + " Hz" : juce::String (hz * 0.001, 2) + " kHz"; })));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (resonance, "Resonance", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f,
+            juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; })));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padX, "XY X", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padY, "XY Y", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
         {

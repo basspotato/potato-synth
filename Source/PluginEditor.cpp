@@ -92,6 +92,22 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     master.slider.textFromValueFunction = [] (double v) { return juce::String (std::abs (v) < 0.05 ? 0.0 : v, 1) + " dB"; };
     master.slider.updateText();
 
+    // CUTOFF and RESO: the whole stack's low-pass sweep
+    setUpKnob (cutoff, "CUTOFF", ps::theme::body);
+    cutoffAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        processor.apvts, ps::params::cutoff.getParamID(), cutoff.slider);
+    cutoff.slider.setDoubleClickReturnValue (true, 100.0);
+    setUpKnob (reso, "RESO", ps::theme::body);
+    resoAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        processor.apvts, ps::params::resonance.getParamID(), reso.slider);
+    reso.slider.setDoubleClickReturnValue (true, 0.0);
+    for (auto* k : { &cutoff, &reso, &master })
+    {
+        k->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 16);
+        k->label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    }
+    master.slider.updateText();
+
     setUpBusKnob (crossoverLow, "LOW X", ps::params::crossoverLow, crossoverLowAttachment);
     setUpBusKnob (crossoverHigh, "HIGH X", ps::params::crossoverHigh, crossoverHighAttachment);
     monoBass.setClickingTogglesState (true);
@@ -100,6 +116,14 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     monoBassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
         processor.apvts, ps::params::monoBass.getParamID(), monoBass);
     addAndMakeVisible (monoBass);
+
+    // HOLD: keeps notes ringing after the keys are let go, like a sustain pedal that stays down
+    hold.setClickingTogglesState (true);
+    hold.setColour (juce::TextButton::buttonOnColourId, ps::theme::air);
+    hold.setColour (juce::TextButton::buttonColourId, ps::theme::panel);
+    holdAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.apvts, ps::params::hold.getParamID(), hold);
+    addAndMakeVisible (hold);
 
     build.setColour (juce::TextButton::buttonColourId, ps::theme::mid);
     drop.setColour (juce::TextButton::buttonColourId, ps::theme::sub);
@@ -346,9 +370,17 @@ void PotatoSynthEditor::resized()
     auto buttons = right.removeFromTop (scaled (44));
     build.setBounds (buttons.removeFromLeft (buttons.getWidth() / 2).reduced (scaled (4), 0));
     drop.setBounds (buttons.reduced (scaled (4), 0));
-    right.removeFromTop (scaled (10));
-    master.label.setBounds (right.removeFromBottom (scaled (20)));
-    master.slider.setBounds (right);
+    right.removeFromTop (scaled (8));
+    hold.setBounds (right.removeFromTop (scaled (34)).reduced (scaled (4), 0));
+    right.removeFromTop (scaled (6));
+    // CUTOFF, RESO and MASTER side by side
+    const int kw = right.getWidth() / 3;
+    for (auto* k : { &cutoff, &reso, &master })
+    {
+        auto cell = right.removeFromLeft (kw);
+        k->label.setBounds (cell.removeFromBottom (scaled (18)));
+        k->slider.setBounds (cell);
+    }
 
     const int w = chainRow.getWidth() / 8;
     for (auto& k : chain)

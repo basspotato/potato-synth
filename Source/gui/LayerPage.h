@@ -69,8 +69,8 @@ private:
     juce::Colour colour { theme::mid };
 };
 
-// Detail page for one layer: engine picker, the engine's own controls (its slots), voice mode, amp envelope,
-// pan, tune and glide.
+// Detail page for one layer: engine picker, the engine's own controls (its slots) or the layer's filter, drive and
+// chorus, voice mode, amp envelope, pan, tune and glide.
 class LayerPage : public juce::Component,
                   private juce::Timer
 {
@@ -119,6 +119,34 @@ public:
             addChildComponent (k.slider);
             addChildComponent (k.label);
         }
+        // Filter / FX section: the layer's own filter, its envelope, drive and chorus
+        const char* const fxNames[] = { "CUTOFF", "RESONANCE", "ENV AMOUNT", "KEY TRACK", "DRIVE", "CHORUS", "RATE", "DEPTH",
+                                        "F ATTACK", "F DECAY", "F SUSTAIN", "F RELEASE" };
+        for (size_t i = 0; i < fxKnobs.size(); ++i)
+        {
+            auto& k = fxKnobs[i];
+            k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 14);
+            k.label.setText (fxNames[i], juce::dontSendNotification);
+            k.label.setJustificationType (juce::Justification::centred);
+            k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            addChildComponent (k.slider);
+            addChildComponent (k.label);
+        }
+        for (int t = 0; t < (int) filterTypeButtons.size(); ++t)
+        {
+            auto& b = filterTypeButtons[(size_t) t];
+            b.setButtonText (params::filterTypeNames[t].toUpperCase());
+            b.onClick = [this, t] { setChoice (params::layerFilterType (layer), t); };
+            addChildComponent (b);
+        }
+        const char* const sectionNames[] = { "ENGINE", "FILTER / FX" };
+        for (int i = 0; i < 2; ++i)
+        {
+            auto& b = sectionButtons[(size_t) i];
+            b.setButtonText (sectionNames[i]);
+            b.onClick = [this, i] { showSection (i == 1); };
+            addAndMakeVisible (b);
+        }
         noSlots.setJustificationType (juce::Justification::centred);
         noSlots.setColour (juce::Label::textColourId, theme::textDim);
         addChildComponent (noSlots);
@@ -144,6 +172,20 @@ public:
             k.label.setColour (juce::Label::textColourId, colour.interpolatedWith (theme::text, 0.35f));
             k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, ids[i].getParamID(), k.slider);
             auto* p = apvts.getParameter (ids[i].getParamID());
+            k.slider.setDoubleClickReturnValue (true, p->convertFrom0to1 (p->getDefaultValue()));
+        }
+        const juce::ParameterID fxIds[] = { params::layerCutoff (index), params::layerResonance (index), params::layerFilterEnv (index),
+                                            params::layerKeyTrack (index), params::layerDrive (index), params::layerChorus (index),
+                                            params::layerChorusRate (index), params::layerChorusDepth (index), params::layerFilterAttack (index),
+                                            params::layerFilterDecay (index), params::layerFilterSustain (index), params::layerFilterRelease (index) };
+        for (size_t i = 0; i < fxKnobs.size(); ++i)
+        {
+            auto& k = fxKnobs[i];
+            k.attachment.reset();
+            k.slider.setColour (juce::Slider::rotarySliderFillColourId, colour);
+            k.label.setColour (juce::Label::textColourId, colour.interpolatedWith (theme::text, 0.35f));
+            k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, fxIds[i].getParamID(), k.slider);
+            auto* p = apvts.getParameter (fxIds[i].getParamID());
             k.slider.setDoubleClickReturnValue (true, p->convertFrom0to1 (p->getDefaultValue()));
         }
         slotsStale = true;   // reattached for this layer by the next setEngine()
@@ -186,6 +228,10 @@ public:
         engineButton.setBounds (header.removeFromRight (juce::jmin (260, header.getWidth() / 2)));
         r.removeFromTop (8);
         auto roleRow = r.removeFromTop (26);
+        auto sections = roleRow.removeFromRight (roleRow.getWidth() * 2 / 5);
+        roleRow.removeFromRight (12);
+        sectionButtons[0].setBounds (sections.removeFromLeft (sections.getWidth() * 2 / 5).reduced (2, 0));
+        sectionButtons[1].setBounds (sections.reduced (2, 0));
         const int rw = roleRow.getWidth() / (int) roleButtons.size();
         for (auto& b : roleButtons)
             b.setBounds (roleRow.removeFromLeft (rw).reduced (2, 0));
@@ -240,8 +286,8 @@ private:
             auto& knob = slotKnobs[(size_t) k];
             knob.attachment.reset();
             const bool visible = k < used;
-            knob.slider.setVisible (visible);
-            knob.label.setVisible (visible);
+            knob.slider.setVisible (visible && ! filterShown);
+            knob.label.setVisible (visible && ! filterShown);
             if (! visible)
                 continue;
             const auto& slot = info->slots[(size_t) k];
@@ -255,13 +301,51 @@ private:
         }
         noSlots.setText (info == nullptr ? "Pick an engine to play this layer" : "This engine has no controls of its own",
                          juce::dontSendNotification);
-        noSlots.setVisible (used == 0);
+        noSlots.setVisible (used == 0 && ! filterShown);
         usedSlots = used;
         layoutSlots();
     }
 
+    void showSection (bool filter)
+    {
+        filterShown = filter;
+        for (auto& k : fxKnobs)
+        {
+            k.slider.setVisible (filter);
+            k.label.setVisible (filter);
+        }
+        for (auto& b : filterTypeButtons)
+            b.setVisible (filter);
+        for (int k = 0; k < (int) slotKnobs.size(); ++k)
+        {
+            slotKnobs[(size_t) k].slider.setVisible (! filter && k < usedSlots);
+            slotKnobs[(size_t) k].label.setVisible (! filter && k < usedSlots);
+        }
+        noSlots.setVisible (! filter && usedSlots == 0);
+        timerCallback();
+    }
+
+    void layoutFx()
+    {
+        auto area = slotArea.reduced (8, 8);
+        auto types = area.removeFromTop (24);
+        const int tw = types.getWidth() / (int) filterTypeButtons.size();
+        for (auto& b : filterTypeButtons)
+            b.setBounds (types.removeFromLeft (tw).reduced (2, 0));
+        area.removeFromTop (6);
+        const int h = area.getHeight() / 2, w = area.getWidth() / 8;
+        for (size_t i = 0; i < fxKnobs.size(); ++i)
+        {
+            const int row = i < 8 ? 0 : 1, col = i < 8 ? (int) i : (int) i - 8;
+            auto cell = juce::Rectangle<int> (area.getX() + col * w, area.getY() + row * h, w, h).reduced (4, 0);
+            fxKnobs[i].label.setBounds (cell.removeFromTop (12));
+            fxKnobs[i].slider.setBounds (cell);
+        }
+    }
+
     void layoutSlots()
     {
+        layoutFx();
         auto area = slotArea.reduced (8, 10);
         noSlots.setBounds (slotArea);
         constexpr int perRow = 8;
@@ -287,6 +371,11 @@ private:
         const int mode = juce::roundToInt (value (params::layerVoiceMode (layer)));
         for (int m = 0; m < (int) modeButtons.size(); ++m)
             highlight (modeButtons[(size_t) m], m == mode, accent);
+        const int type = juce::roundToInt (value (params::layerFilterType (layer)));
+        for (int t = 0; t < (int) filterTypeButtons.size(); ++t)
+            highlight (filterTypeButtons[(size_t) t], t == type, accent);
+        highlight (sectionButtons[0], ! filterShown, accent);
+        highlight (sectionButtons[1], filterShown, accent);
         const int role = juce::roundToInt (value (params::layerRole (layer)));
         for (int r = 0; r < (int) roleButtons.size(); ++r)
             highlight (roleButtons[(size_t) r], r == role, theme::roleColour (r));
@@ -322,5 +411,9 @@ private:
     int usedSlots = 0;
     std::array<juce::TextButton, 3> modeButtons;
     std::array<juce::TextButton, 5> roleButtons;
+    std::array<Knob, 12> fxKnobs;
+    std::array<juce::TextButton, 5> filterTypeButtons;
+    std::array<juce::TextButton, 2> sectionButtons;
+    bool filterShown = false;
 };
 }

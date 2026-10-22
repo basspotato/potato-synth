@@ -191,6 +191,61 @@ void testSampleAccurateStart()
     CHECK (peak (x, start - 8, start) < 1.0e-4f, "nothing leaks out ahead of it");
 }
 
+void testHold()
+{
+    namespace p = ps::params;
+    Rig rig;
+    rig.set (p::hold, 1.0f);
+    auto x = rig.render (48000, { { 100, on (64) }, { 4800, off (64) }, { 9600, pedal (true) }, { 14400, pedal (false) } });
+    CHECK (peak (x, 40000, 48000) > 0.1f, "HOLD keeps a released note ringing, through a real pedal press and lift");
+    rig.set (p::hold, 0.0f);
+    x = rig.render (48000);
+    CHECK (peak (x, 43200, 48000) < 1.0e-4f, "switching HOLD off releases it");
+
+    Rig pedalRig;
+    x = pedalRig.render (48000, { { 0, pedal (true) }, { 100, on (64) }, { 4800, off (64) } });
+    pedalRig.set (p::hold, 1.0f);
+    x = pedalRig.render (4800);
+    pedalRig.set (p::hold, 0.0f);
+    x = pedalRig.render (48000);
+    CHECK (peak (x, 40000, 48000) > 0.1f, "switching HOLD off leaves notes the real pedal still holds");
+}
+
+// CUTOFF / RESO: the stack's low-pass sweep on the main page
+void testCutoffSweep()
+{
+    namespace p = ps::params;
+    auto level = [] (int note, float cutoff, float reso)
+    {
+        Rig rig;
+        rig.set (p::cutoff, cutoff);
+        rig.set (p::resonance, reso);
+        auto x = rig.render (24000, { { 0, on (note) } });
+        return rms (x, 12000, 24000);
+    };
+    const float highOpen = level (95, 100.0f, 0.0f), highClosed = level (95, 0.0f, 0.0f);
+    CHECK (juce::Decibels::gainToDecibels (highClosed / highOpen) < -30.0f, "CUTOFF closed takes a 2 kHz tone down by over 30 dB");
+    const float subOpen = level (33, 100.0f, 0.0f), subClosed = level (33, 0.0f, 0.0f);
+    CHECK (std::abs (juce::Decibels::gainToDecibels (subClosed / subOpen)) < 0.5f, "CUTOFF closed keeps a 55 Hz sub within 0.5 dB");
+    const float at440 = 100.0f * (float) (std::log (440.0 / 180.0) / std::log (20000.0 / 180.0));
+    CHECK (level (69, at440, 100.0f) > 2.0f * level (69, 100.0f, 0.0f), "RESO peaks at the cutoff");
+
+    Rig rig;
+    std::vector<float> x;
+    rig.render (4800, { { 0, on (60) } });
+    for (int step = 0; step <= 20; ++step)
+    {
+        rig.set (p::cutoff, 100.0f - 5.0f * (float) step);
+        rig.set (p::resonance, 5.0f * (float) step);
+        auto part = rig.render (2400);
+        x.insert (x.end(), part.begin(), part.end());
+    }
+    rig.set (p::cutoff, 100.0f);
+    auto part = rig.render (9600);
+    x.insert (x.end(), part.begin(), part.end());
+    CHECK (allFinite (x) && maxStep (x) < 0.05f, "sweeping CUTOFF and RESO in steps does not click");
+}
+
 void testVoiceStealingAndChords()
 {
     Rig rig;
@@ -2643,6 +2698,8 @@ int main()
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_ARP_ONLY", {}).isNotEmpty())
     {
         testArpeggiator();
+        testHold();
+    testCutoffSweep();
         testStepSequencer();
         testArpThroughTheSynth();
         testModLanes();
@@ -2685,6 +2742,8 @@ int main()
     testSampleAccurateStart();
     testVoiceStealingAndChords();
     testSustainPedal();
+    testHold();
+    testCutoffSweep();
     testLayerMuteAndEmpty();
     testEngineSwapWhileSounding();
     testLayersStack();

@@ -90,7 +90,13 @@ private:
     std::atomic<float>* safeOutputOn = nullptr;
     std::atomic<float>* phaseAlign = nullptr;
     ps::NoteGenerator noteGenerator;
-    juce::MidiBuffer generatedMidi;
+    juce::MidiBuffer generatedMidi, heldMidi;
+    // HOLD acts as a sustain pedal that stays down: the pedal the stack and arp see is the real pedal OR HOLD
+    const juce::MidiBuffer& applyHold (const juce::MidiBuffer& midi);
+    std::atomic<float>* holdButton = nullptr;
+    std::atomic<float>* cutoffKnob = nullptr, *resoKnob = nullptr;
+    ps::SweepFilter sweep;
+    bool realPedal = false, pedalSent = false;
     struct ArpParams { std::atomic<float>* mode, *rate, *direction, *octaves, *gate, *swing, *latch, *length, *trigger; };
     ArpParams arpParams {};
     ps::ModLanes modLanes;

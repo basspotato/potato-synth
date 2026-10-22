@@ -33,6 +33,9 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     superKnob = apvts.getRawParameterValue (ps::params::super.getParamID());
     buildButton = apvts.getRawParameterValue (ps::params::build.getParamID());
     dropButton = apvts.getRawParameterValue (ps::params::drop.getParamID());
+    holdButton = apvts.getRawParameterValue (ps::params::hold.getParamID());
+    cutoffKnob = apvts.getRawParameterValue (ps::params::cutoff.getParamID());
+    resoKnob = apvts.getRawParameterValue (ps::params::resonance.getParamID());
     padX = apvts.getRawParameterValue (ps::params::padX.getParamID());
     {
         namespace p = ps::params;
@@ -82,6 +85,9 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     modLanes.prepare (sampleRate);
     laneOffsets = {};
     generatedMidi.ensureSize (8192);
+    heldMidi.ensureSize (8192);
+    sweep.prepare (sampleRate);
+    realPedal = pedalSent = false;
     bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
     clipper.prepare (sampleRate, samplesPerBlock);
     limiter.prepare (sampleRate);
@@ -166,6 +172,43 @@ void PotatoSynthProcessor::applyLayerEnginesFromState()
     updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
 }
 
+const juce::MidiBuffer& PotatoSynthProcessor::applyHold (const juce::MidiBuffer& midi)
+{
+    if (holdButton->load() <= 0.5f && ! pedalSent)
+    {
+        // Nothing held: the MIDI passes untouched, and the real pedal is tracked for when HOLD goes on
+        for (const auto meta : midi)
+            if (const auto m = meta.getMessage(); m.isSustainPedalOn() || m.isSustainPedalOff())
+                realPedal = m.isSustainPedalOn();
+        pedalSent = realPedal;
+        return midi;
+    }
+
+    heldMidi.clear();
+    auto sendPedal = [this] (int at)
+    {
+        const bool down = realPedal || holdButton->load() > 0.5f;
+        if (down != pedalSent)
+            heldMidi.addEvent (juce::MidiMessage::controllerEvent (1, 64, down ? 127 : 0), at);
+        pedalSent = down;
+    };
+    sendPedal (0);   // HOLD switched on or off since the last block
+    for (const auto meta : midi)
+    {
+        const auto m = meta.getMessage();
+        if (m.isSustainPedalOn() || m.isSustainPedalOff())
+        {
+            realPedal = m.isSustainPedalOn();
+            sendPedal (meta.samplePosition);
+        }
+        else
+        {
+            heldMidi.addEvent (m, meta.samplePosition);
+        }
+    }
+    return heldMidi;
+}
+
 bool PotatoSynthProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
 {
     return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
@@ -194,6 +237,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                 barLength = 4.0 * sig->numerator / sig->denominator;
         }
 
+    const auto& played = applyHold (midi);
     updatePerformance (n, bpm, ppq, barStart, barLength);
     {
         std::array<ps::ModLanes::Settings, ps::ModLanes::numLanes> lanes {};
@@ -204,7 +248,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
                                   ps::params::delayDivisionBeats[juce::jlimit (0, ps::params::delayDivisionNames.size() - 1, juce::roundToInt (lp.rate->load()))],
                                   juce::roundToInt (lp.length->load()), lp.smooth->load() * 0.01f };
         }
-        laneOffsets = modLanes.process (midi, n, bpm, ppq, lanes);
+        laneOffsets = modLanes.process (played, n, bpm, ppq, lanes);
     }
     const auto offsets = updateChainKnobs (n);
     stack.setAlignStrength (juce::jlimit (0.0f, 1.0f, phaseAlign->load() * 0.01f));
@@ -219,7 +263,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         s.swing = arpParams.swing->load() * 0.01f;
         s.latch = arpParams.latch->load() > 0.5f;
         s.hostTrigger = arpParams.trigger->load() > 0.5f;
-        noteGenerator.process (midi, generatedMidi, n, bpm, ppq, s);
+        noteGenerator.process (played, generatedMidi, n, bpm, ppq, s);
     }
     stack.process (buffer, generatedMidi);
 
@@ -233,6 +277,9 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     stackGain.setTargetValue (1.0f / std::sqrt (juce::jmax (1.0f, layerCount)));
     stackGain.applyGain (buffer, n);
     bus.process (left, right, n, crossoverLowHz->load() * std::exp2 (offsets.monoBassOctaves), monoBassOn->load() > 0.5f);
+    // CUTOFF and RESO: before the sends, so the reverb and delay hear the filtered stack, as on a hardware synth
+    sweep.setPosition (cutoffKnob->load() * 0.01f, resoKnob->load() * 0.01f);
+    sweep.process (left, right, n);
 
     // The shared sends, fed from the dry stack; the patch's own send levels go in here, before the knob stages
     // are measured, since they are part of the patch's loudness

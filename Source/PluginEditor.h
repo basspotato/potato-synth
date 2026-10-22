@@ -45,8 +45,10 @@ private:
 
     // Chain knobs, SUPER, and the momentary BUILD and DROP
     std::array<Knob, 8> chain;
-    Knob super, master;
-    juce::TextButton build { "BUILD" }, drop { "DROP" };
+    Knob super, master, cutoff, reso;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> cutoffAttachment, resoAttachment;
+    juce::TextButton build { "BUILD" }, drop { "DROP" }, hold { "HOLD" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> holdAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterAttachment;
     // Stack bus controls in the header
     Knob crossoverLow, crossoverHigh;
