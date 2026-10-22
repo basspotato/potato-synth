@@ -78,13 +78,15 @@ namespace ps::params
             layout.add (std::make_unique<Int> (layerOctave (i), role + " Octave", -3, 3, 0));
             layout.add (std::make_unique<Int> (layerSemi (i), role + " Semitone", -12, 12, 0));
             layout.add (std::make_unique<Float> (layerFine (i), role + " Fine", juce::NormalisableRange<float> (-100.0f, 100.0f, 0.1f), 0.0f,
-                juce::AudioParameterFloatAttributes().withLabel ("ct")));
+                juce::AudioParameterFloatAttributes().withLabel ("ct")
+                    .withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " ct"; })));
             layout.add (std::make_unique<Float> (layerAttack (i), role + " Attack", detail::timeRange (0.5f, 20000.0f, 150.0f), 2.0f,
                 detail::msAttributes()));
             layout.add (std::make_unique<Float> (layerDecay (i), role + " Decay", detail::timeRange (1.0f, 20000.0f, 400.0f), 400.0f,
                 detail::msAttributes()));
             layout.add (std::make_unique<Float> (layerSustain (i), role + " Sustain", juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f,
-                juce::AudioParameterFloatAttributes().withLabel ("%")));
+                juce::AudioParameterFloatAttributes().withLabel ("%")
+                    .withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " %"; })));
             layout.add (std::make_unique<Float> (layerRelease (i), role + " Release", detail::timeRange (1.0f, 30000.0f, 500.0f), 300.0f,
                 detail::msAttributes()));
         }

@@ -5,10 +5,16 @@ namespace
 {
     const char* const chainNames[] = { "MASS", "SCALE", "PRESSURE", "GROOVE", "CLARITY", "SHINE", "MORPH", "BLOOM" };
     constexpr int baseWidth = 1180, baseHeight = 720;
+    const char* const roleNames[] = { "SUB", "BODY", "MID", "AIR" };
+    juce::Colour roleColour (int i)
+    {
+        const juce::Colour c[] = { ps::theme::sub, ps::theme::body, ps::theme::mid, ps::theme::air };
+        return c[(size_t) i];
+    }
 }
 
 PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
-    : AudioProcessorEditor (&p), processor (p)
+    : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts)
 {
     setLookAndFeel (&look);
 
@@ -16,14 +22,14 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     layers[1] = std::make_unique<ps::LayerCard> ("BODY", "120 HZ - 3 KHZ",      ps::theme::body);
     layers[2] = std::make_unique<ps::LayerCard> ("MID",  "300 HZ - 3 KHZ",      ps::theme::mid);
     layers[3] = std::make_unique<ps::LayerCard> ("AIR",  "WIDE  >2.5 KHZ",      ps::theme::air);
-    const juce::Colour roleColours[] = { ps::theme::sub, ps::theme::body, ps::theme::mid, ps::theme::air };
     for (int i = 0; i < 4; ++i)
     {
         addAndMakeVisible (*layers[(size_t) i]);
-        layers[(size_t) i]->onClick = [this, i] { showEngineMenu (i); };
+        layers[(size_t) i]->onSelect = [this, i] { selectLayer (i); showPage (true); };
+        layers[(size_t) i]->onEngineClick = [this, i] { selectLayer (i); showEngineMenu (i); };
 
         auto& k = layerLevels[(size_t) i];
-        setUpKnob (k, "LEVEL", roleColours[i]);
+        setUpKnob (k, "LEVEL", roleColour (i));
         k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
         layerLevelAttachments[(size_t) i] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
             processor.apvts, ps::params::layerLevel (i).getParamID(), k.slider);
@@ -31,6 +37,17 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     }
 
     addAndMakeVisible (xyPad);
+    addChildComponent (layerPage);
+    layerPage.onEngineClick = [this] { showEngineMenu (selectedLayer); };
+    for (auto* tab : { &stackTab, &layerTab })
+    {
+        tab->setClickingTogglesState (false);
+        addAndMakeVisible (*tab);
+    }
+    stackTab.onClick = [this] { showPage (false); };
+    layerTab.onClick = [this] { showPage (true); };
+    selectLayer (selectedLayer);
+    showPage (false);
 
     for (int i = 0; i < 8; ++i)
         setUpKnob (chain[(size_t) i], chainNames[i], ps::theme::chainAccent (i));
@@ -67,7 +84,29 @@ void PotatoSynthEditor::timerCallback()
             if (id == e.id)
                 name = e.name;
         layers[(size_t) i]->setEngineName (name);
+        if (i == selectedLayer)
+            layerPage.setEngineName (name);
     }
+}
+
+void PotatoSynthEditor::selectLayer (int layerIndex)
+{
+    selectedLayer = layerIndex;
+    for (int i = 0; i < 4; ++i)
+        layers[(size_t) i]->setSelected (i == layerIndex);
+    layerPage.showLayer (layerIndex, roleNames[layerIndex], roleColour (layerIndex));
+    layerTab.setButtonText (juce::String ("LAYER: ") + roleNames[layerIndex]);
+    layerTab.setColour (juce::TextButton::buttonColourId, roleColour (layerIndex));
+    timerCallback();
+}
+
+void PotatoSynthEditor::showPage (bool layerPageVisible)
+{
+    layerPage.setVisible (layerPageVisible);
+    xyPad.setVisible (! layerPageVisible);
+    stackTab.setColour (juce::TextButton::buttonColourId, layerPageVisible ? ps::theme::panel : ps::theme::air);
+    layerTab.setAlpha (layerPageVisible ? 1.0f : 0.6f);
+    stackTab.setAlpha (layerPageVisible ? 0.6f : 1.0f);
 }
 
 void PotatoSynthEditor::showEngineMenu (int layerIndex)
@@ -172,7 +211,12 @@ void PotatoSynthEditor::resized()
     area.removeFromLeft (scaled (20));
     auto right = area.removeFromRight (scaled (220));
     area.removeFromRight (scaled (20));
+    auto tabs = area.withY (scaled (24)).withHeight (scaled (34));
+    stackTab.setBounds (tabs.removeFromLeft (scaled (120)));
+    tabs.removeFromLeft (scaled (8));
+    layerTab.setBounds (tabs.removeFromLeft (scaled (160)));
     xyPad.setBounds (area);
+    layerPage.setBounds (area);
 
     auto superArea = right.removeFromTop (scaled (210));
     super.label.setBounds (superArea.removeFromBottom (scaled (20)));
