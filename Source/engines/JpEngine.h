@@ -193,6 +193,11 @@ private:
         s[envRelease]  = { "Env Release", timeValue (300.0f), ms };
         s[lowCut]      = { "Low Cut", 0.0f, [hz] (float v) { return hz (lowCutHz (v)); } };
         s[velToEnv]    = { "Vel > Env", 0.0f, percent };
+        s[detune].role = SlotRole::detune;
+        s[mix].role = SlotRole::unisonMix;
+        s[spread].role = SlotRole::stereoSpread;
+        s[drive].role = SlotRole::drive;
+        s[cutoff].role = SlotRole::brightness;
         return s;
     }
 

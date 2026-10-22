@@ -7,11 +7,31 @@ namespace ps
 // One generic per-layer parameter slot as an engine describes it. Each layer has a fixed set of
 // host parameters; every engine maps its own controls onto these slots, so adding an engine never
 // adds, removes or renames host parameters.
+// What a slot does, for controls that act on every engine at once (the chain knobs). A chain knob moves
+// "detune" or "drive" on whichever engines have it, in the slot's own normalised units.
+enum class SlotRole
+{
+    none,
+    detune,        // unison detune amount
+    unisonMix,     // level of the side voices
+    stereoSpread,  // unison pan spread
+    drive,         // saturation amount
+    even,          // saturation asymmetry (even harmonics)
+    translate,     // sub harmonics for small speakers
+    subOctave,     // -1 octave reinforcement
+    brightness,    // main filter cutoff or tone
+    position,      // wavetable position
+    warp,          // phase warp (bipolar, 0.5 = none)
+    positionSpread // wavetable position spread across unison
+};
+inline constexpr int numSlotRoles = (int) SlotRole::positionSpread + 1;
+
 struct SlotInfo
 {
     juce::String name;
     float defaultValue = 0.0f;                       // normalised 0..1
     std::function<juce::String (float)> toText;      // normalised value to display text; percent if empty
+    SlotRole role = SlotRole::none;
 };
 
 // A note starting (or moving) on a voice.

@@ -3,6 +3,7 @@
 #include "Params.h"
 #include "LayerStack.h"
 #include "StackBus.h"
+#include "ChainKnobs.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -50,6 +51,8 @@ public:
     juce::String getLayerEngine (int layerIndex) const { return stack.layer (layerIndex).getEngineId(); }
     // The engine description behind a layer's slot parameters (nullptr when the layer is empty)
     const ps::EngineInfo* getLayerEngineInfo (int layerIndex) const { return engineInfos[(size_t) layerIndex].load(); }
+    // The Harmony Engine's current loudness trim (linear gain), for meters and tests
+    float getLoudnessTrim() const { return loudnessTrim.getGain(); }
     // Message thread: frees engines the audio thread has finished with (also runs on a timer)
     void collectRetiredEngines() { stack.collectGarbage(); }
 
@@ -58,6 +61,7 @@ private:
     void applyLayerEnginesFromState();
     juce::String slotText (int layer, int slot, float value) const;
     void migrateState (juce::ValueTree& state) const;
+    ps::chain::Offsets updateChainKnobs (int numSamples);
 
     ps::LayerStack stack;
     ps::StackBus bus;
@@ -65,9 +69,15 @@ private:
     std::atomic<float>* crossoverLowHz = nullptr;
     std::atomic<float>* monoBassOn = nullptr;
     std::atomic<float>* safeOutputOn = nullptr;
+    std::array<std::atomic<float>*, ps::params::numChainKnobs> chainKnobs {};
+    std::atomic<float>* superKnob = nullptr;
+    std::array<float, ps::params::numChainKnobs> knobPosition {};   // smoothed, audio thread
+    ps::LowFocus lowFocus;
+    ps::harmony::LoudnessTrim loudnessTrim;
     ps::TruePeakClipper clipper;
     ps::TruePeakLimiter limiter;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> masterGain { 1.0f };
+    juce::SmoothedValue<float> stackGain { 1.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PotatoSynthProcessor)
 };

@@ -129,6 +129,11 @@ private:
         s[phase]      = { "Phase", 0.75f, [] (float v) { return juce::String (v < 0.5f ? "Free" : "Retrig"); } };
         s[punch]      = { "Punch", 0.0f, [] (float v) { return "+" + juce::String (punchSemis (v), 1) + " st"; } };
         s[punchDecay] = { "Punch Time", punchValue (60.0f), [] (float v) { return juce::String (juce::roundToInt (punchMs (v))) + " ms"; } };
+        s[subOctave].role = SlotRole::subOctave;
+        s[translate].role = SlotRole::translate;
+        s[drive].role = SlotRole::drive;
+        s[even].role = SlotRole::even;
+        s[tone].role = SlotRole::brightness;
         return s;
     }
 

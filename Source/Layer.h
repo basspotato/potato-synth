@@ -2,6 +2,7 @@
 #include "Engine.h"
 #include "Envelope.h"
 #include "RoleBand.h"
+#include "HarmonyEngine.h"
 #include "Params.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <array>
@@ -97,6 +98,7 @@ public:
         updateEnvelopeSettings();
         band.prepare (sr);
         updateBand (true);
+        meter.prepare (sr);
 
         for (auto* e : { active, outgoing })
             if (e != nullptr)
@@ -110,6 +112,23 @@ public:
     }
 
     void setParameters (const LayerParams& p) { params = p; }
+
+    // Audio thread, before beginBlock: the chain knobs' offsets for this layer (ChainKnobs.h)
+    void setChainOffsets (float levelDb, const std::array<float, numSlotRoles>& slotOffsets) noexcept
+    {
+        chainLevelDb = levelDb;
+        chainSlots = slotOffsets;
+    }
+
+    // The patch's own level and the chain knobs' extra gain, for the Harmony Engine's loudness model
+    float patchGain() const noexcept { return targetPatchGain(); }
+    float knobGain() const noexcept  { return juce::Decibels::decibelsToGain (chainLevelDb); }
+    // K-weighted power of this layer at unity gain (after its band limit), averaged over 400 ms
+    float measuredPower() const noexcept { return meter.getPower(); }
+    params::Role role() const noexcept
+    {
+        return (params::Role) juce::jlimit (0, 4, juce::roundToInt (load (params.role, (float) params::Role::full)));
+    }
     void setSlotParameter (int slot, std::atomic<float>* p) { params.slots[(size_t) slot] = p; }
 
     void reset()
@@ -124,6 +143,7 @@ public:
     // ---- Audio thread ----------------------------------------------------------------------------
     void beginBlock()
     {
+        meter.update();
         // Swap only when the previous engine has finished fading and there is room to retire this one
         if (outgoing == nullptr && freeRetireSlots() >= 2)
         {
@@ -243,7 +263,10 @@ public:
     void render (float* outL, float* outR, int numSamples)
     {
         if (isIdle())
+        {
+            meter.addSilence (numSamples);
             return;
+        }
 
         std::fill_n (scratchL.data(), numSamples, 0.0f);
         std::fill_n (scratchR.data(), numSamples, 0.0f);
@@ -255,6 +278,7 @@ public:
             retireNow (std::exchange (outgoing, nullptr));
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
+        meter.process (scratchL.data(), scratchR.data(), numSamples);
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -393,11 +417,14 @@ private:
 
     static float load (const std::atomic<float>* p, float fallback) { return p != nullptr ? p->load() : fallback; }
 
-    float targetGain() const
+    float targetPatchGain() const
     {
         const float db = load (params.levelDb, 0.0f);
         return db <= -59.9f ? 0.0f : juce::Decibels::decibelsToGain (db);
     }
+
+    // A muted layer stays muted whatever the knobs do
+    float targetGain() const { return targetPatchGain() * juce::Decibels::decibelsToGain (chainLevelDb); }
 
     // Pan uses a balance law: the centre is unity and a side never boosts, so stereo engines keep their image.
     void updateControls (bool snap)
@@ -418,14 +445,18 @@ private:
                   load (params.sustainPercent, 100.0f) * 0.01f, load (params.releaseMs, 300.0f));
     }
 
-    // Sends slot values that moved since the last block (all of them after an engine swap)
+    // Sends slot values that moved since the last block (all of them after an engine swap): the patch's
+    // value plus the chain knobs' offset for the slot's role
     void updateSlots()
     {
+        const auto& infoSlots = active->info().slots;
         for (size_t k = 0; k < lastSlot.size(); ++k)
         {
             if (params.slots[k] == nullptr)
                 continue;
-            const float v = params.slots[k]->load();
+            float v = params.slots[k]->load();
+            if (k < infoSlots.size() && infoSlots[k].role != SlotRole::none)
+                v = juce::jlimit (0.0f, 1.0f, v + chainSlots[(size_t) infoSlots[k].role]);
             if (! slotsSent || v < lastSlot[k] || v > lastSlot[k])
             {
                 active->setSlot ((int) k, v);
@@ -465,6 +496,9 @@ private:
 
     LayerParams params;
     std::array<float, Engine::numSlots> lastSlot {};   // audio thread only
+    float chainLevelDb = 0.0f;
+    std::array<float, numSlotRoles> chainSlots {};
+    harmony::KPowerMeter meter;
     bool slotsSent = false;
     bool voicesClearedWhileMuted = false;
     juce::SmoothedValue<float> level { 1.0f }, panL { 1.0f }, panR { 1.0f };

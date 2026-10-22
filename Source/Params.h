@@ -6,15 +6,26 @@
 namespace ps::params
 {
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
-    // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots.
+    // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots. 7: chain knobs and SUPER.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 6;
+    inline constexpr int stateVersion = 7;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
     inline const juce::ParameterID crossoverHigh { "xover_high", 4 };
     inline const juce::ParameterID monoBass { "mono_bass", 4 };
     inline const juce::ParameterID safeOutput { "safe_output", 5 };
+
+    // The 8 chain knobs (ChainKnobs.h), in chain::Knob order, and SUPER above them
+    inline constexpr int numChainKnobs = 8;
+    inline juce::ParameterID chainKnob (int k)
+    {
+        static const char* const ids[numChainKnobs] = { "chain_mass", "chain_scale", "chain_pressure", "chain_groove",
+                                                        "chain_clarity", "chain_shine", "chain_morph", "chain_bloom" };
+        return { ids[k], 7 };
+    }
+    inline const char* const chainKnobNames[numChainKnobs] = { "MASS", "SCALE", "PRESSURE", "GROOVE", "CLARITY", "SHINE", "MORPH", "BLOOM" };
+    inline const juce::ParameterID super { "super", 7 };
 
     // Per-layer parameters follow the pattern L{n}_name with n = 1..4 (expandable to 8)
     inline juce::ParameterID layerParam (int layerIndex, const char* name, int version)
@@ -102,6 +113,12 @@ namespace ps::params
             juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hz)));
         layout.add (std::make_unique<juce::AudioParameterBool> (monoBass, "Mono Bass", true));
         layout.add (std::make_unique<juce::AudioParameterBool> (safeOutput, "Safe Output", true));
+
+        auto percentText = juce::AudioParameterFloatAttributes().withLabel ("%")
+            .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; });
+        for (int k = 0; k < numChainKnobs; ++k)
+            layout.add (std::make_unique<juce::AudioParameterFloat> (chainKnob (k), chainKnobNames[k], juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, percentText));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (super, "SUPER", juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, percentText));
 
         for (int i = 0; i < numLayers; ++i)
             layout.add (std::make_unique<juce::AudioParameterFloat> (

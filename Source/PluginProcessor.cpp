@@ -19,6 +19,9 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     crossoverLowHz = apvts.getRawParameterValue (ps::params::crossoverLow.getParamID());
     monoBassOn = apvts.getRawParameterValue (ps::params::monoBass.getParamID());
     safeOutputOn = apvts.getRawParameterValue (ps::params::safeOutput.getParamID());
+    for (int k = 0; k < ps::params::numChainKnobs; ++k)
+        chainKnobs[(size_t) k] = apvts.getRawParameterValue (ps::params::chainKnob (k).getParamID());
+    superKnob = apvts.getRawParameterValue (ps::params::super.getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         namespace p = ps::params;
@@ -51,7 +54,12 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
     clipper.prepare (sampleRate, samplesPerBlock);
     limiter.prepare (sampleRate);
+    lowFocus.prepare (sampleRate);
+    loudnessTrim.prepare (sampleRate, samplesPerBlock);
+    for (int k = 0; k < ps::params::numChainKnobs; ++k)
+        knobPosition[(size_t) k] = chainKnobs[(size_t) k]->load();
     setLatencySamples (clipper.getLatencySamples() + limiter.getLatencySamples());   // constant for a given sample rate
+    stackGain.reset (sampleRate, 0.05);
     masterGain.reset (sampleRate, 0.02);
     masterGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
 }
@@ -111,9 +119,37 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 {
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
+    const int n = buffer.getNumSamples();
+    auto* left = buffer.getWritePointer (0);
+    auto* right = buffer.getWritePointer (1);
+
+    const auto offsets = updateChainKnobs (n);
     stack.process (buffer, midi);
-    bus.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(),
-                 crossoverLowHz->load(), monoBassOn->load() > 0.5f);
+
+    // Stack sum with sqrt-weights: the layers are scaled by 1 / sqrt(n), n the number of layers counted by
+    // their level (a layer at 0 dB counts 1, a fading one less), so adding or fading in a layer keeps the
+    // stack's power. A single quieter layer is never boosted.
+    float layerCount = 0.0f;
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        if (stack.layer (i).engine() != nullptr)
+            layerCount += juce::square (juce::jmin (1.0f, stack.layer (i).patchGain()));
+    stackGain.setTargetValue (1.0f / std::sqrt (juce::jmax (1.0f, layerCount)));
+    stackGain.applyGain (buffer, n);
+    bus.process (left, right, n, crossoverLowHz->load() * std::exp2 (offsets.monoBassOctaves), monoBassOn->load() > 0.5f);
+    lowFocus.process (left, right, n, offsets.lowFocusDb);
+
+    // Harmony Engine, invariant 1: hold the loudness the patch has without the knobs
+    std::array<float, ps::params::numLayers> power {}, patchGain {}, knobGain {};
+    for (int i = 0; i < ps::params::numLayers; ++i)
+    {
+        const auto& layer = stack.layer (i);
+        power[(size_t) i] = layer.measuredPower();
+        patchGain[(size_t) i] = layer.patchGain();
+        knobGain[(size_t) i] = layer.knobGain();
+    }
+    loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
+                         lowFocus.inputPower(), lowFocus.outputPower(), n);
+    loudnessTrim.apply (left, right, n);
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
     masterGain.applyGain (buffer, buffer.getNumSamples());
@@ -123,6 +159,27 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const bool safe = safeOutputOn->load() > 0.5f;
     clipper.process (buffer, safe);
     limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
+}
+
+// Chain knob positions are smoothed (30 ms) at block rate, SUPER is folded in, and the offsets go to the layers
+ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
+{
+    const float coef = 1.0f - std::exp (-(float) numSamples / (0.03f * (float) getSampleRate()));
+    const float super = superKnob->load();
+    std::array<float, ps::chain::numKnobs> u {};
+    for (int k = 0; k < ps::chain::numKnobs; ++k)
+    {
+        auto& p = knobPosition[(size_t) k];
+        p += (chainKnobs[(size_t) k]->load() - p) * coef;
+        u[(size_t) k] = juce::jlimit (0.0f, 1.0f, p + ps::chain::superContribution ((ps::chain::Knob) k, super));
+    }
+    std::array<ps::params::Role, ps::params::numLayers> roles {};
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        roles[(size_t) i] = stack.layer (i).role();
+    const auto offsets = ps::chain::compute (u, roles);
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
+    return offsets;
 }
 
 // Parameters missing from older state (added in a later version) load at their defaults, not at whatever

@@ -1,6 +1,8 @@
 #pragma once
 #include <juce_dsp/juce_dsp.h>
+#include "Loudness.h"
 #include <array>
+#include <complex>
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -14,13 +16,18 @@ namespace ps
 // by inverse FFT with every harmonic above the limit removed: level l keeps harmonics 1 .. 1024 / 2^(l/2). A
 // voice reads the level whose top harmonic stays under the alias floor (below), so the wavetable never aliases
 // into the audible band. Half-octave steps keep the top harmonic within a factor of 1.41 of the floor, so the
-// band limit never dulls the audible top end (whole octaves would cut 14-20 kHz at some pitches). Every frame and band limit is normalised to a sine's RMS, so neither Position nor pitch
-// moves the level.
+// band limit never dulls the audible top end (whole octaves would cut 14-20 kHz at some pitches).
+//
+// Every frame and band limit is normalised to a sine's RMS, and Table::loudnessGain adds the BS.1770
+// K-weighted correction for the pitch it plays at, so neither Position nor pitch moves the loudness: a brighter
+// frame isn't louder on the meter.
 class Wavetables
 {
 public:
     static constexpr int frameSize = 2048, numFrames = 32, numLevels = 20, maxHarmonic = frameSize / 2, stride = frameSize + 3;
     static constexpr int numWarpPoints = 17;
+    static constexpr int numPitchPoints = 31;          // third octaves from lowestPitch: 16 Hz .. 16 kHz
+    static constexpr float lowestPitch = 16.0f;
     static constexpr float maxWarp = 0.95f;
 
     // Harmonics kept at a level: 1023, 724, 512, 362, ... 1
@@ -38,11 +45,25 @@ public:
 
         // Gain that loudness-matches a frame under Warp depth b (see warpGain below), at numWarpPoints depths
         std::vector<float> warpGains;   // [frame][numWarpPoints]
+        // Gain that loudness-matches a frame to a sine of the same pitch, on a third-octave pitch grid
+        std::vector<float> loudnessGains;   // [frame][numPitchPoints]
 
         // Points at x[0] of a frame
         const float* frame (int f, int level) const noexcept
         {
             return data.data() + ((size_t) f * numLevels + (size_t) level) * stride + 1;
+        }
+
+        // The loudness match at a (fractional) frame position and fundamental (Hz, at 48 kHz)
+        float loudnessGain (float framePos, float f0) const noexcept
+        {
+            const float p = juce::jlimit (0.0f, (float) (numPitchPoints - 1), 3.0f * std::log2 (juce::jmax (1.0f, f0) / lowestPitch));
+            const int f = juce::jlimit (0, numFrames - 2, (int) framePos), p0 = juce::jmin (numPitchPoints - 2, (int) p);
+            const float ff = juce::jlimit (0.0f, 1.0f, framePos - (float) f), pf = p - (float) p0;
+            auto at = [this] (int fr, int k) { return loudnessGains[(size_t) (fr * numPitchPoints + k)]; };
+            const float g0 = at (f, p0) + (at (f, p0 + 1) - at (f, p0)) * pf;
+            const float g1 = at (f + 1, p0) + (at (f + 1, p0 + 1) - at (f + 1, p0)) * pf;
+            return g0 + (g1 - g0) * ff;
         }
 
         // The Warp loudness match at a (fractional) frame position and depth b in [-maxWarp, maxWarp]
@@ -153,36 +174,94 @@ private:
             }
         }
         measureWarpGains (t);
+        measureLoudnessGains (t, spectrum);
         tables.push_back (std::move (t));
     }
 
-    // Warp reads a frame at phi(t) = t + b/(2 pi) sin(2 pi t), which moves its RMS by an amount that depends on
-    // where the frame's energy sits in its cycle (a sine loses about 1.7 dB at full depth). Measure it once per
-    // frame and depth on a 256-harmonic copy, so the engine can play every warp at the frame's own level.
+
+    // |K(f)|^2 of the BS.1770 K-weighting at 48 kHz
+    static double kWeight2 (double f)
+    {
+        static const auto k = loudness::kWeighting (48000.0);
+        const std::complex<double> zi = std::polar (1.0, -juce::MathConstants<double>::twoPi * f / 48000.0);
+        double g = 1.0;
+        for (auto& b : k)
+            g *= std::norm ((b.b0 + b.b1 * zi + b.b2 * zi * zi) / (1.0 + b.a1 * zi + b.a2 * zi * zi));
+        return g;
+    }
+
+    // Gain that gives a spectrum (amplitudes 1..top, RMS-normalised) the K-weighted loudness of a sine at f0.
+    // Harmonics between Nyquist and the 28 kHz floor fold back to 20-24 kHz, and are weighted there.
+    static double loudnessMatch (const std::vector<float>& amp, int top, double f0)
+    {
+        double plain = 0.0, weighted = 0.0;
+        for (int h = 1; h <= top; ++h)
+        {
+            const double p = (double) amp[(size_t) h] * amp[(size_t) h], f = h * f0;
+            plain += p;
+            weighted += p * kWeight2 (f < 24000.0 ? f : 48000.0 - f);
+        }
+        return plain > 1.0e-20 && weighted > 1.0e-20 ? std::sqrt (kWeight2 (f0) * plain / weighted) : 1.0;
+    }
+
+    // For each frame and grid pitch: the band limit that pitch plays (at 48 kHz) and the gain that brings its
+    // RMS-normalised spectrum to the K-weighted loudness of a sine at that pitch
+    static void measureLoudnessGains (Table& t, const Spectrum& spectrum)
+    {
+        t.loudnessGains.assign ((size_t) numFrames * numPitchPoints, 1.0f);
+        std::vector<float> amp ((size_t) maxHarmonic + 1), phase ((size_t) maxHarmonic + 1);
+        for (int f = 0; f < numFrames; ++f)
+        {
+            std::fill (amp.begin(), amp.end(), 0.0f);
+            spectrum ((float) f / (float) (numFrames - 1), amp, phase);
+            for (int k = 0; k < numPitchPoints; ++k)
+            {
+                const double f0 = lowestPitch * std::exp2 (k / 3.0);
+                const int top = harmonicsAt (levelFor ((float) f0, 48000.0f));
+                t.loudnessGains[(size_t) (f * numPitchPoints + k)] = (float) loudnessMatch (amp, top, f0);
+            }
+        }
+    }
+
+    // Warp reads a frame at phi(t) = t + b/(2 pi) sin(2 pi t), which moves its loudness by an amount that depends
+    // on where the frame's energy sits in its cycle (a sine loses about 1.7 dB at full depth) and on the
+    // harmonics it adds. Measure it once per frame and depth on a 256-harmonic copy, K-weighted at the pitch
+    // that copy plays at, so the engine can play every warp at the frame's own loudness.
     static void measureWarpGains (Table& t)
     {
         t.warpGains.assign ((size_t) numFrames * numWarpPoints, 1.0f);
-        constexpr int points = 4 * frameSize, level = 4;
+        constexpr int order = 12, points = 1 << order, level = 4;
+        const double f0 = 28000.0 / harmonicsAt (level);   // the pitch this copy plays at (48 kHz)
+        juce::dsp::FFT fft (order);
+        std::vector<float> buffer (2 * points);
+        // K-weighted power of one cycle read through the warp, from its harmonic spectrum
+        auto weightedPower = [&] (const float* x, double b)
+        {
+            for (int i = 0; i < points; ++i)
+            {
+                const double ph = (double) i / points;
+                double phi = ph + b / juce::MathConstants<double>::twoPi * std::sin (juce::MathConstants<double>::twoPi * ph);
+                phi -= std::floor (phi);
+                const double idx = phi * frameSize;
+                const int i0 = juce::jmin (frameSize - 1, (int) idx);
+                buffer[(size_t) i] = (float) (x[i0] + (x[i0 + 1] - x[i0]) * (idx - i0));
+            }
+            std::fill (buffer.begin() + points, buffer.end(), 0.0f);
+            fft.performFrequencyOnlyForwardTransform (buffer.data());
+            double p = 0.0;
+            for (int h = 1; h < points / 2 && h * f0 < 28000.0; ++h)
+                p += (double) buffer[(size_t) h] * buffer[(size_t) h] * kWeight2 (h * f0 < 24000.0 ? h * f0 : 48000.0 - h * f0);
+            return p;
+        };
         for (int f = 0; f < numFrames; ++f)
         {
             const float* x = t.frame (f, level);
+            const double plain = weightedPower (x, 0.0);
             for (int k = 0; k < numWarpPoints; ++k)
             {
                 const double b = maxWarp * (2.0 * k / (numWarpPoints - 1) - 1.0);
-                double plain = 0.0, warped = 0.0;
-                for (int i = 0; i < points; ++i)
-                {
-                    const double ph = (double) i / points;
-                    double phi = ph + b / juce::MathConstants<double>::twoPi * std::sin (juce::MathConstants<double>::twoPi * ph);
-                    phi -= std::floor (phi);
-                    const double idx = phi * frameSize;
-                    const int i0 = juce::jmin (frameSize - 1, (int) idx);
-                    const double s = x[i0] + (x[i0 + 1] - x[i0]) * (idx - i0);
-                    const double p = x[(i / 4) % frameSize];
-                    warped += s * s;
-                    plain += p * p;
-                }
-                t.warpGains[(size_t) (f * numWarpPoints + k)] = warped > 1.0e-12 ? (float) std::sqrt (plain / warped) : 1.0f;
+                const double warped = weightedPower (x, b);
+                t.warpGains[(size_t) (f * numWarpPoints + k)] = warped > 1.0e-20 ? (float) std::sqrt (plain / warped) : 1.0f;
             }
         }
     }

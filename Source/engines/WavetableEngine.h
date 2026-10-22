@@ -70,7 +70,7 @@ public:
             v.switching = false;
             v.level = -1;
             v.bend = warpDepth (target[warp]);
-            v.warpGain = bank.table (v.tableIndex).warpGain (framePosition (v), v.bend);
+            v.warpGain = -1.0f;   // set by the first sub-block
             v.active = true;
         }
         if (! e.legato)
@@ -120,7 +120,7 @@ private:
         float layoutDetune = -1.0f, layoutMix = -1.0f, layoutSpread = -1.0f;
         float env = 0.0f;   // Position envelope, 1 at the attack, decaying to 0
         float bend = 0.0f;  // warp depth b at the end of the last sub-block
-        float warpGain = 1.0f;
+        float warpGain = 1.0f;   // loudness match (frame, pitch, warp)
         int tableIndex = 0, unisonMode = 0, level = -1;
         float switchGain = 1.0f;
         bool switching = false;
@@ -146,6 +146,12 @@ private:
         s[spread]     = { "Spread", 0.7f, percent };
         s[posSpread]  = { "Pos Spread", 0.0f, percent };
         s[phase]      = { "Phase", 0.25f, [] (float v) { return juce::String (v < 0.5f ? "Random" : "Retrig"); } };
+        s[position].role = SlotRole::position;
+        s[warp].role = SlotRole::warp;
+        s[detune].role = SlotRole::detune;
+        s[mix].role = SlotRole::unisonMix;
+        s[spread].role = SlotRole::stereoSpread;
+        s[posSpread].role = SlotRole::positionSpread;
         return s;
     }
 
@@ -298,8 +304,10 @@ private:
         // The sums above were made with the old setting, so once the dip reaches zero the rest of this
         // sub-block stays silent; the new setting rises from zero in the next one
         const float switchStep = 1.0f / (0.003f * sr);
-        const float warpGainFrom = v.warpGain;
-        v.warpGain = tbl.warpGain (positionAfter, bendAfter);
+        const float warpGainFrom = v.warpGain;   // -1 after a note-on: start at the first value
+        // Loudness match for this frame, pitch and warp (the pitch grid is laid out at 48 kHz)
+        v.warpGain = tbl.warpGain (positionAfter, bendAfter) * tbl.loudnessGain (positionAfter, inc[0] * sr);
+        const float gainFrom = warpGainFrom < 0.0f ? v.warpGain : warpGainFrom;
         bool switchedHere = false;
         for (int j = 0; j < n; ++j)
         {
@@ -325,7 +333,7 @@ private:
             {
                 v.switchGain = juce::jmin (1.0f, v.switchGain + switchStep);
             }
-            const float gain = voiceLevel * v.switchGain * (warpGainFrom + (v.warpGain - warpGainFrom) * (float) (j + 1) * invN);
+            const float gain = voiceLevel * v.switchGain * (gainFrom + (v.warpGain - gainFrom) * (float) (j + 1) * invN);
             outL[j] += sumL[(size_t) j] * gain;
             outR[j] += sumR[(size_t) j] * gain;
         }

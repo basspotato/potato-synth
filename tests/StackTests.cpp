@@ -3,6 +3,7 @@
 #include "PluginProcessor.h"
 #include "Loudness.h"
 #include "EngineRegistry.h"
+#include "ChainKnobs.h"
 #include <cmath>
 #include <iostream>
 
@@ -244,7 +245,8 @@ void testLayersStack()
     Rig rig2;
     rig2.proc->setLayerEngine (0, "test.sine");
     auto two = rig2.render (9600, { { 0, on (69, 0.5f) } });
-    CHECK (peak (two, 4800, 9600) > peak (one, 4800, 9600) * 1.9f, "two layers both sound on one note");
+    // Two identical layers add coherently (x2), and the stack's sqrt-weights scale two layers by 1/sqrt(2)
+    CHECK (peak (two, 4800, 9600) > peak (one, 4800, 9600) * 1.9f / std::sqrt (2.0f), "two layers both sound on one note");
 }
 
 void testStateRoundTrip()
@@ -509,6 +511,32 @@ void testRoleBands()
     CHECK (std::abs (noteLevelDb (111, (float) R::air) - noteLevelDb (111, (float) R::full)) < 1.0f, "Air passes 5 kHz");
 }
 
+void testAddingALayerKeepsThePower()
+{
+    // Two layers a fifth apart (uncorrelated): the stack's sqrt-weights keep the summed power of one layer, and
+    // fading the second layer in is smooth
+    Rig one;
+    auto a = one.render (24000, { { 0, on (57) } });
+    Rig two;
+    two.proc->setLayerEngine (1, "test.sine");
+    two.set (ps::params::layerSemi (1), 7.0f);
+    two.set (ps::params::layerLevel (1), -50.0f);   // quiet but not muted, so it starts the note
+    two.render (blockSize);
+    two.collectRetired();
+    auto b = two.render (12000, { { 0, on (57) } });
+    std::vector<float> fade;
+    for (int i = 0; i < 48; ++i)
+    {
+        two.set (ps::params::layerLevel (1), -50.0f + 50.0f * (float) (i + 1) / 48.0f);
+        auto x = two.render (blockSize);
+        fade.insert (fade.end(), x.begin(), x.end());
+    }
+    auto c = two.render (24000);
+    const float change = juce::Decibels::gainToDecibels (rms (c, 12000, 24000) / rms (a, 12000, 24000));
+    CHECK (std::abs (change) < 0.3f, "adding an uncorrelated layer keeps the stack's power (" + std::to_string (change) + " dB)");
+    CHECK (maxStep (fade) < 0.05f, "fading a layer in is click-free");
+}
+
 void testSubAndBodySumFlat()
 {
     // At the crossover the LR4 low-pass (Sub) and high-pass (Body) add back to the full signal, in phase
@@ -521,7 +549,8 @@ void testSubAndBodySumFlat()
         split.set (ps::params::layerRole (0), (float) ps::params::Role::sub);
         split.set (ps::params::layerRole (1), (float) ps::params::Role::body);
         auto x = split.render (24000, { { 0, on (note) } });
-        const float full = juce::Decibels::decibelsToGain (noteLevelDb (note, (float) ps::params::Role::full));
+        // Two active layers: the stack's sqrt-weights scale the sum by 1/sqrt(2) at every note
+        const float full = juce::Decibels::decibelsToGain (noteLevelDb (note, (float) ps::params::Role::full)) / std::sqrt (2.0f);
         const float sum = peak (x, 12000, 24000);
         CHECK (std::abs (juce::Decibels::gainToDecibels (sum / full)) < 0.3f,
                "Sub + Body sum flat at note " + std::to_string (note) + " (" + std::to_string (juce::Decibels::gainToDecibels (sum / full)) + " dB)");
@@ -982,19 +1011,22 @@ void testWavetableEngine()
         CHECK (allFinite (x) && peak (x) > 0.1f, "Wavetable sounds");
     }
 
-    // Every frame is normalised to a sine's RMS, so tables and Position keep the level
-    auto levelFor = [&] (int t, float pos)
+    // Every frame is loudness-matched to a sine of its pitch, so tables and Position keep the loudness
+    for (int note : { 33, 57, 81 })
     {
-        WtRig rig ({ { Wt::unison, off }, { Wt::table, tableValue (t) }, { Wt::position, pos } });
-        auto x = rig.render (36000, { { 0, on (45) } });
-        return juce::Decibels::gainToDecibels (rms (x, 12000, 36000));
-    };
-    const float reference = levelFor (0, 0.0f);
-    float worst = 0.0f;
-    for (int t = 0; t < tables.size(); ++t)
-        for (float pos : { 0.0f, 0.37f, 1.0f })
-            worst = std::max (worst, std::abs (levelFor (t, pos) - reference));
-    CHECK (worst < 1.0f, "every table and Position keep the level within 1 dB (" + std::to_string (worst) + " dB)");
+        auto loudnessFor = [&] (int t, float pos)
+        {
+            WtRig rig ({ { Wt::unison, off }, { Wt::table, tableValue (t) }, { Wt::position, pos } });
+            auto x = rig.render (48000, { { 0, on (note) } });
+            return ps::loudness::integratedLufs (x.data() + 12000, rig.right.data() + 12000, 36000, sampleRate);
+        };
+        const double reference = loudnessFor (0, 0.0f);
+        double worst = 0.0;
+        for (int t = 0; t < tables.size(); ++t)
+            for (float pos : { 0.0f, 0.37f, 1.0f })
+                worst = std::max (worst, std::abs (loudnessFor (t, pos) - reference));
+        CHECK (worst < 0.5, "every table and Position keep the loudness within 0.5 LU at note " + std::to_string (note) + " (" + std::to_string (worst) + " LU)");
+    }
 
     for (int t = 0; t < tables.size(); ++t)
         for (int note : { 40, 96 })
@@ -1019,9 +1051,10 @@ void testWavetableEngine()
         auto a = plain.render (36000, { { 0, on (45) } });
         auto b = bent.render (36000, { { 0, on (45) } });
         CHECK (bandEnergy (b, 12000, 300.0, 20000.0) > 100.0f * bandEnergy (a, 12000, 300.0, 20000.0), "Warp adds harmonics");
-        const float levelChange = juce::Decibels::gainToDecibels (rms (b, 12000, 36000) / rms (a, 12000, 36000));
-        std::cout << "info: full Warp moves the level " << levelChange << " dB\n";
-        CHECK (std::abs (levelChange) < 1.0f, "Warp keeps the level within 1 dB (" + std::to_string (levelChange) + " dB)");
+        const double levelChange = ps::loudness::integratedLufs (b.data() + 12000, bent.right.data() + 12000, 24000, sampleRate)
+                                 - ps::loudness::integratedLufs (a.data() + 12000, plain.right.data() + 12000, 24000, sampleRate);
+        std::cout << "info: full Warp moves the loudness " << levelChange << " LU\n";
+        CHECK (std::abs (levelChange) < 1.0, "Warp keeps the loudness within 1 LU (" + std::to_string (levelChange) + " LU)");
         for (float w : { 0.0f, 1.0f })
             for (int note : { 40, 96 })
             {
@@ -1065,6 +1098,138 @@ void testWavetableEngine()
         const float step = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
         CHECK (step < steady * 1.5f, std::string ("Wavetable: changing ") + names[m] + " mid-note does not click ("
                                          + std::to_string (step / steady) + "x the steady step)");
+    }
+}
+
+// ---- Chain knobs and the Harmony Engine ---------------------------------------------------------------
+
+// The full default-role stack with an engine on every layer: Sub, Wavetable body, JP mid, Wavetable air
+struct StackRig : Rig
+{
+    StackRig() : Rig (false)
+    {
+        const char* engines[] = { "sub", "wavetable", "jp", "wavetable" };
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            proc->setLayerEngine (i, engines[i]);
+        if (const char* m = std::getenv ("POTATO_MASTER")) set (ps::params::master, (float) std::atof (m));
+        render (blockSize);
+        collectRetired();
+    }
+
+    static std::vector<std::pair<int, juce::MidiMessage>> chord()
+    {
+        std::vector<std::pair<int, juce::MidiMessage>> c;
+        for (int n : { 36, 48, 55, 60, 64, 67 })
+            c.push_back ({ 0, on (n, 0.9f) });
+        return c;
+    }
+
+    // Renders with a parameter ramped linearly from its current value to `to` over the whole render
+    std::vector<float> renderSweep (const juce::ParameterID& id, float to, int numSamples)
+    {
+        std::vector<float> out, outR;
+        const float from = get (id);
+        for (int pos = 0; pos < numSamples; pos += blockSize)
+        {
+            set (id, from + (to - from) * (float) (pos + blockSize) / (float) numSamples);
+            auto x = render (blockSize);
+            out.insert (out.end(), x.begin(), x.end());
+            outR.insert (outR.end(), right.begin(), right.end());
+        }
+        right = outR;
+        return out;
+    }
+};
+
+double lufs (const std::vector<float>& l, const std::vector<float>& r, size_t from, size_t to)
+{
+    return ps::loudness::integratedLufs (l.data() + from, r.data() + from, to - from, sampleRate);
+}
+
+// Side energy below 120 Hz relative to mid, in dB
+float lowSideDb (const std::vector<float>& l, const std::vector<float>& r, size_t from)
+{
+    std::vector<float> mid (l.size()), side (l.size());
+    for (size_t i = 0; i < l.size(); ++i)
+    {
+        mid[i] = 0.5f * (l[i] + r[i]);
+        side[i] = 0.5f * (l[i] - r[i]);
+    }
+    return juce::Decibels::gainToDecibels (std::sqrt (bandEnergy (side, from, 20.0, 120.0) / bandEnergy (mid, from, 20.0, 120.0)), -200.0f);
+}
+
+void testChainPaths()
+{
+    // Monotone waypoints give a monotone path that passes through them and never overshoots
+    const ps::chain::Path path ({ 0.0f, 0.1f, 0.8f, 0.85f, 1.0f });
+    bool monotone = true;
+    float previous = path.at (0.0f);
+    for (int i = 1; i <= 1000; ++i)
+    {
+        const float v = path.at ((float) i / 1000.0f);
+        monotone = monotone && v >= previous - 1.0e-6f && v <= 1.0f + 1.0e-6f;
+        previous = v;
+    }
+    CHECK (monotone, "a chain path is monotone between monotone waypoints");
+    CHECK (std::abs (path.at (0.5f) - 0.8f) < 1.0e-6f && std::abs (path.at (0.75f) - 0.85f) < 1.0e-6f, "and passes through every waypoint");
+
+    // Offsets go only to layers of the route's role
+    std::array<float, ps::chain::numKnobs> u {};
+    u[ps::chain::mass] = 1.0f;
+    using R = ps::params::Role;
+    const auto o = ps::chain::compute (u, { R::sub, R::body, R::mid, R::air });
+    CHECK (o.slot[0][(size_t) ps::SlotRole::translate] > 0.5f && std::abs (o.slot[2][(size_t) ps::SlotRole::translate]) < 1.0e-9f,
+           "MASS adds Translate on the Sub layer only");
+    CHECK (o.monoBassOctaves > 0.0f && o.lowFocusDb > 2.0f, "MASS widens the mono zone and lifts the tactile band");
+}
+
+void testChainKnobInvariants()
+{
+    // A control rig plays the same notes with the knobs untouched: the loudness change is measured against it at
+    // the same moment, so the patch's own slow motion (unison beating) doesn't read as the knob's
+    StackRig control;
+    const int settle = 48000, measure = 96000, sweepLength = 96000;
+    auto c0 = control.render (settle + measure, StackRig::chord());
+    control.render (sweepLength);
+    auto c1 = control.render (settle + measure);
+    auto c1R = control.right;
+    const double reference = lufs (c1, c1R, (size_t) settle, c1.size());
+    std::cout << "info: the test stack plays at " << reference << " LUFS, peak " << ps::loudness::truePeakDb (c1.data(), c1.size()) << " dBTP\n";
+    {
+        const float side = lowSideDb (c1, c1R, (size_t) settle);
+        CHECK (side < -40.0f, "the default stack's lows are mono (side " + std::to_string (side) + " dB below 120 Hz)");
+    }
+
+    auto knobId = [] (int k) { return k < ps::params::numChainKnobs ? ps::params::chainKnob (k) : ps::params::super; };
+    for (int k = 0; k <= ps::params::numChainKnobs; ++k)
+    {
+        const std::string name = k < ps::params::numChainKnobs ? ps::params::chainKnobNames[k] : "SUPER";
+        StackRig rig;
+        auto a = rig.render (settle + measure, StackRig::chord());
+        auto aR = rig.right;
+
+        // Sweep to full over 2 s, then hold
+        auto sweep = rig.renderSweep (knobId (k), 1.0f, sweepLength);
+        auto sweepR = rig.right;
+        auto b = rig.render (settle + measure);
+        auto bR = rig.right;
+
+        const double change = lufs (b, bR, (size_t) settle, b.size()) - reference;
+        std::cout << "info: " << name << " 0 -> 1: " << change << " LU, trim " << juce::Decibels::gainToDecibels (rig.proc->getLoudnessTrim()) << " dB\n";
+        CHECK (std::abs (change) <= 0.5, name + " keeps the loudness within 0.5 LU (" + std::to_string (change) + " LU)");
+
+        double tp = -200.0;
+        for (auto* x : { &a, &aR, &sweep, &sweepR, &b, &bR })
+            tp = std::max (tp, ps::loudness::truePeakDb (x->data(), x->size()));
+        CHECK (tp <= -1.0, name + " stays under -1 dBTP (" + std::to_string (tp) + " dBTP)");
+
+        const float side = lowSideDb (b, bR, (size_t) settle);
+        CHECK (side < -40.0f, name + " keeps the lows mono (side " + std::to_string (side) + " dB below 120 Hz)");
+
+        // No click while sweeping: no step larger than the steady states have on their own
+        const float steady = std::max (maxStep (std::vector<float> (a.begin() + settle, a.end())), maxStep (std::vector<float> (b.begin() + settle, b.end())));
+        const float moving = maxStep (sweep);
+        CHECK (moving < steady * 1.5f, name + " sweeps click-free (" + std::to_string (moving / steady) + "x the steady step)");
     }
 }
 
@@ -1176,6 +1341,7 @@ int main()
     testVoiceModeSwitchWhileSounding();
     testRoleBands();
     testSubAndBodySumFlat();
+    testAddingALayerKeepsThePower();
     testRoleChangeWhilePlaying();
     testMonoBass();
     testDefaultStackIsTrueSilentAfterNotes();
@@ -1194,6 +1360,8 @@ int main()
     testJpSwitchesDoNotClick();
     testSubEngine();
     testWavetableEngine();
+    testChainPaths();
+    testChainKnobInvariants();
     benchmarkJp();
     benchmarkWavetable();
 

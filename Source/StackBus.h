@@ -1,12 +1,16 @@
 #pragma once
 #include "RoleBand.h"
 #include "Loudness.h"
+#include "Filter.h"
+#include "HarmonyEngine.h"
 #include <juce_dsp/juce_dsp.h>
 
 namespace ps
 {
 // The stack bus: processing on the summed layers. So far: the mono-bass stage, an LR4 split at the low
-// crossover whose low band is summed to mono, so the lows hit the same in mono and stereo.
+// crossover whose low band is summed to mono, so the lows hit the same in mono and stereo, and the width
+// floor: the side signal is high-passed (LR4) at twice the crossover (about 250 Hz), so stereo width only
+// starts where the ear can use it and no layer's spread leaks into the mono zone through the crossover's skirt.
 // Later stages (ducking, OTT, glue, width, space, auto-gain, true-peak) slot in after it.
 class StackBus
 {
@@ -23,6 +27,8 @@ public:
     {
         for (auto& f : lows)  f.reset();
         for (auto& f : highs) f.reset();
+        sideHigh.reset();
+        for (auto& f : midAllpass) f.reset();
     }
 
     void process (float* left, float* right, int numSamples, double lowCrossoverHz, bool monoBassOn)
@@ -45,8 +51,14 @@ public:
             {
                 const float g = cutoff.nextGain();
                 const double lowMono = 0.5 * (lows[0].process (left[i]) + lows[1].process (right[i]));
-                const auto l = (float) (lowMono + highs[0].process (left[i]));
-                const auto r = (float) (lowMono + highs[1].process (right[i]));
+                const double hl = highs[0].process (left[i]), hr = highs[1].process (right[i]);
+                // The mid goes through the matching LR4 all-pass (low + high sum), so mid and side keep the same
+                // phase above the width floor and a hard-panned sound stays hard-panned
+                const double m = 0.5 * (hl + hr);
+                const double mid = lowMono + midAllpass[0].process (m) + midAllpass[1].process (m);
+                const double side = sideHigh.process (0.5 * (hl - hr));
+                const auto l = (float) (mid + side);
+                const auto r = (float) (mid - side);
                 left[i] += g * (l - left[i]);
                 right[i] += g * (r - right[i]);
             }
@@ -59,13 +71,88 @@ private:
     {
         for (auto& f : lows)  f.setCutoff (cutoff.current, cutoff.sampleRate);
         for (auto& f : highs) f.setCutoff (cutoff.current, cutoff.sampleRate);
+        sideHigh.setCutoff (2.0 * cutoff.current, cutoff.sampleRate);
+        for (auto& f : midAllpass) f.setCutoff (2.0 * cutoff.current, cutoff.sampleRate);
     }
 
     GlidingCutoff cutoff;
     TailTracker tail;
     std::array<LinkwitzRiley4, 2> lows { LinkwitzRiley4 (LinkwitzRiley4::Type::lowPass), LinkwitzRiley4 (LinkwitzRiley4::Type::lowPass) };
     std::array<LinkwitzRiley4, 2> highs { LinkwitzRiley4 (LinkwitzRiley4::Type::highPass), LinkwitzRiley4 (LinkwitzRiley4::Type::highPass) };
+    LinkwitzRiley4 sideHigh { LinkwitzRiley4::Type::highPass };
+    std::array<LinkwitzRiley4, 2> midAllpass { LinkwitzRiley4 (LinkwitzRiley4::Type::lowPass), LinkwitzRiley4 (LinkwitzRiley4::Type::highPass) };
     bool wasOff = true;
+};
+
+// MASS's energy focus: a bell on the tactile band (60 Hz, Q 0.8) on the summed stack, after the mono-bass
+// stage, so the lows it lifts are already mono. A ZDF SVF bell (Simper): y = x + k (A^2 - 1) band, with
+// k = 1 / (Q A) and A = 10^(dB / 40), so the gain at 60 Hz is exactly the knob's dB and stays smooth while
+// it moves. It measures its own K-weighted input and output for the Harmony Engine's loudness trim.
+class LowFocus
+{
+public:
+    static constexpr float centreHz = 60.0f, q = 0.8f;
+
+    void prepare (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        g = tptGain (centreHz, sr);
+        smoothCoef = 1.0f - std::exp (-(float) subBlock / (0.03f * sr));
+        in.prepare (sampleRate);
+        out.prepare (sampleRate);
+        reset();
+    }
+
+    void reset()
+    {
+        for (auto& f : filters)
+            f.reset();
+        currentDb = 0.0f;
+        in.reset();
+        out.reset();
+    }
+
+    // Returns false (and leaves the signal alone) when the focus is flat and settled
+    bool process (float* left, float* right, int numSamples, float targetDb) noexcept
+    {
+        if (std::abs (targetDb) < 1.0e-3f && std::abs (currentDb) < 1.0e-3f)
+        {
+            if (active)
+            {
+                reset();
+                active = false;
+            }
+            return false;
+        }
+        active = true;
+        in.process (left, right, numSamples);
+        for (int start = 0; start < numSamples; start += subBlock)
+        {
+            currentDb += (targetDb - currentDb) * smoothCoef;
+            const float a = std::pow (10.0f, currentDb / 40.0f), k = 1.0f / (q * a), m1 = k * (a * a - 1.0f);
+            const auto c = ZdfSvf::Coeffs::make (g, k);
+            const int end = std::min (numSamples, start + subBlock);
+            for (int i = start; i < end; ++i)
+            {
+                left[i] += m1 * filters[0].process (left[i], c).band;
+                right[i] += m1 * filters[1].process (right[i], c).band;
+            }
+        }
+        out.process (left, right, numSamples);
+        in.update();
+        out.update();
+        return true;
+    }
+
+    float inputPower() const noexcept  { return active ? in.getPower() : 0.0f; }
+    float outputPower() const noexcept { return active ? out.getPower() : 0.0f; }
+
+private:
+    static constexpr int subBlock = 16;
+    std::array<ZdfSvf, 2> filters {};
+    harmony::KPowerMeter in, out;
+    float sr = 48000.0f, g = 0.0f, smoothCoef = 0.1f, currentDb = 0.0f;
+    bool active = false;
 };
 
 // The last stage before the host: a 4x oversampled soft clipper that keeps inter-sample peaks under
