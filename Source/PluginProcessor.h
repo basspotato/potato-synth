@@ -48,6 +48,8 @@ public:
     // Message thread: put an engine (by registry ID, empty string = none) into a layer
     void setLayerEngine (int layerIndex, const juce::String& engineId);
     juce::String getLayerEngine (int layerIndex) const { return stack.layer (layerIndex).getEngineId(); }
+    // The engine description behind a layer's slot parameters (nullptr when the layer is empty)
+    const ps::EngineInfo* getLayerEngineInfo (int layerIndex) const { return engineInfos[(size_t) layerIndex].load(); }
     // Message thread: frees engines the audio thread has finished with (also runs on a timer)
     void collectRetiredEngines() { stack.collectGarbage(); }
 

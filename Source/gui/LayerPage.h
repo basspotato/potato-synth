@@ -1,6 +1,7 @@
 #pragma once
 #include "Theme.h"
 #include "../Params.h"
+#include "../Engine.h"
 
 namespace ps
 {
@@ -68,8 +69,8 @@ private:
     juce::Colour colour { theme::mid };
 };
 
-// Detail page for one layer: engine picker, voice mode, amp envelope, pan, tune and glide.
-// Engine-specific controls join this page as the engines arrive.
+// Detail page for one layer: engine picker, the engine's own controls (its slots), voice mode, amp envelope,
+// pan, tune and glide.
 class LayerPage : public juce::Component,
                   private juce::Timer
 {
@@ -110,6 +111,17 @@ public:
             k.label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
             addAndMakeVisible (k.label);
         }
+        for (auto& k : slotKnobs)
+        {
+            k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 14);
+            k.label.setJustificationType (juce::Justification::centred);
+            k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            addChildComponent (k.slider);
+            addChildComponent (k.label);
+        }
+        noSlots.setJustificationType (juce::Justification::centred);
+        noSlots.setColour (juce::Label::textColourId, theme::textDim);
+        addChildComponent (noSlots);
         startTimerHz (15);
     }
 
@@ -134,14 +146,17 @@ public:
             auto* p = apvts.getParameter (ids[i].getParamID());
             k.slider.setDoubleClickReturnValue (true, p->convertFrom0to1 (p->getDefaultValue()));
         }
+        slotsStale = true;   // reattached for this layer by the next setEngine()
         timerCallback();
         repaint();
     }
 
-    void setEngineName (const juce::String& name)
+    void setEngine (const juce::String& name, const EngineInfo* info)
     {
         engineButton.setButtonText (juce::String ("ENGINE:  ") + (name.isEmpty() ? juce::String ("EMPTY") : name.toUpperCase())
                                     + juce::String (juce::CharPointer_UTF8 ("  \xe2\x96\xbe")));
+        if (info != shownInfo || slotsStale)
+            attachSlots (info);
     }
 
     void paint (juce::Graphics& g) override
@@ -151,6 +166,12 @@ public:
         g.fillRoundedRectangle (r, 14.0f);
         g.setColour (accent.withAlpha (0.6f));
         g.drawRoundedRectangle (r.reduced (0.75f), 14.0f, 1.5f);
+
+        auto engineRow = slotArea.toFloat();
+        g.setColour (theme::bgBottom.withAlpha (0.6f));
+        g.fillRoundedRectangle (engineRow, 10.0f);
+        g.setColour (accent.withAlpha (0.35f));
+        g.drawRoundedRectangle (engineRow.reduced (0.5f), 10.0f, 1.0f);
 
         g.setColour (theme::text);
         g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
@@ -171,12 +192,15 @@ public:
         r.removeFromTop (8);
 
         auto rows = r;
-        const int knobRowH = juce::jmin (110, rows.getHeight() / 3);
+        const int knobRowH = juce::jmin (110, rows.getHeight() / 4);   // the engine's controls get the most room
         auto bottomRow = rows.removeFromBottom (knobRowH);
         rows.removeFromBottom (6);
         auto envRow = rows.removeFromBottom (knobRowH);
         rows.removeFromBottom (10);
-        envelope.setBounds (rows);
+        slotArea = rows;
+        layoutSlots();
+        // The envelope drawing sits beside its four knobs
+        envelope.setBounds (envRow.removeFromRight (envRow.getWidth() * 2 / 5).reduced (4, 0));
 
         auto place = [] (Knob& k, juce::Rectangle<int> cell)
         {
@@ -204,6 +228,55 @@ private:
         juce::Label label;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
     };
+
+    // Shows one knob per slot the engine uses, named by the engine; its value text comes from the parameter.
+    void attachSlots (const EngineInfo* info)
+    {
+        shownInfo = info;
+        slotsStale = false;
+        const int used = info != nullptr ? juce::jmin ((int) info->slots.size(), (int) slotKnobs.size()) : 0;
+        for (int k = 0; k < (int) slotKnobs.size(); ++k)
+        {
+            auto& knob = slotKnobs[(size_t) k];
+            knob.attachment.reset();
+            const bool visible = k < used;
+            knob.slider.setVisible (visible);
+            knob.label.setVisible (visible);
+            if (! visible)
+                continue;
+            const auto& slot = info->slots[(size_t) k];
+            knob.label.setText (slot.name.toUpperCase(), juce::dontSendNotification);
+            knob.label.setColour (juce::Label::textColourId, accent.interpolatedWith (theme::text, 0.35f));
+            knob.slider.setColour (juce::Slider::rotarySliderFillColourId, accent);
+            const auto id = params::layerSlot (layer, k).getParamID();
+            knob.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, id, knob.slider);
+            knob.slider.setDoubleClickReturnValue (true, slot.defaultValue);
+            knob.slider.updateText();
+        }
+        noSlots.setText (info == nullptr ? "Pick an engine to play this layer" : "This engine has no controls of its own",
+                         juce::dontSendNotification);
+        noSlots.setVisible (used == 0);
+        usedSlots = used;
+        layoutSlots();
+    }
+
+    void layoutSlots()
+    {
+        auto area = slotArea.reduced (8, 10);
+        noSlots.setBounds (slotArea);
+        constexpr int perRow = 8;
+        const int rowsNeeded = juce::jmax (1, (usedSlots + perRow - 1) / perRow);
+        const int w = area.getWidth() / perRow, h = area.getHeight() / rowsNeeded;
+        juce::Rectangle<int> row;
+        for (int k = 0; k < usedSlots; ++k)
+        {
+            if (k % perRow == 0)
+                row = area.removeFromTop (h);
+            auto cell = row.removeFromLeft (w).reduced (4, 0);
+            slotKnobs[(size_t) k].label.setBounds (cell.removeFromTop (12));
+            slotKnobs[(size_t) k].slider.setBounds (cell);
+        }
+    }
 
     void timerCallback() override
     {
@@ -241,6 +314,12 @@ private:
     EnvelopeView envelope;
     juce::TextButton engineButton;
     std::array<Knob, 9> knobs;
+    std::array<Knob, Engine::numSlots> slotKnobs;
+    juce::Label noSlots;
+    juce::Rectangle<int> slotArea;
+    const EngineInfo* shownInfo = nullptr;   // the engine the slot knobs are attached for
+    bool slotsStale = true;
+    int usedSlots = 0;
     std::array<juce::TextButton, 3> modeButtons;
     std::array<juce::TextButton, 5> roleButtons;
 };

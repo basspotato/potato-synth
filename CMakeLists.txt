@@ -79,11 +79,13 @@ if(POTATO_DEV_TOOLS)
     add_executable(PotatoSynthSnapshot tools/Snapshot.cpp)
     target_include_directories(PotatoSynthSnapshot PRIVATE $<TARGET_PROPERTY:PotatoSynth,INCLUDE_DIRECTORIES>)
     target_compile_definitions(PotatoSynthSnapshot PRIVATE $<TARGET_PROPERTY:PotatoSynth,COMPILE_DEFINITIONS>)
+    target_compile_options(PotatoSynthSnapshot PRIVATE $<TARGET_PROPERTY:PotatoSynth,COMPILE_OPTIONS>)
     target_link_libraries(PotatoSynthSnapshot PRIVATE PotatoSynth)
 
     add_executable(PotatoSynthTests tests/StackTests.cpp)
     target_include_directories(PotatoSynthTests PRIVATE $<TARGET_PROPERTY:PotatoSynth,INCLUDE_DIRECTORIES>)
     target_compile_definitions(PotatoSynthTests PRIVATE $<TARGET_PROPERTY:PotatoSynth,COMPILE_DEFINITIONS>)
+    target_compile_options(PotatoSynthTests PRIVATE $<TARGET_PROPERTY:PotatoSynth,COMPILE_OPTIONS>)
     target_link_libraries(PotatoSynthTests PRIVATE PotatoSynth)
 
     enable_testing()
