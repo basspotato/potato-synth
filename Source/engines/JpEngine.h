@@ -439,18 +439,43 @@ private:
             v.driveOn = true;
         }
 
+        // The cutoff's integrator gain at every 4th sample (and the last), linear in between: the envelope still
+        // moves the cutoff at a 12 kHz control rate, with no steps, for a quarter of the exp2 and tan cost
+        alignas (32) std::array<float, subBlock> cutoffG {};
+        {
+            alignas (32) std::array<float, subBlock> semis {};
+            for (int j = 0; j < n; ++j)
+            {
+                const float frac = (float) (j + 1) / (float) n;
+                semis[(size_t) j] = cutoff0 + (cutoff1 - cutoff0) * frac + trackSemis + v.envelope.next (envelope) * envDepth;
+            }
+            auto gAt = [&] (int j) { return tptGain (440.0f * fastExp2 ((semis[(size_t) j] - 69.0f) / 12.0f), sr); };
+            float gPrev = gAt (0);
+            cutoffG[0] = gPrev;
+            for (int j0 = 0; j0 < n - 1; j0 += 4)
+            {
+                const int j1 = juce::jmin (n - 1, j0 + 4);
+                const float gNext = gAt (j1);
+                const float step = (gNext - gPrev) / (float) (j1 - j0);
+                for (int j = j0 + 1; j <= j1; ++j)
+                    cutoffG[(size_t) j] = gPrev + step * (float) (j - j0);
+                gPrev = gNext;
+            }
+        }
+        // Drive's makeup at the sub-block ends, linear in between (d ramps linearly, so this is smooth)
+        const float pre0 = 1.0f + 15.0f * d0 * d0, pre1 = 1.0f + 15.0f * d1 * d1;
+        const float post0 = v.driveOn ? 1.0f / std::pow (pre0, 0.6f) : 1.0f, post1 = v.driveOn ? 1.0f / std::pow (pre1, 0.6f) : 1.0f;
+
         for (int j = 0; j < n; ++j)
         {
             const float frac = (float) (j + 1) / (float) n;
-            const float env = v.envelope.next (envelope);
-            const float semis = cutoff0 + (cutoff1 - cutoff0) * frac + trackSemis + env * envDepth;
-            const float g = tptGain (440.0f * fastExp2 ((semis - 69.0f) / 12.0f), sr);
+            const float g = cutoffG[(size_t) j];
             float pre = 1.0f, post = 1.0f, wet = 0.0f;
             if (v.driveOn)
             {
                 const float d = d0 + (d1 - d0) * frac;
                 pre = 1.0f + 15.0f * d * d;
-                post = 1.0f / std::pow (pre, 0.6f);
+                post = post0 + (post1 - post0) * frac;
                 wet = juce::jmin (1.0f, d * 20.0f);
             }
             ZdfSvf::Coeffs svfCoeffs {};

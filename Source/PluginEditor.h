@@ -40,7 +40,7 @@ private:
     juce::TextButton stackTab { "STACK" }, layerTab { "LAYER" };
     int selectedLayer = 2;
 
-    // Chain knobs, SUPER, BUILD and DROP are a layout preview until Phase 3 wires them to the engine
+    // Chain knobs, SUPER, and the momentary BUILD and DROP
     std::array<Knob, 8> chain;
     Knob super, master;
     juce::TextButton build { "BUILD" }, drop { "DROP" };

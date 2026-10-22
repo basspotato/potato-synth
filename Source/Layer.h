@@ -98,8 +98,8 @@ public:
         updateEnvelopeSettings();
         band.prepare (sr);
         updateBand (true);
-        meter.prepare (sr);
-        carvedMeter.prepare (sr);
+        meter.prepare (sr, false);
+        carvedMeter.prepare (sr, false);
         carve.prepare (sr);
         duckRate = (float) sr;
         duck.attackSamples = 0.002f * duckRate;

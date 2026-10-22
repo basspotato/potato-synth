@@ -19,9 +19,12 @@ namespace ps::harmony
 class KPowerMeter
 {
 public:
-    void prepare (double sampleRate)
+    // audibleBand false skips the 19 kHz low-pass: for meters that only enter a ratio against each other (the
+    // layers), where the top octave cancels out and the filter would only cost CPU
+    void prepare (double sampleRate, bool audibleBand = true)
     {
         sr = sampleRate;
+        stages = audibleBand ? numStages : 2;
         const auto k = loudness::kWeighting (sampleRate);
         for (int s = 0; s < 2; ++s)
         {
@@ -86,7 +89,7 @@ private:
 
     double weigh (double x, int ch) noexcept
     {
-        for (int s = 0; s < numStages; ++s)
+        for (int s = 0; s < stages; ++s)
         {
             auto& z = state[(size_t) ch][(size_t) s];
             const auto& k = c[(size_t) s];
@@ -106,6 +109,7 @@ private:
     }
 
     double sr = 48000.0;
+    int stages = numStages;
     std::array<Coeffs, numStages> c {};
     std::array<std::array<State, numStages>, 2> state {};
     float power = 0.0f;

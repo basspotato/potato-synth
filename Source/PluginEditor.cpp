@@ -93,6 +93,23 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     drop.setColour (juce::TextButton::buttonColourId, ps::theme::sub);
     addAndMakeVisible (build);
     addAndMakeVisible (drop);
+    // Momentary: held while the mouse is down (the host sees one gesture per press, so it records cleanly)
+    for (auto [button, id] : { std::pair { &build, ps::params::build }, std::pair { &drop, ps::params::drop } })
+    {
+        auto* param = processor.apvts.getParameter (id.getParamID());
+        button->onStateChange = [button, param, wasDown = false]() mutable
+        {
+            const bool down = button->isDown();
+            if (down == wasDown)
+                return;
+            wasDown = down;
+            if (down)
+                param->beginChangeGesture();
+            param->setValueNotifyingHost (down ? 1.0f : 0.0f);
+            if (! down)
+                param->endChangeGesture();
+        };
+    }
 
     setResizable (true, true);
     setResizeLimits (baseWidth * 3 / 4, baseHeight * 3 / 4, baseWidth * 2, baseHeight * 2);
