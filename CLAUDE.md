@@ -30,7 +30,7 @@ cmake --build build --config Release --target PotatoSynth_VST3
 
 # Linux (cloud sessions: compile check + headless tests; deps installed by .claude/hooks/session-start.sh)
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPOTATO_DEV_TOOLS=ON
-cmake --build build --target PotatoSynth_VST3 PotatoSynthSnapshot
+cmake --build build --target PotatoSynth_VST3 PotatoSynthSnapshot PotatoSynthTests
 ```
 
 - Local JUCE checkout: `-DJUCE_DIR=path/to/JUCE` (otherwise FetchContent downloads 8.0.15).
@@ -42,14 +42,14 @@ cmake --build build --target PotatoSynth_VST3 PotatoSynthSnapshot
 - The gate is the Windows job: VST3 build plus pluginval at strictness 10, on every push and PR. A Linux compile/test job runs headless DSP and preset tests. A macOS job, if added, is non-blocking.
 - Linux: `xvfb-run -a /tmp/pluginval/pluginval --strictness-level 10 --validate-in-process --validate build/PotatoSynth_artefacts/Release/VST3/Potato-Synth.vst3` (the session hook downloads pluginval to `/tmp/pluginval`).
 - GUI check without a host: `xvfb-run -a build/PotatoSynthSnapshot shot.png [width]` renders the editor to a PNG. Look at it after any GUI change.
-- DSP unit tests (once added): `cmake --build build --target PotatoSynthTests && ctest --test-dir build -C Release`
+- DSP tests: `xvfb-run -a build/PotatoSynthTests` (end to end through the processor: pitch, clicks, stealing, pedal, engine swaps, state). Add a test with every DSP change; never weaken one to pass.
 
 ## Source layout
 
 ```
 Source/
   Params.h              — every APVTS parameter ID, range and default (single source of truth)
-  Engine.h              — abstract Engine interface every synth engine implements
+  Engine.h              — abstract Engine interface every synth engine implements (voice bank indexed by note slot)
   EngineRegistry.h      — engine type ID → factory; the only place a new engine is registered
   engines/              — one header per engine: JpEngine.h, SubEngine.h, WavetableEngine.h, SpectralEngine.h, DirtEngine.h, ...
   Unison.h              — "JP" (JP-8080 integer table) and "Modern" (SIMD, 16 voices) unison
@@ -69,11 +69,13 @@ Source/
   PluginProcessor.*     — audio thread, parameter handling, state save/load
   PluginEditor.*        — GUI layout (main page + layer detail pages)
 tools/Snapshot.cpp      — headless editor-to-PNG renderer (POTATO_DEV_TOOLS)
+tests/StackTests.cpp    — headless DSP tests (POTATO_DEV_TOOLS)
 ```
 
 ## Architecture rules
 
-- **Adding an engine** = one new header in `engines/` implementing `Engine` + one line in `EngineRegistry.h`. If an engine needs changes to `Layer`/`LayerStack`, stop and flag it: the interface needs extending, not bypassing.
+- **Adding an engine** = one new header in `engines/` implementing `Engine` + one line in `EngineRegistry.h`. Engine selection is saved as a stable string ID in state (`Layers/L{n}_engine`), never as a host parameter. Engines are swapped lock-free (`Layer::requestEngine`): the old one fades out and is deleted on the message thread.
+- **Voice contract:** a note slot drives voice i of every layer. `noteOn` on a sounding voice must glide click-free; `steal` must fade within a few ms. If an engine needs changes to `Layer`/`LayerStack`, stop and flag it: the interface needs extending, not bypassing.
 - **Parameters:** each layer has a fixed set of generic params (`L{n}_level`, `L{n}_pan`, ..., `L{n}_engine`, and engine slots `L{n}_e1`..`L{n}_e16`). Each engine declares what its slots mean (name, range, default) for the GUI. New engines therefore never add or rename host parameters. Parameter IDs are permanent once released.
 - **State** carries a version number. Loading older state must still work; add a migration rather than breaking it.
 - Engines are created when the user picks them (message thread), never on the audio thread. Swap them in lock-free and preallocate in `prepare`.

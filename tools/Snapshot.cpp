@@ -8,7 +8,7 @@ int main (int argc, char** argv)
     const juce::File out (juce::File::getCurrentWorkingDirectory().getChildFile (argc > 1 ? argv[1] : "snapshot.png"));
 
     std::unique_ptr<juce::AudioProcessor> processor (createPluginFilter());
-    std::unique_ptr<juce::AudioProcessorEditor> editor (processor->createEditorIfNeeded());
+    std::unique_ptr<juce::AudioProcessorEditor> editor (processor->createEditorAndMakeActive());
     if (argc > 2)
     {
         const int w = juce::String (argv[2]).getIntValue();

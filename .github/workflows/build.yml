@@ -76,7 +76,10 @@ jobs:
       - name: Configure and build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPOTATO_DEV_TOOLS=ON
-          cmake --build build --target PotatoSynth_VST3 PotatoSynthSnapshot
+          cmake --build build --target PotatoSynth_VST3 PotatoSynthSnapshot PotatoSynthTests
+
+      - name: DSP tests
+        run: xvfb-run -a ./build/PotatoSynthTests
 
       - name: Validate with pluginval
         run: |

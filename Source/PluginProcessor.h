@@ -1,8 +1,10 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Params.h"
+#include "LayerStack.h"
 
-class PotatoSynthProcessor : public juce::AudioProcessor
+class PotatoSynthProcessor : public juce::AudioProcessor,
+                             private juce::Timer
 {
 public:
     PotatoSynthProcessor();
@@ -36,6 +38,19 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // Message thread: put an engine (by registry ID, empty string = none) into a layer
+    void setLayerEngine (int layerIndex, const juce::String& engineId);
+    juce::String getLayerEngine (int layerIndex) const { return stack.layer (layerIndex).getEngineId(); }
+    // Message thread: frees engines the audio thread has finished with (also runs on a timer)
+    void collectRetiredEngines() { stack.collectGarbage(); }
+
 private:
+    void timerCallback() override { collectRetiredEngines(); }
+    void applyLayerEnginesFromState();
+
+    ps::LayerStack stack;
+    std::atomic<float>* masterDb = nullptr;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> masterGain { 1.0f };
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PotatoSynthProcessor)
 };
