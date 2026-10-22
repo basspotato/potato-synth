@@ -106,7 +106,7 @@ void PotatoSynthEditor::timerCallback()
                 name = e.name;
         layers[(size_t) i]->setEngineName (name);
         if (i == selectedLayer)
-            layerPage.setEngineName (name);
+            layerPage.setEngine (name, processor.getLayerEngineInfo (i));
     }
 
     // Roles and crossovers drive each card's title, band and colour
@@ -161,6 +161,7 @@ void PotatoSynthEditor::selectLayer (int layerIndex)
         layers[(size_t) i]->setSelected (i == layerIndex);
     const int role = layerRole (layerIndex);
     layerPage.showLayer (layerIndex, roleTitle (role), ps::theme::roleColour (role));
+    timerCallback();   // brings the page's engine controls up for this layer
     layerTab.setButtonText ("LAYER " + juce::String (layerIndex + 1) + ": " + roleTitle (role));
     layerTab.setColour (juce::TextButton::buttonColourId, ps::theme::roleColour (role));
 }
