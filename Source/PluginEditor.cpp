@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "EngineRegistry.h"
 
 namespace
 {
@@ -15,8 +16,19 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     layers[1] = std::make_unique<ps::LayerCard> ("BODY", "120 HZ - 3 KHZ",      ps::theme::body);
     layers[2] = std::make_unique<ps::LayerCard> ("MID",  "300 HZ - 3 KHZ",      ps::theme::mid);
     layers[3] = std::make_unique<ps::LayerCard> ("AIR",  "WIDE  >2.5 KHZ",      ps::theme::air);
-    for (auto& l : layers)
-        addAndMakeVisible (*l);
+    const juce::Colour roleColours[] = { ps::theme::sub, ps::theme::body, ps::theme::mid, ps::theme::air };
+    for (int i = 0; i < 4; ++i)
+    {
+        addAndMakeVisible (*layers[(size_t) i]);
+        layers[(size_t) i]->onClick = [this, i] { showEngineMenu (i); };
+
+        auto& k = layerLevels[(size_t) i];
+        setUpKnob (k, "LEVEL", roleColours[i]);
+        k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+        layerLevelAttachments[(size_t) i] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+            processor.apvts, ps::params::layerLevel (i).getParamID(), k.slider);
+        k.slider.setDoubleClickReturnValue (true, 0.0);
+    }
 
     addAndMakeVisible (xyPad);
 
@@ -41,6 +53,42 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     if (auto* c = getConstrainer())
         c->setFixedAspectRatio ((double) baseWidth / baseHeight);
     setSize (baseWidth, baseHeight);
+    timerCallback();
+    startTimerHz (5);
+}
+
+void PotatoSynthEditor::timerCallback()
+{
+    for (int i = 0; i < 4; ++i)
+    {
+        juce::String name;
+        const auto id = processor.getLayerEngine (i);
+        for (auto& e : ps::engines::all())
+            if (id == e.id)
+                name = e.name;
+        layers[(size_t) i]->setEngineName (name);
+    }
+}
+
+void PotatoSynthEditor::showEngineMenu (int layerIndex)
+{
+    juce::PopupMenu menu;
+    const auto current = processor.getLayerEngine (layerIndex);
+    menu.addItem (1, "Empty", true, current.isEmpty());
+    int itemId = 2;
+    for (auto& e : ps::engines::all())
+        menu.addItem (itemId++, e.name, true, current == e.id);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (layers[(size_t) layerIndex].get()),
+                        [safe = juce::Component::SafePointer<PotatoSynthEditor> (this), layerIndex] (int result)
+                        {
+                            if (safe == nullptr || result == 0)
+                                return;
+                            const auto& all = ps::engines::all();
+                            const juce::String id = result == 1 ? juce::String() : juce::String (all[(size_t) (result - 2)].id);
+                            safe->processor.setLayerEngine (layerIndex, id);
+                            safe->timerCallback();
+                        });
 }
 
 PotatoSynthEditor::~PotatoSynthEditor()
@@ -111,9 +159,13 @@ void PotatoSynthEditor::resized()
 
     auto left = area.removeFromLeft (scaled (280));
     const int cardH = (left.getHeight() - scaled (12) * 3) / 4;
-    for (auto& l : layers)
+    for (size_t i = 0; i < layers.size(); ++i)
     {
-        l->setBounds (left.removeFromTop (cardH));
+        auto card = left.removeFromTop (cardH);
+        layers[i]->setBounds (card);
+        auto knobArea = card.removeFromRight (scaled (78)).reduced (scaled (6));
+        layerLevels[i].label.setBounds (knobArea.removeFromBottom (scaled (14)));
+        layerLevels[i].slider.setBounds (knobArea);
         left.removeFromTop (scaled (12));
     }
 

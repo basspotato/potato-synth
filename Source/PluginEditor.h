@@ -4,7 +4,8 @@
 #include "gui/XYPad.h"
 #include "gui/LayerCard.h"
 
-class PotatoSynthEditor : public juce::AudioProcessorEditor
+class PotatoSynthEditor : public juce::AudioProcessorEditor,
+                          private juce::Timer
 {
 public:
     explicit PotatoSynthEditor (PotatoSynthProcessor&);
@@ -21,6 +22,8 @@ private:
     };
 
     void setUpKnob (Knob&, const juce::String& name, juce::Colour accent);
+    void showEngineMenu (int layerIndex);
+    void timerCallback() override;
 
     PotatoSynthProcessor& processor;
     ps::Look look;
@@ -33,6 +36,8 @@ private:
     Knob super, master;
     juce::TextButton build { "BUILD" }, drop { "DROP" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterAttachment;
+    std::array<Knob, 4> layerLevels;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 4> layerLevelAttachments;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PotatoSynthEditor)
 };

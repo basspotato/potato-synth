@@ -80,4 +80,12 @@ if(POTATO_DEV_TOOLS)
     target_include_directories(PotatoSynthSnapshot PRIVATE $<TARGET_PROPERTY:PotatoSynth,INCLUDE_DIRECTORIES>)
     target_compile_definitions(PotatoSynthSnapshot PRIVATE $<TARGET_PROPERTY:PotatoSynth,COMPILE_DEFINITIONS>)
     target_link_libraries(PotatoSynthSnapshot PRIVATE PotatoSynth)
+
+    add_executable(PotatoSynthTests tests/StackTests.cpp)
+    target_include_directories(PotatoSynthTests PRIVATE $<TARGET_PROPERTY:PotatoSynth,INCLUDE_DIRECTORIES>)
+    target_compile_definitions(PotatoSynthTests PRIVATE $<TARGET_PROPERTY:PotatoSynth,COMPILE_DEFINITIONS>)
+    target_link_libraries(PotatoSynthTests PRIVATE PotatoSynth)
+
+    enable_testing()
+    add_test(NAME stack COMMAND PotatoSynthTests)
 endif()
