@@ -17,7 +17,13 @@ PotatoSynthProcessor::PotatoSynthProcessor()
 {
     masterDb = apvts.getRawParameterValue (ps::params::master.getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
-        stack.layer (i).setLevelParameter (apvts.getRawParameterValue (ps::params::layerLevel (i).getParamID()));
+    {
+        namespace p = ps::params;
+        auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
+        stack.layer (i).setParameters ({ raw (p::layerLevel (i)), raw (p::layerPan (i)), raw (p::layerOctave (i)),
+                                         raw (p::layerSemi (i)), raw (p::layerFine (i)), raw (p::layerAttack (i)),
+                                         raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)) });
+    }
 
     auto layers = apvts.state.getOrCreateChildWithName (layersNode, nullptr);
     for (int i = 0; i < ps::params::numLayers; ++i)
@@ -66,6 +72,19 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     masterGain.applyGain (buffer, buffer.getNumSamples());
 }
 
+// Parameters missing from older state (added in a later version) load at their defaults, not at whatever
+// value this instance happened to hold.
+void PotatoSynthProcessor::migrateState (juce::ValueTree& state) const
+{
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            if (! state.getChildWithProperty ("id", rp->getParameterID()).isValid())
+                state.appendChild (juce::ValueTree ("PARAM", { { "id", rp->getParameterID() },
+                                                               { "value", rp->convertFrom0to1 (rp->getDefaultValue()) } }),
+                                   nullptr);
+    state.setProperty ("stateVersion", ps::params::stateVersion, nullptr);
+}
+
 juce::AudioProcessorEditor* PotatoSynthProcessor::createEditor()
 {
     return new PotatoSynthEditor (*this);
@@ -86,7 +105,7 @@ void PotatoSynthProcessor::setStateInformation (const void* data, int sizeInByte
         return;
 
     auto state = juce::ValueTree::fromXml (*xml);
-    // Older state versions get migrated here before being applied (none exist yet).
+    migrateState (state);
     apvts.replaceState (state);
     applyLayerEnginesFromState();
 }

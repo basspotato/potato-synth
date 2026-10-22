@@ -47,6 +47,7 @@ public:
 private:
     void timerCallback() override { collectRetiredEngines(); }
     void applyLayerEnginesFromState();
+    void migrateState (juce::ValueTree& state) const;
 
     ps::LayerStack stack;
     std::atomic<float>* masterDb = nullptr;

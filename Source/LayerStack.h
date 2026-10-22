@@ -29,8 +29,7 @@ public:
         slots = {};
         sustainPedal = false;
         for (auto& l : layers)
-            if (auto* e = l.engine())
-                e->reset();
+            l.reset();
     }
 
     // ---- Message thread ----------------------------------------------------------------------------

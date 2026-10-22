@@ -23,6 +23,9 @@ struct EngineInfo
 // A synth engine owns a fixed bank of voices, indexed by the stack's note slots. Engines are created
 // and destroyed on the message thread; every method below except info() is called on the audio thread
 // and must not allocate, lock or block.
+//
+// The layer owns each voice's amp envelope and its lifetime: an engine renders a voice at full level from
+// noteOn until endVoice, and the layer shapes, fades and steals it.
 class Engine
 {
 public:
@@ -38,10 +41,13 @@ public:
 
     // Starting a voice that is still sounding must be click-free (the engine glides from its current state).
     virtual void noteOn (int voice, int midiNote, float velocity) = 0;
+    // Key released: the layer's envelope is now releasing. Engines with their own envelopes release them here.
     virtual void noteOff (int voice) = 0;
-    // Fade the voice out within a few milliseconds and go idle (voice-cap stealing).
-    virtual void steal (int voice) = 0;
-    virtual bool isActive (int voice) const = 0;
+    // The layer's envelope has reached silence: drop the voice's state.
+    virtual void endVoice (int voice) = 0;
+
+    // Layer-wide pitch offset in semitones (octave + semitone + fine). Must stay phase-continuous.
+    virtual void setTune (float semitones) = 0;
 
     virtual void setSlot (int slot, float normalisedValue) { juce::ignoreUnused (slot, normalisedValue); }
 

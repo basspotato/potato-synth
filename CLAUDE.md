@@ -75,7 +75,7 @@ tests/StackTests.cpp    — headless DSP tests (POTATO_DEV_TOOLS)
 ## Architecture rules
 
 - **Adding an engine** = one new header in `engines/` implementing `Engine` + one line in `EngineRegistry.h`. Engine selection is saved as a stable string ID in state (`Layers/L{n}_engine`), never as a host parameter. Engines are swapped lock-free (`Layer::requestEngine`): the old one fades out and is deleted on the message thread.
-- **Voice contract:** a note slot drives voice i of every layer. `noteOn` on a sounding voice must glide click-free; `steal` must fade within a few ms. If an engine needs changes to `Layer`/`LayerStack`, stop and flag it: the interface needs extending, not bypassing.
+- **Voice contract:** a note slot drives voice i of every layer. The layer owns each voice's amp envelope and lifetime (attack, release, 3 ms steal fade, `endVoice` at silence), plus pan and tune (`setTune`, phase-continuous). Engines render at full level and never fade themselves; `noteOn` on a sounding voice must glide click-free. If an engine needs changes to `Layer`/`LayerStack`, stop and flag it: the interface needs extending, not bypassing.
 - **Parameters:** each layer has a fixed set of generic params (`L{n}_level`, `L{n}_pan`, ..., `L{n}_engine`, and engine slots `L{n}_e1`..`L{n}_e16`). Each engine declares what its slots mean (name, range, default) for the GUI. New engines therefore never add or rename host parameters. Parameter IDs are permanent once released.
 - **State** carries a version number. Loading older state must still work; add a migration rather than breaking it.
 - Engines are created when the user picks them (message thread), never on the audio thread. Swap them in lock-free and preallocate in `prepare`.

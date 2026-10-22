@@ -30,11 +30,14 @@ struct Rig
     }
 
     // Renders numSamples, collecting the left channel. Events are (sample offset, message).
+    std::vector<float> right;   // right channel of the last render
+
     std::vector<float> render (int numSamples, std::vector<std::pair<int, juce::MidiMessage>> events = {},
                                int block = blockSize)
     {
         std::vector<float> out;
         out.reserve ((size_t) numSamples);
+        right.clear();
         juce::AudioBuffer<float> buf (2, block);
         for (int pos = 0; pos < numSamples; pos += block)
         {
@@ -46,12 +49,28 @@ struct Rig
                     midi.addEvent (msg, at - pos);
             proc->processBlock (buf, midi);
             for (int i = 0; i < n; ++i)
+            {
                 out.push_back (buf.getSample (0, i));
+                right.push_back (buf.getSample (1, i));
+            }
         }
         return out;
     }
 
     void collectRetired() { proc->collectRetiredEngines(); }
+
+    // Sets a parameter in its own units (dB, ms, %, semitones, ...)
+    void set (const juce::ParameterID& id, float value)
+    {
+        auto* p = proc->apvts.getParameter (id.getParamID());
+        p->setValueNotifyingHost (p->convertTo0to1 (value));
+    }
+
+    float get (const juce::ParameterID& id) const
+    {
+        auto* p = proc->apvts.getParameter (id.getParamID());
+        return p->convertFrom0to1 (p->getValue());
+    }
 };
 
 float peak (const std::vector<float>& x, size_t from = 0, size_t to = SIZE_MAX)
@@ -75,13 +94,28 @@ bool allFinite (const std::vector<float>& x)
     return std::all_of (x.begin(), x.end(), [] (float v) { return std::isfinite (v); });
 }
 
+// Rising zero crossings with sub-sample interpolation: (crossings - 1) periods between the first and last one.
 double estimateFrequency (const std::vector<float>& x, size_t from, size_t to)
 {
     int crossings = 0;
+    double first = 0.0, last = 0.0;
     for (size_t i = from + 1; i < to; ++i)
         if (x[i - 1] < 0.0f && x[i] >= 0.0f)
-            ++crossings;
-    return crossings * sampleRate / (double) (to - from);
+        {
+            const double t = (double) (i - 1) + x[i - 1] / (double) (x[i - 1] - x[i]);
+            if (crossings++ == 0)
+                first = t;
+            last = t;
+        }
+    return crossings > 1 ? (crossings - 1) * sampleRate / (last - first) : 0.0;
+}
+
+float rms (const std::vector<float>& x, size_t from, size_t to)
+{
+    double sum = 0.0;
+    for (size_t i = from; i < to; ++i)
+        sum += (double) x[i] * x[i];
+    return (float) std::sqrt (sum / (double) (to - from));
 }
 
 auto on (int note, float vel = 0.8f)  { return juce::MidiMessage::noteOn (1, note, vel); }
@@ -95,7 +129,7 @@ void testNoteOnPitchAndRelease()
     CHECK (peak (x, 0, 1000) <= 0.0f, "silent before the first note");
     CHECK (peak (x, 2000, 24000) > 0.1f, "note sounds on the default Mid layer");
     const double f = estimateFrequency (x, 4000, 24000);
-    CHECK (std::abs (f - 440.0) < 1.0, "A4 plays at 440 Hz (measured " + juce::String (f, 2).toStdString() + ")");
+    CHECK (std::abs (f - 440.0) < 0.1, "A4 plays at 440 Hz (measured " + juce::String (f, 2).toStdString() + ")");
     CHECK (peak (x, 24000 + 9600, 24000 + 14400) < peak (x, 4000, 24000) * 0.1f, "release falls 20 dB within 200 ms");
     CHECK (peak (x, 24000 + 43200, 72000) < 1.0e-4f, "note is fully gone 0.9 s after release");
     CHECK (maxStep (x) < 0.05f, "no clicks at note on or off");
@@ -184,6 +218,106 @@ void testStateRoundTrip()
            "layer levels survive a save and reload");
 }
 
+void testAttackDecaySustain()
+{
+    Rig rig;
+    rig.set (ps::params::layerAttack (2), 500.0f);
+    rig.set (ps::params::layerDecay (2), 200.0f);
+    rig.set (ps::params::layerSustain (2), 25.0f);
+    auto x = rig.render (96000, { { 0, on (69) } });
+    const float early = rms (x, 2400, 2400 + 480);       // 50 ms in
+    const float top   = peak (x, 23000, 25000);          // end of the attack
+    const float held  = rms (x, 72000, 96000) * std::sqrt (2.0f);
+    CHECK (early < top * 0.4f, "a 500 ms attack starts slowly");
+    CHECK (std::abs (held / top - 0.25f) < 0.02f, "decay settles on the 25% sustain level (got " + std::to_string (held / top) + ")");
+    CHECK (maxStep (x) < 0.05f, "attack and decay are click-free");
+}
+
+void testReleaseTime()
+{
+    Rig rig;
+    rig.set (ps::params::layerRelease (2), 2000.0f);
+    auto x = rig.render (192000, { { 0, on (69) }, { 24000, off (69) } });
+    const float held = peak (x, 12000, 24000);
+    CHECK (peak (x, 24000 + 24000, 24000 + 26400) > held * 0.05f, "a 2 s release still sounds 0.5 s after note off");
+    CHECK (peak (x, 24000 + 100000, 192000) < 1.0e-4f, "and has finished after 2 s");
+}
+
+void testRetriggerDuringRelease()
+{
+    Rig rig;
+    rig.set (ps::params::layerRelease (2), 1000.0f);
+    auto x = rig.render (48000, { { 0, on (64) }, { 12000, off (64) }, { 18000, on (64) }, { 19000, on (67) } });
+    CHECK (maxStep (x) < 0.05f, "re-pressing a releasing note is click-free");
+    CHECK (peak (x, 40000, 48000) > 0.1f,
+           "the retriggered note sustains again");
+}
+
+void testPan()
+{
+    Rig rig;
+    auto centre = rig.render (9600, { { 0, on (69) } });
+    auto centreRight = rig.right;
+    rig.set (ps::params::layerPan (2), -1.0f);
+    auto left = rig.render (24000);
+    CHECK (std::abs (peak (left, 12000, 24000) - peak (centre, 4800, 9600)) < 0.01f, "hard left keeps the left level (no boost)");
+    CHECK (peak (rig.right, 12000, 24000) < 1.0e-4f && peak (centreRight, 4800, 9600) > 0.1f, "hard left silences the right channel");
+    CHECK (maxStep (rig.right) < 0.05f, "moving pan is click-free");
+}
+
+void testTune()
+{
+    auto measure = [] (float oct, float semi, float fine)
+    {
+        Rig rig;
+        rig.set (ps::params::layerOctave (2), oct);
+        rig.set (ps::params::layerSemi (2), semi);
+        rig.set (ps::params::layerFine (2), fine);
+        auto x = rig.render (24000, { { 0, on (69) } });
+        return estimateFrequency (x, 4000, 24000);
+    };
+    CHECK (std::abs (measure (1, 0, 0) - 880.0) < 0.2, "octave +1 doubles the pitch");
+    CHECK (std::abs (measure (0, 7, 0) - 659.255) < 0.2, "semitone +7 plays a fifth");
+    CHECK (std::abs (measure (0, 0, 50) - 452.893) < 0.2, "fine +50 ct plays a quarter tone up");
+    CHECK (std::abs (measure (-1, -12, -100) - 103.826) < 0.1, "tune adds up downwards too (-25 semitones)");
+
+    Rig rig;
+    auto x = rig.render (12000, { { 0, on (69) } });
+    rig.set (ps::params::layerSemi (2), 12.0f);
+    auto y = rig.render (24000);
+    x.insert (x.end(), y.begin(), y.end());
+    CHECK (std::abs (estimateFrequency (y, 4000, 24000) - 880.0) < 0.2, "tune changes reach held notes");
+    CHECK (maxStep (x) < 0.05f, "a tune change on a held note does not click");
+}
+
+void testOldStateLoadsDefaults()
+{
+    Rig source;
+    juce::MemoryBlock block;
+    source.proc->getStateInformation (block);
+    auto xml = juce::AudioProcessor::getXmlFromBinary (block.getData(), (int) block.getSize());
+    auto state = juce::ValueTree::fromXml (*xml);
+    // Strip it down to a version 1 save: master and layer levels only
+    for (int i = state.getNumChildren(); --i >= 0;)
+    {
+        const auto id = state.getChild (i).getProperty ("id").toString();
+        if (state.getChild (i).hasType ("PARAM") && id != "master" && ! id.endsWith ("_level"))
+            state.removeChild (i, nullptr);
+    }
+    state.setProperty ("stateVersion", 1, nullptr);
+    juce::MemoryBlock v1;
+    juce::AudioProcessor::copyXmlToBinary (*state.createXml(), v1);
+
+    Rig rig;
+    rig.set (ps::params::layerAttack (2), 5000.0f);
+    rig.set (ps::params::layerPan (0), 0.5f);
+    rig.proc->setStateInformation (v1.getData(), (int) v1.getSize());
+    CHECK (std::abs (rig.get (ps::params::layerAttack (2)) - 2.0f) < 0.01f && std::abs (rig.get (ps::params::layerPan (0))) < 1.0e-4f,
+           "a version 1 save loads new parameters at their defaults");
+    auto x = rig.render (9600, { { 0, on (69) } });
+    CHECK (peak (x, 480, 9600) > 0.1f, "and plays");
+}
+
 void testOddBlockSizes()
 {
     Rig rig;
@@ -206,6 +340,12 @@ int main()
     testEngineSwapWhileSounding();
     testLayersStack();
     testStateRoundTrip();
+    testAttackDecaySustain();
+    testReleaseTime();
+    testRetriggerDuringRelease();
+    testPan();
+    testTune();
+    testOldStateLoadsDefaults();
     testOddBlockSizes();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";

@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine.h"
+#include "Envelope.h"
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <array>
 #include <atomic>
@@ -7,12 +8,29 @@
 
 namespace ps
 {
+// Cached host parameter pointers for one layer (see Params.h for units and ranges).
+struct LayerParams
+{
+    std::atomic<float>* levelDb = nullptr;
+    std::atomic<float>* pan = nullptr;
+    std::atomic<float>* octave = nullptr;
+    std::atomic<float>* semi = nullptr;
+    std::atomic<float>* fineCents = nullptr;
+    std::atomic<float>* attackMs = nullptr;
+    std::atomic<float>* decayMs = nullptr;
+    std::atomic<float>* sustainPercent = nullptr;
+    std::atomic<float>* releaseMs = nullptr;
+};
+
 // One slot of the stack: an engine plus its per-layer controls.
 //
 // Engine handover is lock-free. The message thread prepares a new engine and posts it to `pending`.
 // The audio thread picks it up at the start of a block, keeps the old engine rendering while its voices
 // fade out, then hands it to a small `retired` queue, which the message thread empties. Nothing is allocated or
 // freed on the audio thread.
+//
+// The layer owns each voice's amp envelope, so every engine gets the same click-free attack, release and
+// stealing. The outgoing engine keeps its own copy of the envelopes while it fades.
 class Layer
 {
 public:
@@ -31,6 +49,7 @@ public:
         if (engine == nullptr)
             engine = std::make_unique<Empty>();   // an explicit "no engine" so the old one still fades out
         engine->prepare (sampleRate.load(), blockSize.load(), numVoices);
+        engine->setTune (tune.load());
         delete pending.exchange (engine.release());
     }
 
@@ -50,9 +69,17 @@ public:
         numVoices = voices;
         scratchL.assign ((size_t) maxBlock, 0.0f);
         scratchR.assign ((size_t) maxBlock, 0.0f);
+        voiceL.assign ((size_t) maxBlock, 0.0f);
+        voiceR.assign ((size_t) maxBlock, 0.0f);
         startOrder.assign ((size_t) voices, 0);
+        envelopes.assign ((size_t) voices, {});
+        outgoingEnvelopes.assign ((size_t) voices, {});
         level.reset (sr, 0.02);
         level.setCurrentAndTargetValue (targetGain());
+        for (auto* g : { &panL, &panR })
+            g->reset (sr, 0.02);
+        updateControls (true);
+        updateEnvelopeSettings();
 
         for (auto* e : { active, outgoing })
             if (e != nullptr)
@@ -65,7 +92,15 @@ public:
         }
     }
 
-    void setLevelParameter (std::atomic<float>* levelDb) { levelParam = levelDb; }
+    void setParameters (const LayerParams& p) { params = p; }
+
+    void reset()
+    {
+        for (auto& e : envelopes)
+            e.reset();
+        if (active != nullptr)
+            active->reset();
+    }
 
     // ---- Audio thread ----------------------------------------------------------------------------
     void beginBlock()
@@ -77,9 +112,13 @@ public:
             {
                 if (active != nullptr)
                 {
+                    // The old engine fades out on its own copy of the envelopes; the new one starts silent
                     for (int v = 0; v < numVoices; ++v)
-                        if (active->isActive (v))
-                            active->steal (v);
+                    {
+                        outgoingEnvelopes[(size_t) v] = envelopes[(size_t) v];
+                        outgoingEnvelopes[(size_t) v].steal();
+                        envelopes[(size_t) v].reset();
+                    }
                     outgoing = active;
                 }
                 active = isEmpty (next) ? (retireNow (next), nullptr) : next;
@@ -87,13 +126,17 @@ public:
         }
 
         level.setTargetValue (targetGain());
+        updateControls (false);
+        updateEnvelopeSettings();
+        if (active != nullptr)
+            active->setTune (tune.load());
 
         // Once the level has faded fully down, drop the voices (silent at zero gain) so they free their slots
         if (! isMuted())
             voicesClearedWhileMuted = false;
-        else if (! voicesClearedWhileMuted && active != nullptr)
+        else if (! voicesClearedWhileMuted)
         {
-            active->reset();
+            reset();
             voicesClearedWhileMuted = true;
         }
     }
@@ -113,17 +156,22 @@ public:
         enforceVoiceCap (voice);
         startOrder[(size_t) voice] = order;
         active->noteOn (voice, note, velocity);
+        envelopes[(size_t) voice].trigger();
     }
 
     void releaseVoice (int voice)
     {
-        if (active != nullptr && active->isActive (voice))
+        auto& env = envelopes[(size_t) voice];
+        if (active != nullptr && env.isActive() && ! env.isStealing())
+        {
+            env.release();
             active->noteOff (voice);
+        }
     }
 
     bool isVoiceActive (int voice) const
     {
-        return active != nullptr && ! isMuted() && active->isActive (voice);
+        return active != nullptr && ! isMuted() && envelopes[(size_t) voice].isActive();
     }
 
     // Adds this layer's output into outL/outR. numSamples must not exceed the prepared block size.
@@ -136,29 +184,16 @@ public:
         std::fill_n (scratchR.data(), numSamples, 0.0f);
 
         if (active != nullptr && ! isMuted())
-            for (int v = 0; v < numVoices; ++v)
-                if (active->isActive (v))
-                    active->render (v, scratchL.data(), scratchR.data(), numSamples);
+            renderVoices (*active, envelopes, numSamples);
 
-        if (outgoing != nullptr)
-        {
-            bool stillSounding = false;
-            for (int v = 0; v < numVoices; ++v)
-                if (outgoing->isActive (v))
-                {
-                    outgoing->render (v, scratchL.data(), scratchR.data(), numSamples);
-                    stillSounding = true;
-                }
-
-            if (! stillSounding)
-                retireNow (std::exchange (outgoing, nullptr));
-        }
+        if (outgoing != nullptr && ! renderVoices (*outgoing, outgoingEnvelopes, numSamples))
+            retireNow (std::exchange (outgoing, nullptr));
 
         for (int i = 0; i < numSamples; ++i)
         {
             const float g = level.getNextValue();
-            outL[i] += scratchL[(size_t) i] * g;
-            outR[i] += scratchR[(size_t) i] * g;
+            outL[i] += scratchL[(size_t) i] * g * panL.getNextValue();
+            outR[i] += scratchR[(size_t) i] * g * panR.getNextValue();
         }
     }
 
@@ -171,8 +206,8 @@ private:
         void reset() override {}
         void noteOn (int, int, float) override {}
         void noteOff (int) override {}
-        void steal (int) override {}
-        bool isActive (int) const override { return false; }
+        void endVoice (int) override {}
+        void setTune (float) override {}
         void render (int, float*, float*, int) override {}
     };
 
@@ -199,12 +234,59 @@ private:
         return n;
     }
 
+    // Renders every sounding voice through its envelope into the scratch sum. Returns false once all are silent.
+    bool renderVoices (Engine& e, std::vector<AmpEnvelope>& envs, int numSamples)
+    {
+        bool anySounding = false;
+        for (int v = 0; v < numVoices; ++v)
+        {
+            auto& env = envs[(size_t) v];
+            if (! env.isActive())
+                continue;
+
+            std::fill_n (voiceL.data(), numSamples, 0.0f);
+            std::fill_n (voiceR.data(), numSamples, 0.0f);
+            e.render (v, voiceL.data(), voiceR.data(), numSamples);
+            for (int i = 0; i < numSamples; ++i)
+            {
+                const float g = env.next (adsr);
+                scratchL[(size_t) i] += voiceL[(size_t) i] * g;
+                scratchR[(size_t) i] += voiceR[(size_t) i] * g;
+            }
+
+            if (env.isActive())
+                anySounding = true;
+            else
+                e.endVoice (v);
+        }
+        return anySounding;
+    }
+
+    static float load (const std::atomic<float>* p, float fallback) { return p != nullptr ? p->load() : fallback; }
+
     float targetGain() const
     {
-        if (levelParam == nullptr)
-            return 1.0f;
-        const float db = levelParam->load();
+        const float db = load (params.levelDb, 0.0f);
         return db <= -59.9f ? 0.0f : juce::Decibels::decibelsToGain (db);
+    }
+
+    // Pan uses a balance law: the centre is unity and a side never boosts, so stereo engines keep their image.
+    void updateControls (bool snap)
+    {
+        const float p = juce::jlimit (-1.0f, 1.0f, load (params.pan, 0.0f));
+        const float halfPi = juce::MathConstants<float>::halfPi;
+        const float l = p > 0.0f ? std::cos (p * halfPi) : 1.0f;
+        const float r = p < 0.0f ? std::cos (-p * halfPi) : 1.0f;
+        if (snap) { panL.setCurrentAndTargetValue (l); panR.setCurrentAndTargetValue (r); }
+        else      { panL.setTargetValue (l); panR.setTargetValue (r); }
+
+        tune = load (params.octave, 0.0f) * 12.0f + load (params.semi, 0.0f) + load (params.fineCents, 0.0f) * 0.01f;
+    }
+
+    void updateEnvelopeSettings()
+    {
+        adsr.set (sampleRate.load(), load (params.attackMs, 2.0f), load (params.decayMs, 400.0f),
+                  load (params.sustainPercent, 100.0f) * 0.01f, load (params.releaseMs, 300.0f));
     }
 
     // When the engine's voice budget is full, the oldest sounding voice fades out to make room.
@@ -214,14 +296,15 @@ private:
         int count = 0, oldest = -1;
         for (int v = 0; v < numVoices; ++v)
         {
-            if (v == newVoice || ! active->isActive (v))
+            const auto& env = envelopes[(size_t) v];
+            if (v == newVoice || ! env.isActive() || env.isStealing())
                 continue;
             ++count;
             if (oldest < 0 || startOrder[(size_t) v] < startOrder[(size_t) oldest])
                 oldest = v;
         }
         if (count >= cap && oldest >= 0)
-            active->steal (oldest);
+            envelopes[(size_t) oldest].steal();
     }
 
     Engine* active = nullptr;     // audio thread only
@@ -234,10 +317,13 @@ private:
     std::atomic<int> blockSize { 512 };
     int numVoices = 16;
 
-    std::atomic<float>* levelParam = nullptr;
+    LayerParams params;
     bool voicesClearedWhileMuted = false;
-    juce::SmoothedValue<float> level { 1.0f };
-    std::vector<float> scratchL, scratchR;
+    juce::SmoothedValue<float> level { 1.0f }, panL { 1.0f }, panR { 1.0f };
+    std::atomic<float> tune { 0.0f };   // semitones; written by the audio thread, read when a new engine is prepared
+    AdsrSettings adsr;
+    std::vector<AmpEnvelope> envelopes, outgoingEnvelopes;
+    std::vector<float> scratchL, scratchR, voiceL, voiceR;
     std::vector<uint32_t> startOrder;
 };
 }

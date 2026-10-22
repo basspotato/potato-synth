@@ -5,7 +5,7 @@
 
 namespace ps
 {
-// Reference engine for the stack: one sine per voice with click-free one-pole envelopes.
+// Reference engine for the stack: one sine per voice. The layer's amp envelope shapes it.
 // Used to verify voice handling, layering and gain staging before the real engines arrive.
 class TestSineEngine final : public Engine
 {
@@ -20,9 +20,7 @@ public:
     {
         sr = sampleRate;
         voices.assign ((size_t) numVoices, {});
-        attackCoef  = coefFor (0.003);
-        releaseCoef = coefFor (0.060);
-        stealCoef   = coefFor (0.002);
+        glideCoef = (float) (1.0 - std::exp (-1.0 / (0.003 * sr)));
     }
 
     void reset() override
@@ -34,17 +32,27 @@ public:
     void noteOn (int voice, int midiNote, float velocity) override
     {
         auto& v = voices[(size_t) voice];
-        // Phase and current amplitude carry over, so a retriggered voice glides instead of clicking
-        v.increment = 440.0 * std::pow (2.0, (midiNote - 69 + octaveShift * 12) / 12.0) / sr;
+        // A retriggered voice keeps its phase and glides to the new velocity, so it never clicks
+        if (! v.active)
+            v.amp = velocity;
+        v.note = midiNote;
         v.target = velocity;
-        v.released = false;
-        v.coef = attackCoef;
         v.active = true;
+        v.increment = incrementFor (v.note);
     }
 
-    void noteOff (int voice) override  { setRelease (voice, releaseCoef); }
-    void steal (int voice) override    { setRelease (voice, stealCoef); }
-    bool isActive (int voice) const override { return voices[(size_t) voice].active; }
+    void noteOff (int) override {}
+    void endVoice (int voice) override { voices[(size_t) voice] = {}; }
+
+    void setTune (float semitones) override
+    {
+        if (std::abs (semitones - tune) < 1.0e-6f)
+            return;
+        tune = semitones;
+        for (auto& v : voices)
+            if (v.active)
+                v.increment = incrementFor (v.note);
+    }
 
     void setSlot (int slot, float value) override
     {
@@ -61,41 +69,34 @@ public:
         constexpr double twoPi = juce::MathConstants<double>::twoPi;
         for (int i = 0; i < numSamples; ++i)
         {
-            v.amp += (v.target - v.amp) * v.coef;
+            v.amp += (v.target - v.amp) * glideCoef;
             const float s = (float) std::sin (twoPi * v.phase) * v.amp * outputGain;
             left[i] += s;
             right[i] += s;
             v.phase += v.increment;
             v.phase -= std::floor (v.phase);
         }
-
-        if (v.released && v.amp < 1.0e-5f)
-            v = {};
     }
 
 private:
     struct Voice
     {
         double phase = 0.0, increment = 0.0;
-        float amp = 0.0f, target = 0.0f, coef = 0.0f;
-        bool active = false, released = false;
+        float amp = 0.0f, target = 0.0f;
+        int note = 0;
+        bool active = false;
     };
 
     static constexpr float outputGain = 0.25f;   // about -12 dBFS per voice
 
-    float coefFor (double seconds) const { return (float) (1.0 - std::exp (-1.0 / (seconds * sr))); }
-
-    void setRelease (int voice, float coef)
+    double incrementFor (int note) const
     {
-        auto& v = voices[(size_t) voice];
-        v.target = 0.0f;
-        v.coef = coef;
-        v.released = true;
+        return 440.0 * std::pow (2.0, (note - 69 + octaveShift * 12 + (double) tune) / 12.0) / sr;
     }
 
     double sr = 48000.0;
     std::vector<Voice> voices;
-    float attackCoef = 0.0f, releaseCoef = 0.0f, stealCoef = 0.0f;
+    float glideCoef = 1.0f, tune = 0.0f;
     int octaveShift = 0;
 };
 }
