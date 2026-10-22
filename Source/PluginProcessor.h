@@ -25,7 +25,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "Potato-Synth"; }
+    const juce::String getName() const override { return "Potato Masher"; }
     bool acceptsMidi() const override { return true; }
     bool supportsMPE() const override { return true; }
     bool producesMidi() const override { return false; }
@@ -37,7 +37,7 @@ public:
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
     void setCurrentProgram (int) override {}
-    const juce::String getProgramName (int) override { return "Potato-Synth"; }
+    const juce::String getProgramName (int) override { return "Potato Masher"; }
     void changeProgramName (int, const juce::String&) override {}
 
     void getStateInformation (juce::MemoryBlock& destData) override;

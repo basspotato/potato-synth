@@ -27,10 +27,10 @@ endif()
 juce_add_plugin(PotatoSynth
     COMPANY_NAME "Basspotato"
     COMPANY_WEBSITE "https://github.com/basspotato/potato-synth"
-    BUNDLE_ID "com.basspotato.potatosynth"
+    BUNDLE_ID "com.basspotato.potatomasher"
     PLUGIN_MANUFACTURER_CODE Bpot
-    PLUGIN_CODE PtSy
-    PRODUCT_NAME "Potato-Synth"
+    PLUGIN_CODE PtMs
+    PRODUCT_NAME "Potato Masher"
     DESCRIPTION "Huge-by-default layered synth"
     IS_SYNTH TRUE
     NEEDS_MIDI_INPUT TRUE

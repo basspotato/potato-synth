@@ -40,7 +40,7 @@ jobs:
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
-          name: Potato-Synth-VST3-Windows-x64
+          name: Potato-Masher-VST3-Windows-x64
           path: build/PotatoSynth_artefacts/Release/VST3/
           if-no-files-found: error
 
@@ -50,7 +50,7 @@ jobs:
           Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip" -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval
           $exe = Get-ChildItem -Path pluginval -Recurse -Filter pluginval.exe | Select-Object -First 1
-          & $exe.FullName --strictness-level 10 --validate-in-process --timeout-ms 120000 --validate "build/PotatoSynth_artefacts/Release/VST3/Potato-Synth.vst3" *>&1 | Tee-Object -FilePath pluginval.log
+          & $exe.FullName --strictness-level 10 --validate-in-process --timeout-ms 120000 --validate "build/PotatoSynth_artefacts/Release/VST3/Potato Masher.vst3" *>&1 | Tee-Object -FilePath pluginval.log
           if ($LASTEXITCODE -ne 0) {
             $tail = (Get-Content pluginval.log -Tail 40) -join '%0A'
             Write-Output "::error title=pluginval failed::$tail"
@@ -86,7 +86,7 @@ jobs:
           curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
           unzip -q pluginval.zip -d pluginval
           xvfb-run -a ./pluginval/pluginval --strictness-level 10 --validate-in-process --timeout-ms 120000 \
-            --validate build/PotatoSynth_artefacts/Release/VST3/Potato-Synth.vst3
+            --validate "build/PotatoSynth_artefacts/Release/VST3/Potato Masher.vst3"
 
       - name: GUI snapshot
         run: xvfb-run -a ./build/PotatoSynthSnapshot gui.png
@@ -94,5 +94,5 @@ jobs:
       - name: Upload GUI snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: Potato-Synth-GUI-snapshot
+          name: Potato-Masher-GUI-snapshot
           path: gui.png

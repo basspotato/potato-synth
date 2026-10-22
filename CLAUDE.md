@@ -1,6 +1,6 @@
-# Potato-Synth
+# Potato Masher
 
-Huge-by-default layered synth (VST3) for EDM. A "super stack" of 4 layers (expandable to 8) plays every note. Each layer runs its own engine (JP supersaw/VA, Sub, Wavetable, Spectral morph, Dirt, ...) and has a role tag (Sub/Body/Mid/Air) that sets its band, phase and width. Stack glue (role band-limits, mono bass, loudness-compensated XY morph, inter-layer ducking, OTT/glue, auto-gain) makes the layers sound like one instrument. 8 chain knobs (MASS, SCALE, PRESSURE, GROOVE, CLARITY, SHINE, MORPH, BLOOM) each move a whole tuned signal chain, and an always-on Harmony Engine keeps every knob position in harmony (design: `potato-synth-CHAIN-KNOBS.md`). JUCE 8.0.15, C++17, CMake. Plan: `potato-synth-BRIEF.md`. Research: `research/reports/Huge layered synth sound design.md`.
+Huge-by-default layered synth (VST3) for EDM. A "super stack" of 8 layers (4 shown on the main page for now) plays every note. Each layer runs its own engine (JP supersaw/VA, Sub, Wavetable, Spectral morph, Dirt, ...) and has a role tag (Sub/Body/Mid/Air) that sets its band, phase and width. Stack glue (role band-limits, mono bass, loudness-compensated XY morph, inter-layer ducking, OTT/glue, auto-gain) makes the layers sound like one instrument. 8 chain knobs (MASS, SCALE, PRESSURE, GROOVE, CLARITY, SHINE, MORPH, BLOOM) each move a whole tuned signal chain, and an always-on Harmony Engine keeps every knob position in harmony (design: `potato-synth-CHAIN-KNOBS.md`). JUCE 8.0.15, C++17, CMake. Plan: `potato-synth-BRIEF.md`. Research: `research/reports/Huge layered synth sound design.md`.
 
 Targets: **Windows 11 x64 VST3 is the priority**. The developer tests in Cubase 15 on Windows 11 (Ryzen 9 9950X). macOS VST3/AU is later and must never block a build or PR.
 
@@ -40,7 +40,7 @@ cmake --build build --target PotatoSynth_VST3 PotatoSynthSnapshot PotatoSynthTes
 ## Test
 
 - The gate is the Windows job: VST3 build plus pluginval at strictness 10, on every push and PR. A Linux compile/test job runs headless DSP and preset tests. A macOS job, if added, is non-blocking.
-- Linux: `xvfb-run -a /tmp/pluginval/pluginval --strictness-level 10 --validate-in-process --validate build/PotatoSynth_artefacts/Release/VST3/Potato-Synth.vst3` (the session hook downloads pluginval to `/tmp/pluginval`).
+- Linux: `xvfb-run -a /tmp/pluginval/pluginval --strictness-level 10 --validate-in-process --validate "build/PotatoSynth_artefacts/Release/VST3/Potato Masher.vst3"` (the session hook downloads pluginval to `/tmp/pluginval`).
 - GUI check without a host: `xvfb-run -a build/PotatoSynthSnapshot shot.png [width]` renders the editor to a PNG. Look at it after any GUI change.
 - DSP tests: `xvfb-run -a build/PotatoSynthTests` (end to end through the processor: pitch, clicks, stealing, pedal, engine swaps, state). Add a test with every DSP change; never weaken one to pass.
 
@@ -65,7 +65,7 @@ Source/
   ModMatrix.h           — mod routing
   Space.h               — plate/FDN reverb and delay on shared sends
   Presets.h             — factory presets
-  gui/                  — Potato-Synth's own early-design look (LookAndFeel, knobs, XY pad, meters); replaceable later
+  gui/                  — Potato Masher's own early-design look (LookAndFeel, knobs, XY pad, meters); replaceable later
   PluginProcessor.*     — audio thread, parameter handling, state save/load
   PluginEditor.*        — GUI layout (main page + layer detail pages)
 tools/Snapshot.cpp      — headless editor-to-PNG renderer (POTATO_DEV_TOOLS)
@@ -96,11 +96,11 @@ tests/StackTests.cpp    — headless DSP tests (POTATO_DEV_TOOLS)
 
 ## GUI conventions
 
-- Early design uses Potato-Synth's **own** look, not the Potato-Kicker / potato-bass house style. The final GUI comes later, so keep GUI code in its own files and easy to replace.
+- Early design uses Potato Masher's **own** look, not the Potato-Kicker / potato-bass house style. The final GUI comes later, so keep GUI code in its own files and easy to replace.
 - Direction: deep, colourful, appealing. Dark deep background (indigo/violet) with saturated gradient accents. Each role has its own colour (Sub = deep red/magenta, Body = orange, Mid = cyan, Air = violet/white), and chain knobs glow brighter as they turn.
 - Main page = layer strip + XY pad + SUPER/8 chain knobs/BUILD/DROP + presets + CPU meter. Engine-specific controls live on each layer's detail page.
 - Repaint at a modest rate (about 30 Hz for meters) and keep CPU low.
 
 ## Plugin identity
 
-Manufacturer `Basspotato` / code `Bpot`, plugin code `PtSy`, bundle ID `com.basspotato.potatosynth`. Never change these after the first release.
+Product name `Potato Masher` (renamed from Potato-Synth before release, 2026-10-22; the repo, CMake targets and class names keep "PotatoSynth"). Manufacturer `Basspotato` / code `Bpot`, plugin code `PtMs`, bundle ID `com.basspotato.potatomasher`. Never change these after the first release.

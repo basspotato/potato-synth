@@ -1,4 +1,4 @@
-# Potato-Synth — Project Brief and Plan
+# Potato Masher (formerly Potato-Synth) — Project Brief and Plan
 
 Read `CLAUDE.md` first for build commands and rules. Update "Status" at the end of each session.
 Research basis: `research/reports/Huge layered synth sound design.md` (findings marked "inference" are ours and need listening tests).
@@ -203,7 +203,7 @@ Layer bleed (cross-mod between layers), spectrum theft, gravity pad, resample-up
 2. **Cloud build setup.** The missing packages must install in every new session. Either add a setup script to a cloud environment (Project settings → Cloud environment), or commit a SessionStart hook to the repo in Phase 0. The hook is preferred: it lives in the repo and needs no settings.
 3. ~~Test DAW~~ Answered: Cubase 15 on Windows 11, Ryzen 9 9950X. Each feature gets a Cubase check after CI is green.
 4. **Reference sounds.** A few reference tracks or patches you love, for the listening tests in "Open questions" and to calibrate the Potato Ready loudness targets.
-5. **Identity check.** Product name "Potato-Synth" and plugin code `PtSy` are permanent after the first release.
+5. **Identity check.** Product name "Potato Masher" and plugin code `PtMs` (renamed 2026-10-22) are permanent after the first release.
 6. **Licences.** JUCE 8 is dual-licensed (AGPLv3 or a commercial tier); your other plugins already use it, so just confirm the tier covers a sold product if you plan to sell. Vital is GPLv3: reference only, no copied code.
 
 ## Open questions before locking

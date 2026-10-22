@@ -302,7 +302,7 @@ void PotatoSynthEditor::paint (juce::Graphics& g)
     const float s = f.getWidth() / (float) baseWidth, x0 = f.getX(), y0 = f.getY();
     g.setColour (ps::theme::text);
     g.setFont (juce::FontOptions (30.0f * s, juce::Font::bold));
-    g.drawText ("POTATO-SYNTH", juce::Rectangle<float> (x0 + 24.0f * s, y0 + 14.0f * s, 400.0f * s, 36.0f * s),
+    g.drawText ("POTATO MASHER", juce::Rectangle<float> (x0 + 24.0f * s, y0 + 14.0f * s, 400.0f * s, 36.0f * s),
                 juce::Justification::centredLeft);
     g.setColour (ps::theme::textDim);
     g.setFont (juce::FontOptions (13.0f * s));
