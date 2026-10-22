@@ -8,7 +8,7 @@ namespace
     juce::Identifier engineProperty (int layerIndex) { return "L" + juce::String (layerIndex + 1) + "_engine"; }
 
     // Init patch until the real engines exist: the test engine on the Mid layer
-    const char* const defaultEngines[ps::params::numLayers] = { "", "", "test.sine", "" };
+    const char* const defaultEngines[ps::params::numLayers] = { "", "", "jp", "" };
 }
 
 PotatoSynthProcessor::PotatoSynthProcessor()
@@ -36,6 +36,11 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     for (int i = 0; i < ps::params::numLayers; ++i)
         layers.setProperty (engineProperty (i), defaultEngines[i], nullptr);
     applyLayerEnginesFromState();
+    // A fresh instance starts each default engine from its own slot defaults (the generic host default is 50 %)
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        if (const auto* info = engineInfos[(size_t) i].load())
+            for (int k = 0; k < (int) info->slots.size(); ++k)
+                apvts.getParameter (ps::params::layerSlot (i, k).getParamID())->setValueNotifyingHost (info->slots[(size_t) k].defaultValue);
 
     startTimerHz (10);
 }

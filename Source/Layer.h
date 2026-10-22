@@ -27,7 +27,7 @@ struct LayerParams
     std::atomic<float>* role = nullptr;            // params::Role index
     std::atomic<float>* crossoverLowHz = nullptr;  // global, shared by every layer
     std::atomic<float>* crossoverHighHz = nullptr;
-    std::array<std::atomic<float>*, Engine::numSlots> slots {};   // engine slots e1..e16, meaning set by the engine
+    std::array<std::atomic<float>*, Engine::numSlots> slots {};   // engine slots e1..e24, meaning set by the engine
 };
 
 // One slot of the stack: an engine plus its per-layer controls.

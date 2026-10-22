@@ -35,7 +35,7 @@ namespace ps::params
     inline juce::ParameterID layerRole (int i)    { return layerParam (i, "role", 4); }
 
     // Engine slots: 16 generic 0..1 parameters per layer. Each engine says what its slots mean.
-    inline constexpr int numEngineSlots = 16;
+    inline constexpr int numEngineSlots = 24;
     inline juce::ParameterID layerSlot (int i, int slot)
     {
         return { "L" + juce::String (i + 1) + "_e" + juce::String (slot + 1), 6 };

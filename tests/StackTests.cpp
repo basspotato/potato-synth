@@ -2,6 +2,7 @@
 // Build with -DPOTATO_DEV_TOOLS=ON, run with ctest or ./build/PotatoSynthTests.
 #include "PluginProcessor.h"
 #include "Loudness.h"
+#include "EngineRegistry.h"
 #include <cmath>
 #include <iostream>
 
@@ -34,6 +35,7 @@ struct Rig
                 set (ps::params::layerRole (i), (float) ps::params::Role::full);
             set (ps::params::monoBass, 0.0f);
         }
+        proc->setLayerEngine (2, "test.sine");   // the plain reference voice, whatever the plugin's default stack is
         proc->setPlayConfigDetails (0, 2, sampleRate, blockSize);
         proc->prepareToPlay (sampleRate, blockSize);
     }
@@ -125,6 +127,36 @@ float rms (const std::vector<float>& x, size_t from, size_t to)
     for (size_t i = from; i < to; ++i)
         sum += (double) x[i] * x[i];
     return (float) std::sqrt (sum / (double) (to - from));
+}
+
+// Strongest spectral line that is not a harmonic of f0 (below 20 kHz), relative to the fundamental, in dB.
+// Reads 16384 samples from `from`.
+float worstAliasDb (const std::vector<float>& x, size_t from, double f0)
+{
+    constexpr int order = 14, size = 1 << order;
+    juce::dsp::FFT fft (order);
+    std::vector<float> data (2 * size, 0.0f);
+    for (int i = 0; i < size; ++i)
+    {
+        // 4-term Blackman-Harris: sidelobes under -92 dB, so window leakage can't pose as aliasing
+        const double t = juce::MathConstants<double>::twoPi * i / (size - 1);
+        const auto w = (float) (0.35875 - 0.48829 * std::cos (t) + 0.14128 * std::cos (2 * t) - 0.01168 * std::cos (3 * t));
+        data[(size_t) i] = x[from + (size_t) i] * w;
+    }
+    fft.performFrequencyOnlyForwardTransform (data.data());
+    const double binHz = sampleRate / size;
+    float fundamental = 0.0f, worstAlias = 0.0f;
+    for (int bin = 1; bin < size / 2; ++bin)
+    {
+        const double f = bin * binHz;
+        const double harmonic = f / f0;
+        const bool nearHarmonic = std::abs (harmonic - std::round (harmonic)) * f0 < 40.0;   // main lobe is ±12 Hz
+        if (std::abs (f - f0) < 40.0)
+            fundamental = std::max (fundamental, data[(size_t) bin]);
+        else if (! nearHarmonic && f < 20000.0)
+            worstAlias = std::max (worstAlias, data[(size_t) bin]);
+    }
+    return juce::Decibels::gainToDecibels (worstAlias / fundamental, -200.0f);
 }
 
 auto on (int note, float vel = 0.8f)  { return juce::MidiMessage::noteOn (1, note, vel); }
@@ -611,30 +643,7 @@ void testSafeOutputDoesNotAlias()
     rig.set (ps::params::master, 6.0f);
     rig.set (ps::params::layerLevel (2), 6.0f);
     auto x = rig.render (48000, { { 0, on (103, 1.0f) } });
-    constexpr int order = 14, size = 1 << order;
-    juce::dsp::FFT fft (order);
-    std::vector<float> data (2 * size, 0.0f);
-    for (int i = 0; i < size; ++i)
-    {
-        // 4-term Blackman-Harris: sidelobes under -92 dB, so window leakage can't pose as aliasing
-        const double t = juce::MathConstants<double>::twoPi * i / (size - 1);
-        const auto w = (float) (0.35875 - 0.48829 * std::cos (t) + 0.14128 * std::cos (2 * t) - 0.01168 * std::cos (3 * t));
-        data[(size_t) i] = x[(size_t) (24000 + i)] * w;
-    }
-    fft.performFrequencyOnlyForwardTransform (data.data());
-    const double f0 = 440.0 * std::pow (2.0, (103 - 69) / 12.0), binHz = sampleRate / size;
-    float fundamental = 0.0f, worstAlias = 0.0f;
-    for (int bin = 1; bin < size / 2; ++bin)
-    {
-        const double f = bin * binHz;
-        const double harmonic = f / f0;
-        const bool nearHarmonic = std::abs (harmonic - std::round (harmonic)) * f0 < 40.0;   // main lobe is ±12 Hz
-        if (std::abs (f - f0) < 40.0)
-            fundamental = std::max (fundamental, data[(size_t) bin]);
-        else if (! nearHarmonic && f < 20000.0)
-            worstAlias = std::max (worstAlias, data[(size_t) bin]);
-    }
-    const float aliasDb = juce::Decibels::gainToDecibels (worstAlias / fundamental, -200.0f);
+    const float aliasDb = worstAliasDb (x, 24000, 440.0 * std::pow (2.0, (103 - 69) / 12.0));
     CHECK (aliasDb < -70.0f, "clipping a loud 3.1 kHz note leaves aliases below -70 dB (" + std::to_string (aliasDb) + " dB)");
 }
 
@@ -671,6 +680,214 @@ void benchmarkStack()
     CHECK (share < 20.0, "stack CPU is within budget");
 }
 
+// ---- JP engine ----------------------------------------------------------------------------------------
+
+// A neutral rig with the JP engine on layer 3 (the only sounding layer), its slots set as given
+struct JpRig : Rig
+{
+    explicit JpRig (std::initializer_list<std::pair<int, float>> slots = {})
+    {
+        proc->setLayerEngine (2, "jp");
+        render (blockSize);
+        collectRetired();
+        for (auto& [slot, value] : slots)
+            setSlot (slot, value);
+    }
+
+    void setSlot (int slot, float value) { set (ps::params::layerSlot (2, slot), value); }
+};
+
+using Jp = ps::JpEngine;
+
+float bandEnergy (const std::vector<float>& x, size_t from, double loHz, double hiHz)
+{
+    constexpr int order = 13, size = 1 << order;
+    juce::dsp::FFT fft (order);
+    std::vector<float> data (2 * size, 0.0f);
+    for (int i = 0; i < size; ++i)
+        data[(size_t) i] = x[from + (size_t) i] * (float) (0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * i / size));
+    fft.performFrequencyOnlyForwardTransform (data.data());
+    double sum = 0.0;
+    for (int bin = 1; bin < size / 2; ++bin)
+        if (bin * sampleRate / size >= loHz && bin * sampleRate / size < hiHz)
+            sum += (double) data[(size_t) bin] * data[(size_t) bin];
+    return (float) sum;
+}
+
+void testJpPitchAndSlots()
+{
+    const auto& info = ps::engines::create ("jp")->info();
+    CHECK ((int) info.slots.size() == Jp::numUsedSlots && Jp::numUsedSlots <= ps::Engine::numSlots, "JP declares all its slots");
+
+    JpRig rig ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) } });
+    auto x = rig.render (24000, { { 0, on (57) } });
+    CHECK (std::abs (estimateFrequency (x, 4000, 24000) - 220.0) < 0.3, "JP plays in tune (single saw, A3)");
+    CHECK (allFinite (x) && peak (x) > 0.1f, "JP sounds");
+
+    auto* slot = rig.proc->apvts.getParameter (ps::params::layerSlot (2, Jp::unison).getParamID());
+    CHECK (slot->getText (Jp::choiceValue (1, Jp::numUnison), 32) == "JP 7", "JP slot text names the unison mode");
+}
+
+void testJpAliasing()
+{
+    for (int w = 0; w < Jp::numWaves1; ++w)
+    {
+        JpRig rig ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) }, { Jp::wave1, Jp::choiceValue (w, Jp::numWaves1) } });
+        auto x = rig.render (48000, { { 0, on (96, 1.0f) } });   // 2093 Hz
+        const float db = worstAliasDb (x, 24000, 440.0 * std::pow (2.0, (96 - 69) / 12.0));
+        const char* names[] = { "saw", "pulse", "triangle" };
+        std::cout << "info: JP " << names[w] << " at 2.1 kHz, worst alias " << db << " dB\n";
+        CHECK (db < -60.0f, std::string ("JP ") + names[w] + " is band-limited (aliases below -60 dB at 2.1 kHz)");
+    }
+}
+
+void testJpSuperSawLevelAndWidth()
+{
+    auto levelFor = [] (int mode, float mixValue, float spreadValue, std::vector<float>* rightOut = nullptr)
+    {
+        JpRig rig ({ { Jp::unison, Jp::choiceValue (mode, Jp::numUnison) }, { Jp::mix, mixValue }, { Jp::spread, spreadValue } });
+        auto x = rig.render (48000, { { 0, on (57) } });
+        if (rightOut != nullptr)
+            *rightOut = rig.right;
+        return juce::Decibels::gainToDecibels (rms (x, 12000, 48000));
+    };
+    const float reference = levelFor (1, 0.65f, 0.0f);
+    float worst = 0.0f;
+    for (int mode = 0; mode < Jp::numUnison; ++mode)
+        for (float m : { 0.0f, 0.5f, 1.0f })
+            worst = std::max (worst, std::abs (levelFor (mode, m, 0.0f) - reference));
+    CHECK (worst < 1.5f, "unison mode and Mix keep the level within 1.5 dB (" + std::to_string (worst) + " dB)");
+
+    std::vector<float> right;
+    JpRig narrow ({ { Jp::spread, 0.0f } });
+    auto l = narrow.render (24000, { { 0, on (57) } });
+    CHECK (maxStep ([&] { std::vector<float> d; for (size_t i = 0; i < l.size(); ++i) d.push_back (l[i] - narrow.right[i]); return d; }()) < 1.0e-6f,
+           "Spread 0 is mono");
+    JpRig wide;
+    auto wl = wide.render (24000, { { 0, on (57) } });
+    double lr = 0, ll = 0, rr = 0;
+    for (size_t i = 6000; i < wl.size(); ++i)
+    {
+        lr += (double) wl[i] * wide.right[i];
+        ll += (double) wl[i] * wl[i];
+        rr += (double) wide.right[i] * wide.right[i];
+    }
+    const double correlation = lr / std::sqrt (ll * rr);
+    CHECK (correlation < 0.9 && correlation > 0.0, "the default Super Saw is wide but mono-compatible (correlation " + std::to_string (correlation) + ")");
+}
+
+void testJpFilter()
+{
+    auto bright = [] (std::initializer_list<std::pair<int, float>> slots)
+    {
+        JpRig rig (slots);
+        auto x = rig.render (24000, { { 0, on (45) } });
+        return bandEnergy (x, 12000, 2000.0, 20000.0) / bandEnergy (x, 12000, 50.0, 20000.0);
+    };
+    const float open = bright ({});
+    const float closed = bright ({ { Jp::cutoff, 0.3f } });
+    CHECK (closed < open * 1.0e-3f, "LP 24 at 160 Hz removes the highs (60 dB down)");
+    const float lp12 = bright ({ { Jp::cutoff, 0.3f }, { Jp::filterType, Jp::choiceValue (1, Jp::numFilterTypes) } });
+    CHECK (lp12 > closed && lp12 < open * 0.05f, "LP 12 is gentler than LP 24");
+    const float hp = bright ({ { Jp::cutoff, 0.6f }, { Jp::filterType, Jp::choiceValue (3, Jp::numFilterTypes) } });
+    CHECK (hp > open, "HP 12 keeps the highs and removes the lows");
+
+    for (int type = 0; type < Jp::numFilterTypes; ++type)
+    {
+        JpRig rig ({ { Jp::filterType, Jp::choiceValue (type, Jp::numFilterTypes) }, { Jp::resonance, 1.0f }, { Jp::cutoff, 0.5f },
+                     { Jp::drive, 1.0f } });
+        auto x = rig.render (48000, { { 0, on (40, 1.0f) }, { 0, on (64, 1.0f) }, { 0, on (71, 1.0f) } });
+        CHECK (allFinite (x) && peak (x) < 4.0f, "full resonance and drive stay bounded (filter " + std::to_string (type) + ")");
+    }
+
+    // Filter envelope: bright at the attack, darker once decayed
+    JpRig env ({ { Jp::cutoff, 0.3f }, { Jp::envAmount, 0.85f }, { Jp::envDecay, Jp::timeValue (150.0f) } });
+    auto x = env.render (48000, { { 0, on (45) } });
+    CHECK (bandEnergy (x, 0, 1000.0, 20000.0) > 30.0f * bandEnergy (x, 36000, 1000.0, 20000.0), "the filter envelope opens and closes the filter");
+}
+
+void testJpOsc2()
+{
+    for (int mod = 0; mod < Jp::numMods; ++mod)
+        for (int w = 0; w < Jp::numWaves2; ++w)
+        {
+            JpRig rig ({ { Jp::balance, 0.5f }, { Jp::osc2Mod, Jp::choiceValue (mod, Jp::numMods) }, { Jp::wave2, Jp::choiceValue (w, Jp::numWaves2) },
+                         { Jp::pitch2, 0.5f + 7.0f / 48.0f }, { Jp::xmodDepth, 0.5f } });
+            auto x = rig.render (24000, { { 0, on (57) } });
+            CHECK (allFinite (x) && peak (x) > 0.05f && peak (x) < 2.0f,
+                   "OSC2 wave " + std::to_string (w) + " with mod " + std::to_string (mod) + " sounds and stays bounded");
+        }
+
+    // Hard sync: OSC2 alone, synced at a fifth above, repeats at OSC1's period
+    JpRig sync ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) }, { Jp::balance, 1.0f }, { Jp::osc2Mod, Jp::choiceValue (1, Jp::numMods) },
+                  { Jp::pitch2, 0.5f + 7.0f / 48.0f } });
+    auto x = sync.render (24000, { { 0, on (45) } });
+    const int period = (int) std::lround (sampleRate / 110.0);   // 436.36 samples: compare across 11 periods (4800 samples)
+    double diff = 0, energy = 0;
+    for (size_t i = 8000; i < 16000; ++i)
+    {
+        diff += std::pow (x[i] - x[i + 4800], 2.0);
+        energy += (double) x[i] * x[i];
+    }
+    juce::ignoreUnused (period);
+    CHECK (diff < energy * 0.02, "hard sync locks OSC2 to OSC1's period");
+    const float syncAlias = worstAliasDb (x, 4000, 110.0);
+    CHECK (syncAlias < -60.0f, "hard sync is band-limited (aliases below -60 dB, " + std::to_string (syncAlias) + " dB)");
+}
+
+void testJpSwitchesDoNotClick()
+{
+    // Low-passed so the waveform itself is smooth; any discontinuity from a switch shows as a step
+    const char* names[] = { "wave", "unison mode", "wave 2", "OSC2 mod", "filter type", "mix", "detune", "cutoff", "balance", "drive" };
+    const std::pair<int, float> moves[] = {
+        { Jp::wave1, Jp::choiceValue (1, Jp::numWaves1) }, { Jp::unison, Jp::choiceValue (4, Jp::numUnison) },
+        { Jp::wave2, Jp::choiceValue (2, Jp::numWaves2) }, { Jp::osc2Mod, Jp::choiceValue (2, Jp::numMods) },
+        { Jp::filterType, Jp::choiceValue (1, Jp::numFilterTypes) }, { Jp::mix, 1.0f }, { Jp::detune, 1.0f },
+        { Jp::cutoff, 0.3f }, { Jp::balance, 0.5f }, { Jp::drive, 0.7f } };
+    for (size_t m = 0; m < std::size (moves); ++m)
+    {
+        JpRig rig ({ { Jp::cutoff, 0.25f }, { Jp::balance, 0.2f } });
+        auto x = rig.render (12000, { { 0, on (45) } });
+        const float baseline = maxStep (std::vector<float> (x.begin() + 6000, x.end()));
+        rig.setSlot (moves[m].first, moves[m].second);
+        auto y = rig.render (9600);
+        // The new setting can have bigger steady steps of its own (a pulse, a brighter filter), so compare the
+        // transition against the larger of the two steady states
+        const float steady = std::max (baseline, maxStep (std::vector<float> (y.begin() + 4800, y.end())));
+        const float worst = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
+        CHECK (worst < steady * 1.5f, std::string ("JP: changing ") + names[m] + " mid-note does not click (" + std::to_string (worst / steady) + "x the steady step)");
+    }
+}
+
+double jpCpuShare (int unisonMode)
+{
+    Rig rig (false);
+    for (int i = 0; i < 4; ++i)
+        rig.proc->setLayerEngine (i, "jp");
+    rig.render (blockSize);
+    rig.collectRetired();
+    for (int i = 0; i < 4; ++i)
+        rig.set (ps::params::layerSlot (i, Jp::unison), Jp::choiceValue (unisonMode, Jp::numUnison));
+    std::vector<std::pair<int, juce::MidiMessage>> chord;
+    for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
+        chord.push_back ({ 0, on (n) });
+    rig.render (blockSize, chord);
+
+    const int seconds = juce::SystemStats::getEnvironmentVariable ("POTATO_BENCH_ONLY", {}).isNotEmpty() ? 1 : 4;
+    const auto start = juce::Time::getHighResolutionTicks();
+    rig.render ((int) sampleRate * seconds);
+    const double elapsed = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start);
+    return 100.0 * elapsed / seconds;
+}
+
+void benchmarkJp()
+{
+    const double jp7 = jpCpuShare (1), modern16 = jpCpuShare (4);
+    std::cout << "info: 8-note chord on 4 JP layers uses " << jp7 << "% of one core (JP 7), " << modern16 << "% (Modern 16)\n";
+    CHECK (jp7 < 20.0, "JP stack CPU is within budget (JP 7 Super Saw on every layer)");
+    CHECK (modern16 < 30.0, "the heaviest unison stays under 30% of one core");
+}
+
 void testOddBlockSizes()
 {
     Rig rig;
@@ -684,6 +901,12 @@ void testOddBlockSizes()
 int main()
 {
     juce::ScopedJuceInitialiser_GUI gui;
+
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_BENCH_ONLY", {}).isNotEmpty())   // for profiling
+    {
+        benchmarkJp();
+        return 0;
+    }
 
     testNoteOnPitchAndRelease();
     testSampleAccurateStart();
@@ -717,6 +940,13 @@ int main()
     testLatencyIsConstant();
     benchmarkStack();
     testOddBlockSizes();
+    testJpPitchAndSlots();
+    testJpAliasing();
+    testJpSuperSawLevelAndWidth();
+    testJpFilter();
+    testJpOsc2();
+    testJpSwitchesDoNotClick();
+    benchmarkJp();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
     return failures == 0 ? 0 : 1;
