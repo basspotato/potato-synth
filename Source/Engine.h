@@ -45,6 +45,10 @@ struct NoteEvent
     float glideFrom = -1.0f;
     // Legato: the voice keeps its velocity, phase and any internal envelopes; only the pitch moves.
     bool legato = false;
+    // Set by the layer from its role (Sub and Body retrigger, CLAUDE.md "random phase only on Mid/Air"): a
+    // fresh voice starts its oscillators at a fixed phase pattern instead of a random one, so the layer's
+    // phase against the others is the same on every note (what sub/body phase alignment relies on).
+    bool fixedPhase = false;
 };
 
 struct EngineInfo

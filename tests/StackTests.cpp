@@ -1786,6 +1786,55 @@ void testSends()
     }
 }
 
+// ---- Sub/body phase alignment ------------------------------------------------------------------------
+
+void testPhaseAlign()
+{
+    namespace p = ps::params;
+    // Sub engine on layer 1, a single JP saw (or the JP 7 supersaw) as the Body, Mid and Air muted.
+    // Each note is played twice from silence: the first time is measured, the second is corrected.
+    struct Result { float first, second, subOnly, bodyOnly; bool valid; };
+    auto run = [] (int note, bool singleSaw, float strength, float subLevel = 0.0f, float bodyLevel = 0.0f)
+    {
+        StackRig rig;
+        rig.proc->setLayerEngine (1, "jp");
+        rig.render (blockSize);
+        rig.collectRetired();
+        if (singleSaw)
+            rig.set (p::layerSlot (1, Jp::unison), Jp::choiceValue (0, Jp::numUnison));
+        rig.set (p::phaseAlign, strength);
+        rig.set (p::layerLevel (2), -60.0f);
+        rig.set (p::layerLevel (3), -60.0f);
+        rig.set (p::layerLevel (0), subLevel);
+        rig.set (p::layerLevel (1), bodyLevel);
+        rig.render (blockSize);
+        auto x = rig.render (192000, { { 0, on (note) }, { 36000, off (note) }, { 96000, on (note) }, { 132000, off (note) } });
+        const bool valid = rig.proc->getStack().layer (0).alignmentFor (note).valid;
+        // The fundamental, where the two layers overlap (the body's harmonics have nothing to line up with)
+        const double f0 = 440.0 * std::pow (2.0, (note - 69) / 12.0);
+        return std::make_tuple (bandEnergy (x, 18000, 0.85 * f0, 1.15 * f0), bandEnergy (x, 96000 + 18000, 0.85 * f0, 1.15 * f0), valid);
+    };
+    for (int note : { 40, 43, 45 })
+    {
+        const auto [first, second, valid] = run (note, true, 100.0f);
+        const float s = std::get<0> (run (note, true, 100.0f, 0.0f, -60.0f)) * 0.5f;   // solo: undo the sqrt-weights
+        const float b = std::get<0> (run (note, true, 100.0f, -60.0f, 0.0f)) * 0.5f;
+        const float best = juce::square (std::sqrt (s) + std::sqrt (b));
+        const float firstDb = juce::Decibels::gainToDecibels (first / best) * 0.5f, secondDb = juce::Decibels::gainToDecibels (second / best) * 0.5f;
+        std::cout << "info: note " << note << " sub+saw body at the fundamental: " << firstDb << " dB before, " << secondDb << " dB after alignment (vs fully in phase)\n";
+        CHECK (valid && secondDb > -0.2f && secondDb > firstDb, "phase alignment brings the sub and body in phase at note " + std::to_string (note));
+    }
+    // Strength 0 changes nothing; a supersaw body (no stable phase) gets no correction
+    {
+        const auto [first, second, valid] = run (43, true, 0.0f);
+        std::cout << "info: 0 %: first " << first << " second " << second << "\n";
+        CHECK (std::abs (juce::Decibels::gainToDecibels (second / first)) < 0.05f, "phase align at 0 % leaves the sub as it is");
+        const auto [f2, s2, v2] = run (43, false, 100.0f);
+        CHECK (! v2, "a supersaw body is not phase-aligned (no stable phase relation)");
+        juce::ignoreUnused (valid, f2, s2);
+    }
+}
+
 void testOddBlockSizes()
 {
     Rig rig;
@@ -1811,6 +1860,7 @@ int main()
         testLayerDrive();
         testSends();
         testLayerChorus();
+        testPhaseAlign();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_CHAIN_ONLY", {}).isNotEmpty())   // iterating on the knobs
@@ -1869,6 +1919,7 @@ int main()
     testLayerDrive();
     testSends();
     testLayerChorus();
+    testPhaseAlign();
     testChainPaths();
     testOnsetDuck();
     testBloomSpace();

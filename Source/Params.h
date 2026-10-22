@@ -16,6 +16,7 @@ namespace ps::params
     inline const juce::ParameterID crossoverHigh { "xover_high", 4 };
     inline const juce::ParameterID monoBass { "mono_bass", 4 };
     inline const juce::ParameterID safeOutput { "safe_output", 5 };
+    inline const juce::ParameterID phaseAlign { "phase_align", 8 };   // Sub/body phase alignment strength (PhaseAlign.h)
 
     // The 8 chain knobs (ChainKnobs.h), in chain::Knob order, and SUPER above them
     inline constexpr int numChainKnobs = 8;
@@ -151,6 +152,8 @@ namespace ps::params
             juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hz)));
         layout.add (std::make_unique<juce::AudioParameterBool> (monoBass, "Mono Bass", true));
         layout.add (std::make_unique<juce::AudioParameterBool> (safeOutput, "Safe Output", true));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (phaseAlign, "Phase Align", juce::NormalisableRange<float> (0.0f, 100.0f), 100.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; })));
 
         auto percentText = juce::AudioParameterFloatAttributes().withLabel ("%")
             .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; });

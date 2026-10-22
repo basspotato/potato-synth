@@ -19,6 +19,7 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     crossoverLowHz = apvts.getRawParameterValue (ps::params::crossoverLow.getParamID());
     monoBassOn = apvts.getRawParameterValue (ps::params::monoBass.getParamID());
     safeOutputOn = apvts.getRawParameterValue (ps::params::safeOutput.getParamID());
+    phaseAlign = apvts.getRawParameterValue (ps::params::phaseAlign.getParamID());
     for (int k = 0; k < ps::params::numChainKnobs; ++k)
         chainKnobs[(size_t) k] = apvts.getRawParameterValue (ps::params::chainKnob (k).getParamID());
     superKnob = apvts.getRawParameterValue (ps::params::super.getParamID());
@@ -182,6 +183,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     updatePerformance (n, bpm, ppq, barStart, barLength);
     const auto offsets = updateChainKnobs (n);
+    stack.setAlignStrength (juce::jlimit (0.0f, 1.0f, phaseAlign->load() * 0.01f));
     stack.process (buffer, midi);
 
     // Stack sum with sqrt-weights: the layers are scaled by 1 / sqrt(n), n the number of layers counted by

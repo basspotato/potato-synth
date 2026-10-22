@@ -66,9 +66,11 @@ public:
         {
             resetVoice (v);
             v.pitch.jumpTo (e.glideSeconds > 0.0 && e.glideFrom >= 0.0f ? e.glideFrom : (float) e.note);
-            for (auto& p : v.bank.phase)
-                p = random (v);   // JP: free-running oscillators, a new random phase on every trigger
-            v.phase2 = random (v);
+            // JP: free-running oscillators, a new random phase on every trigger. Retriggered (Sub/Body roles):
+            // the unison voices start spread by the golden ratio, so they never stack into one spike
+            for (size_t k = 0; k < v.bank.phase.size(); ++k)
+                v.bank.phase[k] = e.fixedPhase ? std::fmod (0.618034f * (float) k, 1.0f) : random (v);
+            v.phase2 = e.fixedPhase ? 0.25f : random (v);
             snapControls (v);
             v.active = true;
         }

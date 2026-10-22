@@ -19,8 +19,11 @@ public:
     void prepare (double sampleRate, int maxBlockSize)
     {
         maxBlock = juce::jmax (1, maxBlockSize);
+        rate = sampleRate;
         for (auto& l : layers)
             l.prepare (sampleRate, maxBlock, numNoteSlots);
+        clock = 0;
+        signature = 0.0;
         reset();
     }
 
@@ -57,6 +60,14 @@ public:
         }
         renderRange (buffer, pos, numSamples - pos);
         freeFinishedSlots();
+        updateAlignment();
+    }
+
+    // Sub/body phase alignment strength, 0..1 (PhaseAlign.h)
+    void setAlignStrength (float s) noexcept
+    {
+        for (auto& l : layers)
+            l.setAlignStrength (s);
     }
 
     int activeNoteCount() const
@@ -178,11 +189,55 @@ private:
             float* l = buffer.getWritePointer (0, start);
             float* r = buffer.getWritePointer (1, start);
             for (auto& layer : layers)
+            {
+                layer.setClock (clock);
                 layer.render (l, r, n);
+            }
+            clock += n;
             start += n;
             length -= n;
         }
     }
+
+    // The first playing Sub-role and Body-role layers are probed; once a sub note that started from silence
+    // has sounded for the settle time plus the window, it is measured and the result stored on the Sub layer.
+    void updateAlignment()
+    {
+        int sub = -1, body = -1;
+        for (int i = 0; i < numLayers; ++i)
+        {
+            const auto r = layers[(size_t) i].role();
+            if (! layers[(size_t) i].canPlay())
+                continue;
+            if (r == params::Role::sub && sub < 0) sub = i;
+            if (r == params::Role::body && body < 0) body = i;
+        }
+        const double crossover = layers[0].crossoverLow();
+        for (int i = 0; i < numLayers; ++i)
+            layers[(size_t) i].setProbing (i == sub || i == body, crossover);
+        if (sub < 0 || body < 0)
+            return;
+
+        auto& s = layers[(size_t) sub];
+        const double sig = s.soundSignature() + 3.1 * layers[(size_t) body].soundSignature();
+        if (sig < signature || sig > signature)
+        {
+            signature = sig;
+            s.clearAlignment();
+            return;
+        }
+        int note = -1;
+        int64_t started = 0;
+        const int decimation = s.getProbe().getDecimation();
+        const int64_t settle = (int64_t) (0.04 * rate), span = (int64_t) alignWindow * decimation;
+        if (s.pendingMeasurement (note, started) && clock - started >= settle + span)
+            s.storeAlignment (note, align::solve (s.getProbe(), layers[(size_t) body].getProbe(), clock / decimation,
+                                                  alignWindow, crossover, 440.0 * std::exp2 ((note + s.tuneSemitones() - 69.0) / 12.0), rate));
+    }
+
+    static constexpr int alignWindow = 512;   // decimated samples, about 85 ms
+    double rate = 48000.0, signature = 0.0;
+    int64_t clock = 0;
 
     std::array<Layer, numLayers> layers;
     std::array<NoteSlot, numNoteSlots> slots {};

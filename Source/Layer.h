@@ -4,6 +4,7 @@
 #include "Filter.h"
 #include "Drive.h"
 #include "Inserts.h"
+#include "PhaseAlign.h"
 #include "RoleBand.h"
 #include "HarmonyEngine.h"
 #include "Params.h"
@@ -112,6 +113,9 @@ public:
         filterFade = 0;
         layerDrive.prepare (maxBlock);
         chorus.prepare (sr);
+        probe.prepare (sr);
+        alignDelay.prepare (sr);
+        clearAlignment();
         level.reset (sr, 0.02);
         level.setCurrentAndTargetValue (targetGain());
         for (auto* g : { &panL, &panR })
@@ -177,6 +181,58 @@ public:
     }
     // The drive's oversampler delay, the same on every layer (each sounding layer runs through it)
     float driveLatencySamples() const noexcept { return layerDrive.getLatencySamples(); }
+
+    // ---- Sub/body phase alignment (PhaseAlign.h), driven by the stack ----
+    // The stack's running sample count at the next sample this layer renders
+    void setClock (int64_t c) noexcept { clock = c; }
+    void setProbing (bool on, double crossoverHz) noexcept
+    {
+        if (on && ! probing)
+            probe.reset();
+        probing = on;
+        if (on)
+            probe.setCrossover (crossoverHz);
+    }
+    const align::Probe& getProbe() const noexcept { return probe; }
+    float tuneSemitones() const noexcept { return tune.load(); }
+    double crossoverLow() const noexcept { return load (params.crossoverLowHz, 120.0f); }
+    // 0..1; the correction applies to this layer (the Sub) from its next start from silence
+    void setAlignStrength (float s) noexcept { alignStrength = s; }
+    void clearAlignment() noexcept
+    {
+        alignCache.fill ({});
+        freshNote = -1;
+    }
+    // The sub note that last started from silence and when, until it has been measured
+    bool pendingMeasurement (int& note, int64_t& startClock) const noexcept
+    {
+        note = freshNote;
+        startClock = freshClock;
+        return freshNote >= 0 && ! freshMeasured && anyVoiceSounding();
+    }
+    void storeAlignment (int note, const align::Correction& c) noexcept
+    {
+        alignCache[(size_t) juce::jlimit (0, 127, note)] = c;
+        freshMeasured = true;
+    }
+    const align::Correction& alignmentFor (int note) const noexcept { return alignCache[(size_t) juce::jlimit (0, 127, note)]; }
+
+    // Changes whenever something that moves this layer's phase changes (engine, tune, slots, filter, drive,
+    // role, crossovers, the knobs' slot offsets); level, pan and envelopes leave it alone
+    double soundSignature() const noexcept
+    {
+        double h = (double) (engineId.hashCode() & 0xffff);
+        int k = 1;
+        auto mix = [&] (const std::atomic<float>* p) { h += (p != nullptr ? (double) p->load() : 0.0) * (1.0 + 0.618 * k++); };
+        for (auto* p : { params.octave, params.semi, params.fineCents, params.role, params.crossoverLowHz, params.crossoverHighHz,
+                         params.filterType, params.cutoffHz, params.resonance, params.filterEnvSemis, params.keyTrack, params.drive })
+            mix (p);
+        for (auto* p : params.slots)
+            mix (p);
+        for (float v : chainSlots)
+            h += (double) v * (1.0 + 0.618 * k++);
+        return h;
+    }
 
     params::Role role() const noexcept
     {
@@ -261,11 +317,13 @@ public:
             return;
 
         duck.trigger();
+        if (! anyVoiceSounding())
+            startFromSilence (note);
         if (mode == params::VoiceMode::poly)
         {
             enforceVoiceCap (slot);
             startOrder[(size_t) slot] = order;
-            active->noteOn (slot, { note, velocity, glideSeconds(), lastNote, false });
+            active->noteOn (slot, { note, velocity, glideSeconds(), lastNote, false, fixedPhaseRole() });
             voiceFilters[(size_t) slot].start (note, envelopes[(size_t) slot].isActive());
             envelopes[(size_t) slot].trigger();
         }
@@ -360,7 +418,11 @@ public:
         }
         if (carving)
             carvedMeter.process (scratchL.data(), scratchR.data(), numSamples);
+        if (probing)
+            probe.process (scratchL.data(), scratchR.data(), numSamples, clock);
+        alignDelay.process (scratchL.data(), scratchR.data(), numSamples);
 
+        clock += numSamples;
         for (int i = 0; i < numSamples; ++i)
         {
             const float g = level.getNextValue() * duck.next();
@@ -416,6 +478,35 @@ private:
             return 1.0f - depth * shape;
         }
     };
+
+    bool fixedPhaseRole() const noexcept { const auto r = role(); return r == params::Role::sub || r == params::Role::body; }
+
+    bool anyVoiceSounding() const noexcept
+    {
+        for (const auto& e : envelopes)
+            if (e.isActive())
+                return true;
+        return false;
+    }
+
+    // Silent, so the alignment can switch at once: apply what was learned for this note (nothing if unknown)
+    void startFromSilence (int note) noexcept
+    {
+        const auto& c = alignmentFor (note);
+        const bool use = c.valid && alignStrength > 0.0f;
+        const float sign = use && c.sign < 0.0f && alignStrength >= 0.5f ? -1.0f : 1.0f;
+        const float delay = use ? c.delaySamples * alignStrength : 0.0f;
+        if (sign > 0.0f && delay <= 0.0f)
+        {
+            if (! alignDelay.isNeutral())
+                alignDelay.set (1.0f, 0.0f);
+        }
+        else
+            alignDelay.set (sign, delay);
+        freshNote = note;
+        freshClock = clock;
+        freshMeasured = false;
+    }
 
     // Placeholder posted when a layer is cleared; never becomes the active engine.
     struct Empty final : Engine
@@ -624,7 +715,7 @@ private:
         const bool legatoMove = mode == params::VoiceMode::legato && keyAlreadyHeld && sounding;
         const bool glide = mode == params::VoiceMode::mono || legatoMove;
 
-        active->noteOn (0, { n.note, n.velocity, glide ? glideSeconds() : 0.0, lastNote, legatoMove });
+        active->noteOn (0, { n.note, n.velocity, glide ? glideSeconds() : 0.0, lastNote, legatoMove, fixedPhaseRole() });
         if (! legatoMove)
         {
             voiceFilters[0].start (n.note, env.isActive());
@@ -787,6 +878,13 @@ private:
     int filterFade = 0;
     LayerDrive layerDrive;
     Chorus chorus;
+    align::Probe probe;
+    align::Delay alignDelay;
+    std::array<align::Correction, 128> alignCache {};
+    bool probing = false, freshMeasured = true;
+    int freshNote = -1;
+    int64_t clock = 0, freshClock = 0;
+    float alignStrength = 1.0f;
     std::vector<float> scratchL, scratchR, voiceL, voiceR;
     std::vector<uint32_t> startOrder;
 

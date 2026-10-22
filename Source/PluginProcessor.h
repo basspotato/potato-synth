@@ -76,6 +76,7 @@ private:
     std::atomic<float>* crossoverLowHz = nullptr;
     std::atomic<float>* monoBassOn = nullptr;
     std::atomic<float>* safeOutputOn = nullptr;
+    std::atomic<float>* phaseAlign = nullptr;
     std::array<std::atomic<float>*, ps::params::numChainKnobs> chainKnobs {};
     std::atomic<float>* superKnob = nullptr;
     std::atomic<float>* buildButton = nullptr;
