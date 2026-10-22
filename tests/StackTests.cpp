@@ -1,6 +1,7 @@
 // Headless tests for the layer stack, run end to end through the plugin processor.
 // Build with -DPOTATO_DEV_TOOLS=ON, run with ctest or ./build/PotatoSynthTests.
 #include "PluginProcessor.h"
+#include "Loudness.h"
 #include <cmath>
 #include <iostream>
 
@@ -147,7 +148,10 @@ void testSampleAccurateStart()
 {
     Rig rig;
     auto x = rig.render (2048, { { 777, on (60) } });
-    CHECK (peak (x, 0, 777) <= 0.0f && std::abs (x[778]) > 0.0f, "note starts on its exact sample");
+    // The output is delayed by the reported latency (the host compensates for it)
+    const auto start = (size_t) (777 + rig.proc->getLatencySamples());
+    CHECK (peak (x, 0, start - 8) <= 0.0f && peak (x, start, start + 16) > 1.0e-4f, "note starts on its exact sample (after latency)");
+    CHECK (peak (x, start - 8, start) < 1.0e-4f, "nothing leaks out ahead of it");
 }
 
 void testVoiceStealingAndChords()
@@ -506,6 +510,106 @@ void testDefaultStackIsTrueSilentAfterNotes()
     CHECK (peak (x, 72000, 96000) <= 0.0f, "filters stop once their tails die: the output returns to true zero");
 }
 
+void testMeters()
+{
+    std::vector<float> x (48000 * 5);
+    for (size_t i = 0; i < x.size(); ++i)
+        x[i] = 0.1f * (float) std::sin (juce::MathConstants<double>::twoPi * 1000.0 * (double) i / sampleRate);
+    const double lufs = ps::loudness::integratedLufs (x.data(), x.data(), x.size(), sampleRate);
+    CHECK (std::abs (lufs + 20.0) < 0.1, "a -20 dBFS 1 kHz sine in both channels measures -20 LUFS (" + std::to_string (lufs) + ")");
+
+    // A sine at a quarter of the sample rate, sampled 45 degrees off its peaks: sample peak -3 dB, true peak 0 dB
+    for (size_t i = 0; i < x.size(); ++i)
+        x[i] = (float) std::sin (juce::MathConstants<double>::halfPi * (double) i + juce::MathConstants<double>::pi / 4.0);
+    const double tp = ps::loudness::truePeakDb (x.data(), x.size());
+    CHECK (std::abs (tp) < 0.2, "true peak finds the peak between samples (" + std::to_string (tp) + " dBTP)");
+}
+
+// Renders a loud 8-note chord on all four layers, master boosted by the given dB
+std::pair<std::vector<float>, std::vector<float>> loudChord (float masterDb, bool safe)
+{
+    Rig rig;
+    for (int i = 0; i < 4; ++i)
+        rig.proc->setLayerEngine (i, "test.sine");
+    rig.collectRetired();
+    rig.set (ps::params::master, masterDb);
+    rig.set (ps::params::safeOutput, safe ? 1.0f : 0.0f);
+    std::vector<std::pair<int, juce::MidiMessage>> chord;
+    for (int n : { 48, 52, 55, 60, 64, 67, 71, 72 })
+        chord.push_back ({ 0, on (n, 1.0f) });
+    auto l = rig.render (48000, chord);
+    return { l, rig.right };
+}
+
+void testTruePeakSafeOutput()
+{
+    const auto [rawL, rawR] = loudChord (6.0f, false);
+    const auto [l, r] = loudChord (6.0f, true);
+    const double rawTp = ps::loudness::truePeakDb (rawL.data(), rawL.size());
+    const double tp = std::max (ps::loudness::truePeakDb (l.data(), l.size()), ps::loudness::truePeakDb (r.data(), r.size()));
+    CHECK (rawTp > 6.0, "without safe output the loud chord goes well over 0 dBFS (" + std::to_string (rawTp) + " dBTP)");
+    CHECK (tp <= -1.0, "safe output holds it under -1 dBTP (" + std::to_string (tp) + " dBTP)");
+    CHECK (allFinite (l) && allFinite (r), "and stays finite");
+}
+
+void testSafeOutputIsTransparentBelowTheKnee()
+{
+    auto run = [] (bool safe)
+    {
+        Rig rig;
+        rig.set (ps::params::safeOutput, safe ? 1.0f : 0.0f);
+        return rig.render (24000, { { 0, on (69, 0.5f) } });   // about -18 dBFS
+    };
+    const auto a = run (true), b = run (false);
+    const float diffDb = juce::Decibels::gainToDecibels (peak (a, 12000, 24000) / peak (b, 12000, 24000));
+    CHECK (std::abs (diffDb) < 0.05f, "safe output leaves normal levels untouched (" + std::to_string (diffDb) + " dB)");
+}
+
+void testSafeOutputDoesNotAlias()
+{
+    // Drive a 3.1 kHz note 12 dB into the clipper; its odd harmonics above Nyquist must not fold back
+    Rig rig;
+    rig.set (ps::params::master, 6.0f);
+    rig.set (ps::params::layerLevel (2), 6.0f);
+    auto x = rig.render (48000, { { 0, on (103, 1.0f) } });
+    constexpr int order = 14, size = 1 << order;
+    juce::dsp::FFT fft (order);
+    std::vector<float> data (2 * size, 0.0f);
+    for (int i = 0; i < size; ++i)
+    {
+        // 4-term Blackman-Harris: sidelobes under -92 dB, so window leakage can't pose as aliasing
+        const double t = juce::MathConstants<double>::twoPi * i / (size - 1);
+        const auto w = (float) (0.35875 - 0.48829 * std::cos (t) + 0.14128 * std::cos (2 * t) - 0.01168 * std::cos (3 * t));
+        data[(size_t) i] = x[(size_t) (24000 + i)] * w;
+    }
+    fft.performFrequencyOnlyForwardTransform (data.data());
+    const double f0 = 440.0 * std::pow (2.0, (103 - 69) / 12.0), binHz = sampleRate / size;
+    float fundamental = 0.0f, worstAlias = 0.0f;
+    for (int bin = 1; bin < size / 2; ++bin)
+    {
+        const double f = bin * binHz;
+        const double harmonic = f / f0;
+        const bool nearHarmonic = std::abs (harmonic - std::round (harmonic)) * f0 < 40.0;   // main lobe is ±12 Hz
+        if (std::abs (f - f0) < 40.0)
+            fundamental = std::max (fundamental, data[(size_t) bin]);
+        else if (! nearHarmonic && f < 20000.0)
+            worstAlias = std::max (worstAlias, data[(size_t) bin]);
+    }
+    const float aliasDb = juce::Decibels::gainToDecibels (worstAlias / fundamental, -200.0f);
+    CHECK (aliasDb < -70.0f, "clipping a loud 3.1 kHz note leaves aliases below -70 dB (" + std::to_string (aliasDb) + " dB)");
+}
+
+void testLatencyIsConstant()
+{
+    Rig a;
+    const int latency = a.proc->getLatencySamples();
+    a.proc->prepareToPlay (sampleRate, 64);
+    const int small = a.proc->getLatencySamples();
+    a.proc->prepareToPlay (sampleRate, 2048);
+    CHECK (latency == small && latency == a.proc->getLatencySamples() && latency < 96,
+           "reported latency is under 2 ms and the same for any block size (" + std::to_string (latency) + " samples)");
+}
+
 // CPU benchmark (CLAUDE.md target: an 8-note chord on 4 layers at 48 kHz within 20% of one core).
 // Prints the share of one core; only a gross regression fails.
 void benchmarkStack()
@@ -566,6 +670,11 @@ int main()
     testRoleChangeWhilePlaying();
     testMonoBass();
     testDefaultStackIsTrueSilentAfterNotes();
+    testMeters();
+    testTruePeakSafeOutput();
+    testSafeOutputIsTransparentBelowTheKnee();
+    testSafeOutputDoesNotAlias();
+    testLatencyIsConstant();
     benchmarkStack();
     testOddBlockSizes();
 

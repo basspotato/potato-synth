@@ -211,5 +211,7 @@ These need listening tests or primary sources: supersaw HPF order and cutoff, su
 ## Status
 
 - Done: research report; plan and CLAUDE.md revised to the super stack; chain knobs + Harmony Engine designed (potato-synth-CHAIN-KNOBS.md).
-- Phase 0 merged 2026-10-22. Phase 1 step 3 (Engine interface, registry, Layer, LayerStack, test sine, DSP tests) in review.
-- Next: step 4 (per-layer controls, role tags, zones, mono/legato/glide, amp envelope).
+- Phase 0 merged 2026-10-22.
+- Phase 1 (2026-10-22): layer stack with lock-free engine swaps (#3); per-layer amp ADSR, pan, tune (#4, GUI #5); Poly/Mono/Legato + glide (#6, GUI #7); role tags, LR4 band limits, crossovers, mono bass (#8, GUI #9); safe output: 4x soft clipper + look-ahead true-peak limiter, BS.1770 meters (#10).
+- Deferred: stack auto-gain moves to the Harmony Engine (Phase 3), where XY/macro loudness matching gives it a job; zones come with the preset work.
+- Next: Phase 2, the JP engine (Jupiter topology + JP-8080 supersaw unison).
