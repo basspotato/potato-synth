@@ -3,6 +3,7 @@
 #include "engines/JpEngine.h"
 #include "engines/SubEngine.h"
 #include "engines/WavetableEngine.h"
+#include "engines/SpectralEngine.h"
 #include <memory>
 
 namespace ps
@@ -23,6 +24,7 @@ namespace engines
             { "jp", "JP", [] { return std::unique_ptr<Engine> (std::make_unique<JpEngine>()); } },
             { "sub", "Sub", [] { return std::unique_ptr<Engine> (std::make_unique<SubEngine>()); } },
             { "wavetable", "Wavetable", [] { return std::unique_ptr<Engine> (std::make_unique<WavetableEngine>()); } },
+            { "spectral", "Spectral", [] { return std::unique_ptr<Engine> (std::make_unique<SpectralEngine>()); } },
             { "test.sine", "Test Sine", [] { return std::unique_ptr<Engine> (std::make_unique<TestSineEngine>()); } },
         };
         return list;

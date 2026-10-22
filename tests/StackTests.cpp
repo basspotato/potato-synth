@@ -132,9 +132,10 @@ float rms (const std::vector<float>& x, size_t from, size_t to)
     return (float) std::sqrt (sum / (double) (to - from));
 }
 
-// Strongest spectral line that is not a harmonic of f0 (below 20 kHz), relative to the fundamental, in dB.
+// Strongest spectral line that is not a harmonic of f0 (below 20 kHz), relative to the fundamental (or to the
+// strongest harmonic), in dB.
 // Reads 16384 samples from `from`.
-float worstAliasDb (const std::vector<float>& x, size_t from, double f0)
+float worstAliasDb (const std::vector<float>& x, size_t from, double f0, bool relativeToStrongest = false)
 {
     constexpr int order = 14, size = 1 << order;
     juce::dsp::FFT fft (order);
@@ -154,7 +155,7 @@ float worstAliasDb (const std::vector<float>& x, size_t from, double f0)
         const double f = bin * binHz;
         const double harmonic = f / f0;
         const bool nearHarmonic = std::abs (harmonic - std::round (harmonic)) * f0 < 40.0;   // main lobe is ±12 Hz
-        if (std::abs (f - f0) < 40.0)
+        if (std::abs (f - f0) < 40.0 || (relativeToStrongest && nearHarmonic))
             fundamental = std::max (fundamental, data[(size_t) bin]);
         else if (! nearHarmonic && f < 20000.0)
             worstAlias = std::max (worstAlias, data[(size_t) bin]);
@@ -1517,6 +1518,196 @@ void benchmarkJp()
     CHECK (modern16 < 30.0, "the heaviest unison stays under 30% of one core");
 }
 
+// ---- Spectral engine -------------------------------------------------------------------------------------
+
+struct SpRig : Rig
+{
+    explicit SpRig (std::initializer_list<std::pair<int, float>> slots = {})
+    {
+        proc->setLayerEngine (2, "spectral");
+        render (blockSize);
+        collectRetired();
+        for (auto& [slot, value] : slots)
+            setSlot (slot, value);
+    }
+
+    void setSlot (int slot, float value) { set (ps::params::layerSlot (2, slot), value); }
+};
+
+using Sp = ps::SpectralEngine;
+
+void testSpectralEngine()
+{
+    const float off = Sp::choiceValue (0, Sp::numUnison);
+    auto src = [] (int i) { return Sp::choiceValue (i, Sp::numSources); };
+    {
+        SpRig rig ({ { Sp::unison, off } });
+        auto x = rig.render (24000, { { 0, on (57) } });
+        CHECK (std::abs (estimateFrequency (x, 4000, 24000) - 220.0) < 0.3, "Spectral plays in tune (A3)");
+        CHECK (allFinite (x) && peak (x) > 0.1f, "Spectral sounds");
+    }
+
+    // Every source, morph position and operation keeps the loudness (each spectrum is K-weighted to a sine)
+    for (int note : { 33, 57, 81 })
+    {
+        auto loudnessFor = [&] (std::initializer_list<std::pair<int, float>> slots)
+        {
+            SpRig rig ({ { Sp::unison, off } });
+            for (auto& [slot, value] : slots)
+                rig.setSlot (slot, value);
+            auto x = rig.render (48000, { { 0, on (note) } });
+            return ps::loudness::integratedLufs (x.data() + 12000, rig.right.data() + 12000, 36000, sampleRate);
+        };
+        const double reference = loudnessFor ({});
+        double worst = 0.0;
+        for (int a = 0; a < Sp::numSources; ++a)
+        {
+            const double d = loudnessFor ({ { Sp::sourceA, src (a) } }) - reference;
+            if (std::abs (d) > 0.5) std::cout << "info: note " << note << " source " << a << " " << d << " LU\n";
+            worst = std::max (worst, std::abs (d));
+        }
+        for (auto op : { std::pair<int, float> { Sp::morph, 0.5f }, { Sp::morph, 1.0f }, { Sp::tilt, 0.0f }, { Sp::tilt, 1.0f },
+                         { Sp::oddEven, 0.0f }, { Sp::oddEven, 1.0f }, { Sp::formant, 0.0f }, { Sp::formant, 1.0f },
+                         { Sp::smear, 1.0f }, { Sp::shepard, 1.0f } })
+        {
+            const double d = loudnessFor ({ op }) - reference;
+            if (std::abs (d) > 0.5) std::cout << "info: note " << note << " op " << op.first << "=" << op.second << " " << d << " LU\n";
+            worst = std::max (worst, std::abs (d));
+        }
+        CHECK (worst < 0.5, "every Spectral source and operation keeps the loudness within 0.5 LU at note " + std::to_string (note)
+                                + " (" + std::to_string (worst) + " LU)");
+    }
+
+    // Band-limited: the brightest settings at a high note
+    for (int note : { 40, 96 })
+        for (auto slots : { std::initializer_list<std::pair<int, float>> { { Sp::sourceA, src (8) }, { Sp::tilt, 1.0f } },
+                            std::initializer_list<std::pair<int, float>> { { Sp::sourceA, src (3) }, { Sp::formant, 1.0f }, { Sp::smear, 1.0f } } })
+        {
+            SpRig rig ({ { Sp::unison, off } });
+            for (auto& [slot, value] : slots)
+                rig.setSlot (slot, value);
+            auto x = rig.render (48000, { { 0, on (note, 1.0f) } });
+            // Relative to the strongest harmonic: a rising spectrum's fundamental is not its reference level
+            const float db = worstAliasDb (x, 24000, 440.0 * std::pow (2.0, (note - 69) / 12.0), true);
+            CHECK (db < -60.0f, "Spectral at note " + std::to_string (note) + " is band-limited (" + std::to_string (db) + " dB under its strongest harmonic)");
+        }
+
+    // The operations do what they say (single voice, A2)
+    auto spectrum = [&] (std::initializer_list<std::pair<int, float>> slots, std::vector<float>* out = nullptr)
+    {
+        SpRig rig ({ { Sp::unison, off } });
+        for (auto& [slot, value] : slots)
+            rig.setSlot (slot, value);
+        auto x = rig.render (36000, { { 0, on (45) } });
+        if (out != nullptr)
+            *out = x;
+        return x;
+    };
+    auto harmonic = [] (const std::vector<float>& x, int h) { return bandEnergy (x, 12000, 110.0 * h - 30.0, 110.0 * h + 30.0); };
+    {
+        const auto saw = spectrum ({}), odd = spectrum ({ { Sp::oddEven, 1.0f } }), even = spectrum ({ { Sp::oddEven, 0.0f } });
+        CHECK (harmonic (odd, 2) < 1.0e-3f * harmonic (odd, 3) && harmonic (saw, 2) > 0.5f * harmonic (saw, 3), "Odd/Even at Odd removes the even harmonics");
+        CHECK (harmonic (even, 3) < 1.0e-3f * harmonic (even, 2), "Odd/Even at Even removes the odd harmonics above the fundamental");
+        const auto bright = spectrum ({ { Sp::tilt, 1.0f } }), dark = spectrum ({ { Sp::tilt, 0.0f } });
+        auto share = [] (const std::vector<float>& x) { return bandEnergy (x, 12000, 1500.0, 20000.0) / bandEnergy (x, 12000, 50.0, 20000.0); };
+        CHECK (share (bright) > 10.0f * share (saw) && share (dark) < 0.1f * share (saw), "Tilt brightens and darkens");
+        // Formant: Vowel A's first formant (800 Hz) moves up an octave at +12 st, while the pitch stays
+        const auto vowel = spectrum ({ { Sp::sourceA, src (6) } }), up = spectrum ({ { Sp::sourceA, src (6) }, { Sp::formant, 0.75f } });
+        std::cout << "info: formant: vowel ratio " << bandEnergy (vowel, 12000, 1400.0, 1900.0) / bandEnergy (vowel, 12000, 650.0, 950.0)
+                  << ", +12 st ratio " << bandEnergy (up, 12000, 1400.0, 1900.0) / bandEnergy (up, 12000, 650.0, 950.0)
+                  << "\n";
+        CHECK (bandEnergy (up, 12000, 1400.0, 1900.0) / bandEnergy (up, 12000, 650.0, 950.0)
+                   > 4.0f * bandEnergy (vowel, 12000, 1400.0, 1900.0) / bandEnergy (vowel, 12000, 650.0, 950.0)
+               && [&] { double onHarmonics = 0.0; for (int h = 1; h < 150; ++h) onHarmonics += harmonic (up, h);
+                        return onHarmonics > 0.99 * bandEnergy (up, 12000, 50.0, 20000.0); }(),
+               "Formant moves the resonances, not the pitch (every partial still on a harmonic of 110 Hz)");
+        // Smear fills the gaps of a square
+        const auto square = spectrum ({ { Sp::sourceA, src (1) } }), smeared = spectrum ({ { Sp::sourceA, src (1) }, { Sp::smear, 1.0f } });
+        CHECK (harmonic (square, 4) < 1.0e-4f * harmonic (square, 3) && harmonic (smeared, 4) > 0.1f * harmonic (smeared, 3), "Smear fills the missing harmonics");
+    }
+
+    // Morph travels: halfway from Saw to Vowel O is neither endpoint, and the sweep never clicks
+    {
+        SpRig rig ({ { Sp::unison, off }, { Sp::sourceB, src (7) } });
+        auto x = rig.render (12000, { { 0, on (45) } });
+        float worst = 0.0f, base = maxStep (std::vector<float> (x.begin() + 6000, x.end()));
+        for (int step = 1; step <= 20; ++step)
+        {
+            rig.setSlot (Sp::morph, step / 20.0f);
+            auto y = rig.render (2400);
+            worst = std::max (worst, maxStep (y));
+        }
+        auto end = rig.render (24000);
+        base = std::max (base, maxStep (std::vector<float> (end.begin() + 12000, end.end())));
+        CHECK (worst < 1.3f * base, "a Saw -> Vowel O morph sweep does not click (" + std::to_string (worst / base) + "x)");
+    }
+
+    // Shepard: the emphasis climbs forever; one full period later the spectrum is back where it was
+    {
+        SpRig rig ({ { Sp::unison, off }, { Sp::shepard, 1.0f }, { Sp::shepardRate, 1.0f } });   // +0.5 oct/s
+        auto x = rig.render (48000 * 5, { { 0, on (33) } });
+        auto centroid = [&] (size_t from)
+        {
+            double w = 0.0, sum = 0.0;
+            for (int h = 1; h <= 64; ++h)
+            {
+                const double e = bandEnergy (x, from, 55.0 * h - 15.0, 55.0 * h + 15.0);
+                w += e;
+                sum += e * std::log2 ((double) h);
+            }
+            return sum / w;
+        };
+        const double c0 = centroid (48000), cHalf = centroid (48000 + 24000), c1 = centroid (48000 + 96000);
+        std::cout << "info: Shepard centroid (log2 h) " << c0 << " -> " << cHalf << " -> " << c1 << " over one period\n";
+        CHECK (std::abs (c1 - c0) < 0.15 && std::abs (cHalf - c0) > 0.2, "Shepard moves the emphasis and repeats every period");
+        CHECK (allFinite (x), "Shepard renders cleanly");
+    }
+
+    // Unison: JP 7 at the default spreads wide, mono-compatible
+    {
+        SpRig rig;
+        auto l = rig.render (36000, { { 0, on (57) } });
+        double lr = 0, ll = 0, rr = 0;
+        for (size_t i = 12000; i < l.size(); ++i) { lr += (double) l[i] * rig.right[i]; ll += (double) l[i] * l[i]; rr += (double) rig.right[i] * rig.right[i]; }
+        const double c = lr / std::sqrt (ll * rr);
+        CHECK (c < 0.9 && c > 0.0, "Spectral JP 7 unison is wide but mono-compatible (" + std::to_string (c) + ")");
+    }
+}
+
+double spectralCpuShare (bool moving)
+{
+    Rig rig (false);
+    for (int i = 0; i < 4; ++i)
+        rig.proc->setLayerEngine (i, "spectral");
+    rig.render (blockSize);
+    rig.collectRetired();
+    for (int i = 0; i < 4; ++i)
+        if (moving)
+        {
+            rig.set (ps::params::layerSlot (i, Sp::shepard), 1.0f);
+            rig.set (ps::params::layerSlot (i, Sp::shepardRate), 1.0f);
+        }
+    std::vector<std::pair<int, juce::MidiMessage>> chord;
+    for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
+        chord.push_back ({ 0, on (n) });
+    rig.render (blockSize, chord);
+    double best = 1.0e9;
+    for (int run = 0; run < 3; ++run)
+    {
+        const auto start = juce::Time::getHighResolutionTicks();
+        rig.render ((int) sampleRate * 2);
+        best = std::min (best, 50.0 * juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start));
+    }
+    return best;
+}
+
+void benchmarkSpectral()
+{
+    const double still = spectralCpuShare (false), moving = spectralCpuShare (true);
+    std::cout << "info: 8-note chord on 4 Spectral layers (JP 7) uses " << still << "% of one core, " << moving << "% with the spectrum moving\n";
+    CHECK (still < 20.0 && moving < 25.0, "Spectral stack CPU is within budget");
+}
+
 // ---- Layer filter and drive ---------------------------------------------------------------------------
 
 float filterTypeValue (ps::params::FilterType t) { return (float) (int) t; }
@@ -1854,6 +2045,12 @@ int main()
         benchmarkJp();
         return 0;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_SPECTRAL_ONLY", {}).isNotEmpty())
+    {
+        testSpectralEngine();
+        benchmarkSpectral();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_LAYER_ONLY", {}).isNotEmpty())   // filter and drive
     {
         testLayerFilter();
@@ -1915,6 +2112,7 @@ int main()
     testJpSwitchesDoNotClick();
     testSubEngine();
     testWavetableEngine();
+    testSpectralEngine();
     testLayerFilter();
     testLayerDrive();
     testSends();
@@ -1928,6 +2126,7 @@ int main()
     testChainKnobInvariants();
     benchmarkJp();
     benchmarkWavetable();
+    benchmarkSpectral();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
     return failures == 0 ? 0 : 1;

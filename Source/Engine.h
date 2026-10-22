@@ -91,6 +91,10 @@ public:
 
     virtual void setSlot (int slot, float normalisedValue) { juce::ignoreUnused (slot, normalisedValue); }
 
+    // Called once before the voices of each rendered chunk (numSamples at most the prepared block size), for
+    // engine-wide work at control rate (the Spectral engine rebuilds its spectrum here).
+    virtual void beginBlock (int numSamples) { juce::ignoreUnused (numSamples); }
+
     // Add one voice's output into left/right for numSamples.
     virtual void render (int voice, float* left, float* right, int numSamples) = 0;
 };

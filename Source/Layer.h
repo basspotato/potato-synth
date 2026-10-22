@@ -680,6 +680,7 @@ private:
     // Renders every sounding voice through its filter and envelope into the scratch sum. Returns false once all are silent.
     bool renderVoices (Engine& e, std::vector<AmpEnvelope>& envs, std::vector<VoiceFilter>& filters, int numSamples)
     {
+        e.beginBlock (numSamples);
         bool anySounding = false;
         for (int v = 0; v < numVoices; ++v)
         {

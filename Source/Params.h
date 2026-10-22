@@ -225,10 +225,10 @@ namespace ps::params
             {
                 auto percent = juce::AudioParameterFloatAttributes().withLabel ("%")
                                    .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; });
-                juce::NormalisableRange<float> hz (20.0f, 20000.0f);
-                hz.setSkewForCentre (1000.0f);
+                juce::NormalisableRange<float> cutoffRange (20.0f, 20000.0f);
+                cutoffRange.setSkewForCentre (1000.0f);
                 layout.add (std::make_unique<juce::AudioParameterChoice> (layerFilterType (i), role + " Filter", filterTypeNames, 0));
-                layout.add (std::make_unique<Float> (layerCutoff (i), role + " Cutoff", hz, 20000.0f,
+                layout.add (std::make_unique<Float> (layerCutoff (i), role + " Cutoff", cutoffRange, 20000.0f,
                     juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction ([] (float v, int) {
                         return v < 1000.0f ? juce::String (juce::roundToInt (v)) + " Hz" : juce::String (v * 0.001f, 2) + " kHz"; })));
                 layout.add (std::make_unique<Float> (layerResonance (i), role + " Resonance", juce::NormalisableRange<float> (0.0f, 100.0f), 10.0f, percent));
