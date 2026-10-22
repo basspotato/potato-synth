@@ -12,8 +12,10 @@
 // by the bus itself and checked by the knob-sweep tests.
 namespace ps::harmony
 {
-// Short-term K-weighted power (BS.1770 weighting) of a stereo signal, averaged over about 400 ms.
-// Real-time safe; float state is enough for a slow meter.
+// Short-term K-weighted power (BS.1770 weighting) of a stereo signal, averaged over about 400 ms, over the band
+// that reaches the output: an LR4 low-pass at 19 kHz stands in for the output oversampler's half-band filters,
+// which remove the top of the spectrum (and every harmonic a 4x stage makes above it). A meter that counted
+// that energy would see a knob that brightens the top as louder than it ends up. Real-time safe.
 class KPowerMeter
 {
 public:
@@ -23,9 +25,13 @@ public:
         const auto k = loudness::kWeighting (sampleRate);
         for (int s = 0; s < 2; ++s)
         {
-            c[(size_t) s] = { (float) k[(size_t) s].b0, (float) k[(size_t) s].b1, (float) k[(size_t) s].b2,
-                              (float) k[(size_t) s].a1, (float) k[(size_t) s].a2 };
+            c[(size_t) s] = { k[(size_t) s].b0, k[(size_t) s].b1, k[(size_t) s].b2, k[(size_t) s].a1, k[(size_t) s].a2 };
         }
+        // Butterworth low-pass sections (bilinear), two of them make the LR4
+        const double w = std::tan (juce::MathConstants<double>::pi * std::min (19000.0, 0.45 * sampleRate) / sampleRate);
+        const double q = juce::MathConstants<double>::sqrt2 * 0.5, a0 = 1.0 + w / q + w * w;
+        const Coeffs lp { w * w / a0, 2.0 * w * w / a0, w * w / a0, 2.0 * (w * w - 1.0) / a0, (1.0 - w / q + w * w) / a0 };
+        c[2] = c[3] = lp;
         reset();
     }
 
@@ -42,8 +48,8 @@ public:
         double sum = 0.0;
         for (int i = 0; i < numSamples; ++i)
         {
-            const float l = weigh (left[i], 0), r = weigh (right[i], 1);
-            sum += (double) l * l + (double) r * r;
+            const double l = weigh (left[i], 0), r = weigh (right[i], 1);
+            sum += l * l + r * r;
         }
         blockSum += sum;
         blockCount += numSamples;
@@ -71,16 +77,20 @@ public:
     void seed (float p) noexcept { power = p; }
 
 private:
-    struct Coeffs { float b0, b1, b2, a1, a2; };
-    struct State { float x1 = 0, x2 = 0, y1 = 0, y2 = 0; };
+    // Double precision: at the 4x rate the 38 Hz high-pass's poles sit within 2e-3 of z = 1, where float
+    // coefficients and state misread the lows
+    struct Coeffs { double b0, b1, b2, a1, a2; };
+    struct State { double x1 = 0, x2 = 0, y1 = 0, y2 = 0; };
 
-    float weigh (float x, int ch) noexcept
+    static constexpr int numStages = 4;   // K pre-filter, RLB high-pass, 2 x low-pass
+
+    double weigh (double x, int ch) noexcept
     {
-        for (int s = 0; s < 2; ++s)
+        for (int s = 0; s < numStages; ++s)
         {
             auto& z = state[(size_t) ch][(size_t) s];
             const auto& k = c[(size_t) s];
-            const float y = k.b0 * x + k.b1 * z.x1 + k.b2 * z.x2 - k.a1 * z.y1 - k.a2 * z.y2;
+            const double y = k.b0 * x + k.b1 * z.x1 + k.b2 * z.x2 - k.a1 * z.y1 - k.a2 * z.y2;
             z.x2 = z.x1; z.x1 = x; z.y2 = z.y1; z.y1 = y;
             x = y;
         }
@@ -91,13 +101,13 @@ private:
     {
         for (auto& ch : state)
             for (auto& z : ch)
-                if (std::abs (z.y1) < 1.0e-20f && std::abs (z.y2) < 1.0e-20f)
+                if (std::abs (z.y1) < 1.0e-30 && std::abs (z.y2) < 1.0e-30)
                     z = {};
     }
 
     double sr = 48000.0;
-    std::array<Coeffs, 2> c {};
-    std::array<std::array<State, 2>, 2> state {};
+    std::array<Coeffs, numStages> c {};
+    std::array<std::array<State, numStages>, 2> state {};
     float power = 0.0f;
     double blockSum = 0.0;
     int blockCount = 0;
@@ -129,17 +139,11 @@ public:
     void prepare (double sampleRate, int maxBlockSize)
     {
         sr = sampleRate;
-        gain.reset (sampleRate, 0.02);
-        gain.setCurrentAndTargetValue (1.0f);
         smoothed = 1.0f;
         juce::ignoreUnused (maxBlockSize);
     }
 
-    void reset()
-    {
-        gain.setCurrentAndTargetValue (1.0f);
-        smoothed = 1.0f;
-    }
+    void reset() { smoothed = 1.0f; }
 
     // Once per block. Powers are K-weighted (KPowerMeter). stageRatio is the product of P_in / P_out over the bus
     // stages the knobs drive (1 when none is working).
@@ -173,27 +177,14 @@ public:
             const auto coef = (float) (1.0 - std::exp (-numSamples / (0.3 * sr)));
             smoothed += (target - smoothed) * coef;
         }
-        gain.setTargetValue (smoothed);
     }
 
-    void apply (float* left, float* right, int numSamples) noexcept
-    {
-        if (! gain.isSmoothing() && std::abs (gain.getTargetValue() - 1.0f) < 1.0e-6f)
-            return;
-        for (int i = 0; i < numSamples; ++i)
-        {
-            const float g = gain.getNextValue();
-            left[i] *= g;
-            right[i] *= g;
-        }
-    }
-
+    // The trim, smoothed over 300 ms; the output clipper ramps it across each block (StackBus.h)
     float getGain() const noexcept { return smoothed; }
 
 private:
     double sr = 48000.0;
     float smoothed = 1.0f;
-    juce::SmoothedValue<float> gain { 1.0f };
 };
 
 // Invariant 4, band ownership (CLARITY). Where two layers fight over the same band (the mud zone, 200 Hz to

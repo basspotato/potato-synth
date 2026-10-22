@@ -192,16 +192,16 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     }
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
                          (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio()
-                         / pump.powerRatio(), n);
-    loudnessTrim.apply (left, right, n);
+                         / pump.powerRatio(), n);   // applied inside the clipper, after its knob stages
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
     masterGain.applyGain (buffer, buffer.getNumSamples());
 
     // Safe output: a 4x oversampled soft clipper shapes overs musically, then a look-ahead limiter
-    // guarantees the -1 dBTP ceiling the clipper's decimation filter can overshoot
+    // guarantees the -1 dBTP ceiling the clipper's decimation filter can overshoot. The loudness trim goes in
+    // just before the clipper's curve.
     const bool safe = safeOutputOn->load() > 0.5f;
-    clipper.process (buffer, safe, pressure.getAmount(), offsets.exciter);
+    clipper.process (buffer, safe, pressure.getAmount(), offsets.exciter, loudnessTrim.getGain());
     limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
 }
 
