@@ -44,7 +44,7 @@ struct EngineInfo
 class Engine
 {
 public:
-    static constexpr int numSlots = 16;
+    static constexpr int numSlots = 24;
 
     virtual ~Engine() = default;
 
