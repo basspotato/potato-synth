@@ -924,8 +924,98 @@ void testSubEngine()
         rig.set (ps::params::layerSlot (2, Sub::shape), 1.0f);
         auto y = rig.render (9600);
         const float after = std::max (steady, maxStep (std::vector<float> (y.begin() + 4800, y.end())));
-        const float worst = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
-        CHECK (worst < after * 1.5f, "moving Shape on a held note does not click (" + std::to_string (worst / after) + "x the steady step)");
+        const float step = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
+        CHECK (step < after * 1.5f, "moving Shape on a held note does not click (" + std::to_string (step / after) + "x the steady step)");
+    }
+}
+
+// ---- Wavetable engine ---------------------------------------------------------------------------------
+
+struct WtRig : Rig
+{
+    explicit WtRig (std::initializer_list<std::pair<int, float>> slots = {})
+    {
+        proc->setLayerEngine (2, "wavetable");
+        render (blockSize);
+        collectRetired();
+        for (auto& [slot, value] : slots)
+            setSlot (slot, value);
+    }
+
+    void setSlot (int slot, float value) { set (ps::params::layerSlot (2, slot), value); }
+};
+
+using Wt = ps::WavetableEngine;
+
+void testWavetableEngine()
+{
+    const auto& tables = ps::Wavetables::get();
+    const float off = Wt::choiceValue (0, Wt::numUnison);
+    auto tableValue = [&] (int t) { return Wt::choiceValue (t, tables.size()); };
+    {
+        WtRig rig ({ { Wt::unison, off } });
+        auto x = rig.render (24000, { { 0, on (57) } });
+        CHECK (std::abs (estimateFrequency (x, 4000, 24000) - 220.0) < 0.3, "Wavetable plays in tune (A3)");
+        CHECK (allFinite (x) && peak (x) > 0.1f, "Wavetable sounds");
+    }
+
+    // Every frame is normalised to a sine's RMS, so tables and Position keep the level
+    auto levelFor = [&] (int t, float pos)
+    {
+        WtRig rig ({ { Wt::unison, off }, { Wt::table, tableValue (t) }, { Wt::position, pos } });
+        auto x = rig.render (36000, { { 0, on (45) } });
+        return juce::Decibels::gainToDecibels (rms (x, 12000, 36000));
+    };
+    const float reference = levelFor (0, 0.0f);
+    float worst = 0.0f;
+    for (int t = 0; t < tables.size(); ++t)
+        for (float pos : { 0.0f, 0.37f, 1.0f })
+            worst = std::max (worst, std::abs (levelFor (t, pos) - reference));
+    CHECK (worst < 1.0f, "every table and Position keep the level within 1 dB (" + std::to_string (worst) + " dB)");
+
+    for (int t = 0; t < tables.size(); ++t)
+        for (int note : { 40, 96 })
+        {
+            WtRig rig ({ { Wt::unison, off }, { Wt::table, tableValue (t) }, { Wt::position, 0.8f } });
+            auto x = rig.render (48000, { { 0, on (note, 1.0f) } });
+            const float db = worstAliasDb (x, 24000, 440.0 * std::pow (2.0, (note - 69) / 12.0));
+            CHECK (db < -60.0f, "table " + tables.table (t).name.toStdString() + " at note " + std::to_string (note)
+                                    + " is band-limited (" + std::to_string (db) + " dB)");
+        }
+
+    {
+        // Basic table: Position 0 is a sine; the envelope starts it at a square and decays back
+        WtRig rig ({ { Wt::unison, off }, { Wt::posEnv, 1.0f }, { Wt::posEnvTime, Wt::envValue (100.0f) } });
+        auto x = rig.render (48000, { { 0, on (45) } });
+        CHECK (bandEnergy (x, 600, 300.0, 20000.0) > 100.0f * bandEnergy (x, 36000, 300.0, 20000.0), "the Position envelope sweeps the table");
+    }
+
+    {
+        // A glide up through every band limit (each change crossfades between the two copies)
+        WtRig rig ({ { Wt::unison, off }, { Wt::position, 0.67f } });
+        rig.set (ps::params::layerVoiceMode (2), mono);
+        rig.set (ps::params::layerGlide (2), 500.0f);
+        auto x = rig.render (96000, { { 0, on (36) }, { 12000, on (96) } });
+        CHECK (allFinite (x) && std::abs (estimateFrequency (x, 60000, 96000) - 440.0 * std::pow (2.0, (96 - 69) / 12.0)) < 0.5,
+               "a glide across every band limit lands in tune");
+        CHECK (worstAliasDb (x, 70000, 440.0 * std::pow (2.0, (96 - 69) / 12.0)) < -60.0f, "and lands band-limited");
+    }
+
+    const char* names[] = { "table", "unison mode", "position", "detune" };
+    const std::pair<int, float> moves[] = { { Wt::table, tableValue (3) }, { Wt::unison, Wt::choiceValue (4, Wt::numUnison) },
+                                            { Wt::position, 1.0f }, { Wt::detune, 1.0f } };
+    for (size_t m = 0; m < std::size (moves); ++m)
+    {
+        WtRig rig ({ { Wt::position, 0.3f } });
+        auto x = rig.render (12000, { { 0, on (45) } });
+        const float baseline = maxStep (std::vector<float> (x.begin() + 6000, x.end()));
+        rig.setSlot (moves[m].first, moves[m].second);
+        // A second of the new state: random-phase unison beats slowly, so its worst steady step needs a long look
+        auto y = rig.render (52800);
+        const float steady = std::max (baseline, maxStep (std::vector<float> (y.begin() + 4800, y.end())));
+        const float step = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
+        CHECK (step < steady * 1.5f, std::string ("Wavetable: changing ") + names[m] + " mid-note does not click ("
+                                         + std::to_string (step / steady) + "x the steady step)");
     }
 }
 
@@ -954,6 +1044,37 @@ double jpCpuShare (int unisonMode)
         best = std::min (best, 100.0 * elapsed / seconds);
     }
     return best;
+}
+
+double wavetableCpuShare (int unisonMode)
+{
+    Rig rig (false);
+    for (int i = 0; i < 4; ++i)
+        rig.proc->setLayerEngine (i, "wavetable");
+    rig.render (blockSize);
+    rig.collectRetired();
+    for (int i = 0; i < 4; ++i)
+        rig.set (ps::params::layerSlot (i, Wt::unison), Wt::choiceValue (unisonMode, Wt::numUnison));
+    std::vector<std::pair<int, juce::MidiMessage>> chord;
+    for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
+        chord.push_back ({ 0, on (n) });
+    rig.render (blockSize, chord);
+    double best = 1.0e9;
+    for (int run = 0; run < 3; ++run)
+    {
+        const auto start = juce::Time::getHighResolutionTicks();
+        rig.render ((int) sampleRate * 2);
+        best = std::min (best, 50.0 * juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start));
+    }
+    return best;
+}
+
+void benchmarkWavetable()
+{
+    const double modern8 = wavetableCpuShare (2), modern16 = wavetableCpuShare (4);
+    std::cout << "info: 8-note chord on 4 Wavetable layers uses " << modern8 << "% of one core (Modern 8), " << modern16 << "% (Modern 16)\n";
+    CHECK (modern8 < 20.0, "Wavetable stack CPU is within budget (Modern 8 on every layer)");
+    CHECK (modern16 < 30.0, "16-voice Wavetable unison stays under 30% of one core");
 }
 
 void benchmarkJp()
@@ -1023,7 +1144,9 @@ int main()
     testJpOsc2();
     testJpSwitchesDoNotClick();
     testSubEngine();
+    testWavetableEngine();
     benchmarkJp();
+    benchmarkWavetable();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
     return failures == 0 ? 0 : 1;
