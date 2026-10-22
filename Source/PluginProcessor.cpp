@@ -22,7 +22,8 @@ PotatoSynthProcessor::PotatoSynthProcessor()
         auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
         stack.layer (i).setParameters ({ raw (p::layerLevel (i)), raw (p::layerPan (i)), raw (p::layerOctave (i)),
                                          raw (p::layerSemi (i)), raw (p::layerFine (i)), raw (p::layerAttack (i)),
-                                         raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)) });
+                                         raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)),
+                                         raw (p::layerVoiceMode (i)), raw (p::layerGlide (i)) });
     }
 
     auto layers = apvts.state.getOrCreateChildWithName (layersNode, nullptr);

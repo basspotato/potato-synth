@@ -5,8 +5,9 @@
 // add new IDs, never rename or remove one.
 namespace ps::params
 {
-    // 1: master + layer levels. 2: layer pan, tune and amp envelope (missing params load at their defaults).
-    inline constexpr int stateVersion = 2;
+    // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
+    // Parameters missing from an older save load at their defaults.
+    inline constexpr int stateVersion = 3;
 
     inline const juce::ParameterID master { "master", 1 };
 
@@ -24,6 +25,12 @@ namespace ps::params
     inline juce::ParameterID layerDecay (int i)   { return layerParam (i, "decay", 2); }
     inline juce::ParameterID layerSustain (int i) { return layerParam (i, "sustain", 2); }
     inline juce::ParameterID layerRelease (int i) { return layerParam (i, "release", 2); }
+    inline juce::ParameterID layerVoiceMode (int i) { return layerParam (i, "voice", 3); }
+    inline juce::ParameterID layerGlide (int i)   { return layerParam (i, "glide", 3); }
+
+    // Order is permanent: it is saved as an index.
+    enum class VoiceMode { poly, mono, legato };
+    inline const juce::StringArray voiceModeNames { "Poly", "Mono", "Legato" };
 
     inline constexpr int numLayers = 4;
     inline const char* const layerRoles[numLayers] = { "Sub", "Body", "Mid", "Air" };
@@ -88,6 +95,9 @@ namespace ps::params
                 juce::AudioParameterFloatAttributes().withLabel ("%")
                     .withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " %"; })));
             layout.add (std::make_unique<Float> (layerRelease (i), role + " Release", detail::timeRange (1.0f, 30000.0f, 500.0f), 300.0f,
+                detail::msAttributes()));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (layerVoiceMode (i), role + " Voice Mode", voiceModeNames, 0));
+            layout.add (std::make_unique<Float> (layerGlide (i), role + " Glide", detail::timeRange (0.0f, 5000.0f, 250.0f), 0.0f,
                 detail::msAttributes()));
         }
 
