@@ -46,6 +46,10 @@ struct LayerParams
     std::atomic<float>* chorus = nullptr;              // percent
     std::atomic<float>* chorusRateHz = nullptr;
     std::atomic<float>* chorusDepth = nullptr;         // percent
+    // The insert slots (Inserts.h): type index, Amount percent, controls 0..1; and the order
+    struct InsertParams { std::atomic<float>* type = nullptr; std::atomic<float>* amount = nullptr; std::array<std::atomic<float>*, 3> controls {}; };
+    std::array<InsertParams, 2> inserts {};
+    std::atomic<float>* insertSwap = nullptr;
 };
 
 // One slot of the stack: an engine plus its per-layer controls.
@@ -128,8 +132,10 @@ public:
         updateBand (true);
         meter.prepare (sr, false);
         carvedMeter.prepare (sr, false);
-        driveInMeter.prepare (sr, false);
-        driveOutMeter.prepare (sr, false);
+        // At the drive's 2x rate (measured around the curve, before the insert slots)
+        driveInMeter.prepare (2.0 * sr);
+        driveOutMeter.prepare (2.0 * sr);
+        insertChain.prepare (2.0 * sr);
         carve.prepare (sr);
         duckRate = (float) sr;
         duck.attackSamples = 0.002f * duckRate;
@@ -279,8 +285,16 @@ public:
         int k = 1;
         auto mix = [&] (const std::atomic<float>* p) { h += (p != nullptr ? (double) p->load() : 0.0) * (1.0 + 0.618 * k++); };
         for (auto* p : { params.octave, params.semi, params.fineCents, params.role, params.crossoverLowHz, params.crossoverHighHz,
-                         params.filterType, params.cutoffHz, params.resonance, params.filterEnvSemis, params.keyTrack, params.drive })
+                         params.filterType, params.cutoffHz, params.resonance, params.filterEnvSemis, params.keyTrack, params.drive,
+                         params.insertSwap })
             mix (p);
+        for (const auto& ip : params.inserts)
+        {
+            mix (ip.type);
+            mix (ip.amount);
+            for (auto* p : ip.controls)
+                mix (p);
+        }
         for (auto* p : params.slots)
             mix (p);
         for (float v : chainSlots)
@@ -476,14 +490,26 @@ public:
             driveOutMeter.reset();
             measuringDrive = knobDriving;
         }
-        if (measuringDrive)
-            driveInMeter.process (scratchL.data(), scratchR.data(), numSamples);
-        layerDrive.process (scratchL.data(), scratchR.data(), numSamples, totalDrive);
-        if (measuringDrive)
+        std::array<inserts::Settings, 2> insertSettings;
+        for (size_t k = 0; k < 2; ++k)
         {
-            driveOutMeter.process (scratchL.data(), scratchR.data(), numSamples);
-            knobDriveShare = (totalDrive - patchDrive) / totalDrive;
+            const auto& ip = params.inserts[k];
+            auto& st = insertSettings[k];
+            st.type = juce::roundToInt (load (ip.type, 0.0f));
+            st.amount = juce::jlimit (0.0f, 1.0f, load (ip.amount, 0.0f) * 0.01f);
+            for (size_t c = 0; c < 3; ++c)
+                st.p[c] = load (ip.controls[c], 0.5f);
         }
+        layerDrive.process (scratchL.data(), scratchR.data(), numSamples, totalDrive,
+            [this] (float* l, float* r, int n) { if (measuringDrive) driveInMeter.process (l, r, n); },
+            [&] (float* l, float* r, int n)
+            {
+                if (measuringDrive)
+                    driveOutMeter.process (l, r, n);
+                insertChain.process (l, r, n, insertSettings, load (params.insertSwap, 0.0f) > 0.5f);
+            });
+        if (measuringDrive)
+            knobDriveShare = (totalDrive - patchDrive) / totalDrive;
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
         processLowDuck (numSamples);
@@ -1064,6 +1090,7 @@ private:
     int filterFade = 0;
     LayerDrive layerDrive;
     Chorus chorus;
+    inserts::Chain insertChain;
     align::Probe probe;
     align::Delay alignDelay;
     std::array<align::Correction, 128> alignCache {};

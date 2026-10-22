@@ -2218,6 +2218,255 @@ void testSubDuck()
     CHECK (maxStep (std::vector<float> (ducked.begin() + 2000, ducked.end())) < 1.5f * steady, "Sub Duck: ducking never clicks");
 }
 
+// The layer insert slots: every type is exactly dry at Amount 0, stays level-sane at full Amount, the
+// frequency shifter and EQ land where their controls say, and type changes and swaps never click
+struct InsertRig : Rig
+{
+    // Layer 3 plays: the test sine, or a single JP saw
+    explicit InsertRig (bool saw)
+    {
+        if (saw)
+        {
+            proc->setLayerEngine (2, "jp");
+            render (blockSize);
+            collectRetired();
+            set (ps::params::layerSlot (2, ps::JpEngine::unison), ps::JpEngine::choiceValue (0, ps::JpEngine::numUnison));
+            set (ps::params::layerSlot (2, ps::JpEngine::spread), 0.0f);
+        }
+    }
+
+    void insert (int slot, ps::inserts::Type t, float amount, std::array<float, 3> controls = { -1.0f, -1.0f, -1.0f })
+    {
+        namespace p = ps::params;
+        set (p::layerInsertType (2, slot), (float) t);
+        set (p::layerInsertAmount (2, slot), amount);
+        for (int c = 0; c < 3; ++c)
+            set (p::layerInsertControl (2, slot, c), controls[(size_t) c] >= 0.0f ? controls[(size_t) c]
+                                                                                 : ps::inserts::controls[(size_t) t][(size_t) c].defaultValue);
+    }
+};
+
+void testInserts()
+{
+    using T = ps::inserts::Type;
+    const auto dry = InsertRig (true).render (48000, { { 0, on (57) } });
+    const auto drySine = InsertRig (false).render (48000, { { 0, on (57) } });
+    const float dryLevel = rms (dry, 24000, 48000);
+    for (int t = 1; t < ps::inserts::numTypes; ++t)
+    {
+        const auto name = ps::params::insertTypeNames[t].toStdString();
+        {
+            InsertRig rig (true);
+            rig.insert (0, (T) t, 0.0f);
+            CHECK (rig.render (48000, { { 0, on (57) } }) == dry, name + " at Amount 0 is exactly the dry signal");
+        }
+        InsertRig rig (true);
+        if ((T) t == T::eq)
+            rig.insert (1, T::eq, 100.0f, { 0.8f, 0.3f, 0.7f });
+        else
+            rig.insert (1, (T) t, 100.0f);
+        const auto x = rig.render (48000, { { 0, on (57) } });
+        const float db = juce::Decibels::gainToDecibels (rms (x, 24000, 48000) / dryLevel);
+        float diff = 0.0f;
+        for (size_t i = 24000; i < x.size(); ++i)
+            diff = std::max (diff, std::abs (x[i] - dry[i]));
+        std::cout << "info: insert " << name << " at 100 %: " << db << " dB\n";
+        CHECK (allFinite (x) && diff > 1.0e-3f, name + " at full Amount changes the sound");
+        CHECK (std::abs (db) < 6.0f, name + " at full Amount stays within 6 dB of dry (" + std::to_string (db) + " dB)");
+        CHECK (peak (x) < 1.0f, name + " at full Amount stays below 0 dBFS");
+    }
+
+    // Frequency shifter: 440 Hz shifted +100 Hz lands at 540 Hz, the image at 340 Hz stays far below
+    {
+        InsertRig rig (false);
+        const float s = std::cbrt (100.0f / 2000.0f);
+        rig.insert (0, T::freqShift, 100.0f, { 0.5f + 0.5f * s, 0.0f, 0.0f });
+        const auto x = rig.render (48000, { { 0, on (69) } });
+        const float up = bandEnergy (x, 24000, 520.0, 560.0), image = bandEnergy (x, 24000, 320.0, 360.0), left = bandEnergy (x, 24000, 420.0, 460.0);
+        const float imageDb = 10.0f * std::log10 (image / up), leftDb = 10.0f * std::log10 (left / up);
+        std::cout << "info: freq shift +100 Hz: image " << imageDb << " dB, original " << leftDb << " dB\n";
+        CHECK (imageDb < -30.0f && leftDb < -30.0f, "Freq Shift moves 440 Hz to 540 Hz");
+    }
+
+    // EQ: +12 dB low shelf on 55 Hz, -12 dB bell on 988 Hz
+    auto eqGainDb = [&] (int note, std::array<float, 3> controls)
+    {
+        InsertRig rig (false), ref (false);
+        rig.insert (0, T::eq, 100.0f, controls);
+        const auto x = rig.render (48000, { { 0, on (note) } }), y = ref.render (48000, { { 0, on (note) } });
+        return juce::Decibels::gainToDecibels (rms (x, 24000, 48000) / rms (y, 24000, 48000));
+    };
+    const float low = eqGainDb (33, { 1.0f, 0.5f, 0.5f }), mid = eqGainDb (83, { 0.5f, 0.0f, 0.5f });
+    CHECK (low > 11.0f && low < 12.5f, "EQ low shelf +12 dB at 55 Hz (" + std::to_string (low) + " dB)");
+    CHECK (mid < -11.0f && mid > -12.5f, "EQ bell -12 dB at 988 Hz (" + std::to_string (mid) + " dB)");
+
+    // Transient: Attack up makes the onset louder against the sustain
+    {
+        InsertRig rig (false);
+        rig.insert (0, T::transient, 100.0f, { 1.0f, 0.5f, 0.5f });
+        rig.render (blockSize);
+        const auto x = rig.render (24000, { { 0, on (57) } });
+        const float punch = rms (x, 0, 480) / rms (x, 12000, 24000), dryPunch = rms (drySine, 0, 480) / rms (drySine, 12000, 24000);
+        const float liftDb = juce::Decibels::gainToDecibels (punch / dryPunch);
+        CHECK (liftDb > 3.0f, "Transient Attack lifts the onset (" + std::to_string (liftDb) + " dB)");
+    }
+
+    // Order matters (drive into EQ is not EQ into drive), and the swap is repeatable
+    {
+        auto play = [] (bool swap)
+        {
+            InsertRig rig (true);
+            rig.insert (0, T::drive, 100.0f);
+            rig.insert (1, T::eq, 100.0f, { 1.0f, 0.5f, 0.0f });
+            rig.set (ps::params::layerInsertSwap (2), swap ? 1.0f : 0.0f);
+            return rig.render (24000, { { 0, on (45) } });
+        };
+        CHECK (play (false) != play (true) && play (true) == play (true), "insert order changes the sound; the same order renders the same");
+    }
+
+    // Type changes, Amount jumps and swaps mid-note never click. On a 220 Hz sine, a click is broadband, so it
+    // shows above 5 kHz (where the tone has nothing) beyond what the effects themselves put there before and
+    // after the change. A slot passes the dry signal while it switches, so the level itself may move.
+    {
+        InsertRig rig (false);
+        ps::LinkwitzRiley4 high (ps::LinkwitzRiley4::Type::highPass);
+        high.setCutoff (5000.0, sampleRate);
+        auto highPeak = [] (const std::vector<float>& x, size_t from, size_t to)
+        {
+            float m = 0.0f;
+            for (size_t i = from; i < to; ++i)
+                m = std::max (m, std::abs (x[i]));
+            return m;
+        };
+        auto filtered = [&] (std::vector<float> x)
+        {
+            for (auto& v : x)
+                v = (float) high.process (v);
+            return x;
+        };
+        auto steady = filtered (rig.render (12000, { { 0, on (57) } }));
+        float before = highPeak (steady, 9600, 12000), worst = 0.0f;
+        std::string worstAt;
+        auto step = [&] (const std::string& what, std::function<void()> change)
+        {
+            change();
+            auto x = filtered (rig.render (4800));
+            const float after = highPeak (x, 2400, 4800);
+            const float r = highPeak (x, 0, 2400) / std::max ({ before, after, 1.0e-4f });
+            if (r > worst)
+            {
+                worst = r;
+                worstAt = what;
+            }
+            before = after;
+        };
+        for (int t = 1; t < ps::inserts::numTypes; ++t)
+            step (ps::params::insertTypeNames[t].toStdString(), [&] { rig.insert (0, (T) t, 100.0f); });
+        step ("Drive mode", [&] { rig.insert (0, T::drive, 100.0f, { 0.9f, 0.5f, 0.0f }); });
+        step ("second slot", [&] { rig.insert (1, T::phaser, 100.0f); });
+        step ("swap", [&] { rig.set (ps::params::layerInsertSwap (2), 1.0f); });
+        step ("amount 0", [&] { rig.set (ps::params::layerInsertAmount (2, 1), 0.0f); });
+        step ("off", [&] { rig.insert (0, T::off, 0.0f); rig.insert (1, T::off, 0.0f); });
+        CHECK (worst < 1.5f, "insert changes never click (worst " + std::to_string (worst) + "x the steady level above 5 kHz, at " + worstAt + ")");
+    }
+}
+
+// Mix Health: the meters agree with the offline BS.1770 measurements, watching never changes the sound, the
+// listen modes do what they say without clicking, and two layers on the same band are flagged
+void testMixHealth()
+{
+    using MH = ps::MixHealth;
+    auto play = [] (bool watching, std::vector<float>* rightOut = nullptr)
+    {
+        JpRig rig ({ { Jp::spread, 1.0f } });
+        rig.proc->getMixHealth().setActive (watching);
+        auto x = rig.render (192000, { { 0, on (45) }, { 0, on (57) }, { 0, on (64) } });
+        if (rightOut != nullptr)
+            *rightOut = rig.right;
+        const auto& r = rig.proc->getMixHealth().readings();
+        return std::make_tuple (x, r.truePeakHoldDb.load(), r.integratedLufs.load(), r.shortTermLufs.load(), r.correlation.load());
+    };
+    std::vector<float> right;
+    const auto [watched, tp, integrated, shortTerm, corr] = play (true, &right);
+    const auto unwatched = std::get<0> (play (false));
+    CHECK (watched == unwatched, "Mix Health watching never changes the sound");
+
+    const double tpOffline = std::max (ps::loudness::truePeakDb (watched.data(), watched.size()), ps::loudness::truePeakDb (right.data(), right.size()));
+    const double lufsOffline = ps::loudness::integratedLufs (watched.data(), right.data(), watched.size(), sampleRate);
+    std::cout << "info: Mix Health true peak " << tp << " dBTP (offline " << tpOffline << "), integrated " << integrated << " LUFS (offline "
+              << lufsOffline << "), short-term " << shortTerm << ", correlation " << corr << "\n";
+    CHECK (std::abs (tp - tpOffline) < 0.2, "Mix Health true peak matches the offline measurement");
+    CHECK (std::abs (integrated - lufsOffline) < 0.3, "Mix Health integrated loudness matches the offline measurement");
+    CHECK (std::abs (shortTerm - integrated) < 1.5f, "short-term loudness of a steady chord sits at the integrated");
+    CHECK (corr > 0.0f && corr < 0.999f, "a wide supersaw reads as wide but mono-compatible (" + std::to_string (corr) + ")");
+
+    // The mono sine: correlation 1 and no side in the lows
+    {
+        Rig rig;
+        rig.proc->getMixHealth().setActive (true);
+        rig.render (48000, { { 0, on (33) } });
+        const auto& r = rig.proc->getMixHealth().readings();
+        CHECK (r.correlation.load() > 0.999f && r.sideLowsDb.load() < -60.0f, "a centred sine reads mono, with no side in the lows");
+    }
+
+    // Listen modes: mono makes the channels equal; phone takes out the lows; switching never clicks
+    {
+        JpRig rig ({ { Jp::spread, 1.0f } });
+        auto& mh = rig.proc->getMixHealth();
+        rig.render (24000, { { 0, on (57) } });
+        mh.setListen (MH::Listen::mono);
+        rig.render (4800);
+        auto l = rig.render (4800);
+        float diff = 0.0f;
+        for (size_t i = 0; i < l.size(); ++i)
+            diff = std::max (diff, std::abs (l[i] - rig.right[i]));
+        CHECK (diff < 1.0e-6f, "Mono club listen sums to mono");
+        mh.setListen (MH::Listen::normal);
+        rig.render (4800);
+    }
+    {
+        auto lowLevel = [] (MH::Listen mode)
+        {
+            Rig rig;
+            rig.proc->getMixHealth().setListen (mode);
+            auto x = rig.render (48000, { { 0, on (33) } });
+            return rms (x, 24000, 48000);
+        };
+        const float cut = juce::Decibels::gainToDecibels (lowLevel (MH::Listen::phone) / lowLevel (MH::Listen::normal));
+        CHECK (cut < -20.0f, "Phone listen takes 55 Hz down by more than 20 dB (" + std::to_string (cut) + " dB)");
+
+        Rig rig;
+        auto& mh = rig.proc->getMixHealth();
+        auto steady = rig.render (12000, { { 0, on (57) } });
+        const float base = maxStep (std::vector<float> (steady.begin() + 6000, steady.end()));
+        float worst = 0.0f;
+        for (auto mode : { MH::Listen::phone, MH::Listen::mono, MH::Listen::normal })
+        {
+            mh.setListen (mode);
+            worst = std::max (worst, maxStep (rig.render (4800)));
+        }
+        CHECK (worst < 1.1f * base, "switching listen modes never clicks (" + std::to_string (worst / base) + "x)");
+    }
+
+    // Masking: two sines on the same note fight over the 400 Hz band; one alone doesn't
+    {
+        auto bandBits = [] (bool both)
+        {
+            Rig rig;
+            if (both)
+            {
+                rig.proc->setLayerEngine (3, "test.sine");
+                rig.render (blockSize);
+                rig.collectRetired();
+            }
+            rig.proc->getMixHealth().setActive (true);
+            rig.render (24000, { { 0, on (67) } });   // 392 Hz
+            return rig.proc->getMixHealth().readings().maskedLayers[1].load();
+        };
+        CHECK (bandBits (true) == ((1u << 2) | (1u << 3)) && bandBits (false) == 0u, "two layers on the same band are flagged as masking");
+    }
+}
+
 // BLOOM's pitch motion is a fixed wobble, never random: the same playing renders the same samples
 void testBloomIsRepeatable()
 {
@@ -2527,6 +2776,43 @@ void benchmarkGenome()
         std::cout << "info: 8-note chord on 4 Genome layers at " << genomeName (a) << " uses " << best << "% of one core\n";
         CHECK (best < 20.0, "Genome stack CPU is within budget (" + genomeName (a) + ")");
     }
+}
+
+// What the insert slots cost: the init stack's engines with both slots on all 4 layers on the heaviest types
+void benchmarkInserts()
+{
+    auto measure = [] (bool withInserts)
+    {
+        Rig rig (false);
+        const char* engines[] = { "sub", "dirt", "jp", "spectral" };
+        for (int i = 0; i < 4; ++i)
+            rig.proc->setLayerEngine (i, engines[i]);
+        rig.render (blockSize);
+        rig.collectRetired();
+        if (withInserts)
+            for (int i = 0; i < 4; ++i)
+            {
+                rig.set (ps::params::layerInsertType (i, 0), (float) ps::inserts::Type::freqShift);
+                rig.set (ps::params::layerInsertType (i, 1), (float) ps::inserts::Type::formant);
+                rig.set (ps::params::layerInsertAmount (i, 0), 100.0f);
+                rig.set (ps::params::layerInsertAmount (i, 1), 100.0f);
+            }
+        std::vector<std::pair<int, juce::MidiMessage>> chord;
+        for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
+            chord.push_back ({ 0, on (n) });
+        rig.render (blockSize, chord);
+        double best = 1.0e9;
+        for (int run = 0; run < 3; ++run)
+        {
+            const auto start = juce::Time::getHighResolutionTicks();
+            rig.render ((int) sampleRate * 2);
+            best = std::min (best, 50.0 * juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start));
+        }
+        return best;
+    };
+    const double without = measure (false), with = measure (true);
+    std::cout << "info: 8-note chord on the init stack: " << without << "% of one core, " << with << "% with 8 insert slots (Freq Shift + Formant)\n";
+    CHECK (with < 20.0, "the init stack with 8 heavy insert slots stays within the 20 % CPU budget");
 }
 
 // ---- Arpeggiator and step sequencer -------------------------------------------------------------------
@@ -3284,6 +3570,9 @@ int main()
     {
         testMasterChain();
         testSubDuck();
+        testInserts();
+        benchmarkInserts();
+        testMixHealth();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_GENOME_ONLY", {}).isNotEmpty())
@@ -3380,6 +3669,8 @@ int main()
     testBloomIsRepeatable();
     testMasterChain();
     testSubDuck();
+    testInserts();
+    testMixHealth();
     testArpeggiator();
     testStepSequencer();
     testArpThroughTheSynth();
@@ -3401,6 +3692,7 @@ int main()
     benchmarkSpectral();
     benchmarkDirt();
     benchmarkGenome();
+    benchmarkInserts();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
     return failures == 0 ? 0 : 1;

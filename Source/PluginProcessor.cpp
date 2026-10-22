@@ -62,7 +62,7 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     {
         namespace p = ps::params;
         auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
-        stack.layer (i).setParameters ({ raw (p::layerLevel (i)), raw (p::layerPan (i)), raw (p::layerOctave (i)),
+        ps::LayerParams lp { raw (p::layerLevel (i)), raw (p::layerPan (i)), raw (p::layerOctave (i)),
                                          raw (p::layerSemi (i)), raw (p::layerFine (i)), raw (p::layerAttack (i)),
                                          raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)),
                                          raw (p::layerVoiceMode (i)), raw (p::layerGlide (i)), raw (p::layerRole (i)),
@@ -71,7 +71,17 @@ PotatoSynthProcessor::PotatoSynthProcessor()
                                          raw (p::layerFilterEnv (i)), raw (p::layerKeyTrack (i)), raw (p::layerFilterAttack (i)),
                                          raw (p::layerFilterDecay (i)), raw (p::layerFilterSustain (i)), raw (p::layerFilterRelease (i)),
                                          raw (p::layerDrive (i)), raw (p::layerChorus (i)), raw (p::layerChorusRate (i)),
-                                         raw (p::layerChorusDepth (i)) });
+                                         raw (p::layerChorusDepth (i)) };
+        for (int k = 0; k < p::numInsertSlots; ++k)
+        {
+            auto& ip = lp.inserts[(size_t) k];
+            ip.type = raw (p::layerInsertType (i, k));
+            ip.amount = raw (p::layerInsertAmount (i, k));
+            for (int c = 0; c < 3; ++c)
+                ip.controls[(size_t) c] = raw (p::layerInsertControl (i, k, c));
+        }
+        lp.insertSwap = raw (p::layerInsertSwap (i));
+        stack.layer (i).setParameters (lp);
         for (int k = 0; k < p::numEngineSlots; ++k)
             stack.layer (i).setSlotParameter (k, raw (p::layerSlot (i, k)));
     }
@@ -105,6 +115,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
     clipper.prepare (sampleRate, samplesPerBlock);
     limiter.prepare (sampleRate);
+    mixHealth.prepare (sampleRate);
     lowFocus.prepare (sampleRate);
     bassHarmonics.prepare (sampleRate);
     pressure.prepare (sampleRate);
@@ -407,6 +418,8 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const bool safe = safeOutputOn->load() > 0.5f;
     clipper.process (buffer, safe, pressure.getAmount(), offsets.exciter, trim);
     limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
+    mixHealth.setCrossover (crossoverLowHz->load());
+    mixHealth.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples());
 }
 
 void PotatoSynthProcessor::addRamped (float* out, const float* in, int numSamples, float from, float to) noexcept
@@ -586,12 +599,14 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     }
     const bool carving = offsets.carveDepthDb > 1.0e-3f;
     const auto carve = ps::harmony::solveOwnership (energy, roles, sounding, offsets.carveTemperature, offsets.carveDepthDb);
+    mixHealth.updateMasking (energy, sounding, ps::params::numLayers);
+    const bool analyse = carving || mixHealth.isActive();   // Mix Health's masking check reads the same band energies
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
         stack.layer (i).setBeatCeiling (offsets.beatCeiling);
         stack.layer (i).setOnsetDuck (offsets.onsetDuckDb[(size_t) i], offsets.onsetDuckMs);
-        stack.layer (i).setCarveGains (carve[(size_t) i], carving);
+        stack.layer (i).setCarveGains (carve[(size_t) i], analyse);
         stack.layer (i).setChainDrift (offsets.driftCents[(size_t) i] * driftWobble);
         stack.layer (i).setChainInserts (offsets.layerDrive[(size_t) i], offsets.layerChorus[(size_t) i]);
     }

@@ -62,12 +62,21 @@ public:
 
     float getLatencySamples() const { return oversampler != nullptr ? oversampler->getLatencyInSamples() : 0.0f; }
 
-    // d: 0..1, ramped from the last block's value
+    // d: 0..1, ramped from the last block's value. beforeDrive and afterDrive (float* left, float* right, int n)
+    // see the 2x signal around the curve; afterDrive is where the layer's insert slots run.
     void process (float* left, float* right, int numSamples, float d) noexcept
+    {
+        auto none = [] (float*, float*, int) {};
+        process (left, right, numSamples, d, none, none);
+    }
+
+    template <typename Before, typename After>
+    void process (float* left, float* right, int numSamples, float d, Before&& beforeDrive, After&& afterDrive) noexcept
     {
         float* io[2] = { left, right };
         juce::dsp::AudioBlock<float> block (io, 2, (size_t) numSamples);
         auto up = oversampler->processSamplesUp (block);
+        beforeDrive (up.getChannelPointer (0), up.getChannelPointer (1), (int) up.getNumSamples());
         const float from = amount;
         amount = d;
         if (from > 1.0e-5f || d > 1.0e-5f)
@@ -93,6 +102,7 @@ public:
             for (auto& t : tanh)
                 t.reset();
         }
+        afterDrive (up.getChannelPointer (0), up.getChannelPointer (1), (int) up.getNumSamples());
         oversampler->processSamplesDown (block);
     }
 

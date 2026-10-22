@@ -40,6 +40,7 @@ namespace
 PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts), arpPage (p)
 {
+    processor.getMixHealth().setActive (true);
     setLookAndFeel (&look);
 
     for (int i = 0; i < 4; ++i)
@@ -260,6 +261,7 @@ void PotatoSynthEditor::showEngineMenu (int layerIndex)
 
 PotatoSynthEditor::~PotatoSynthEditor()
 {
+    processor.getMixHealth().setActive (false);
     setLookAndFeel (nullptr);
 }
 

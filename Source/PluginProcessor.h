@@ -8,6 +8,7 @@
 #include "StackMorph.h"
 #include "Arp.h"
 #include "ModLanes.h"
+#include "MixHealth.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -69,6 +70,8 @@ public:
     // The Harmony Engine's current loudness trim (linear gain), for meters and tests
     float getLoudnessTrim() const { return loudnessTrim.getGain(); }
     const ps::LayerStack& getStack() const { return stack; }
+    // Mix Health meters and listen modes (the editor turns the meters on while it is open)
+    ps::MixHealth& getMixHealth() noexcept { return mixHealth; }
     // Message thread: frees engines the audio thread has finished with (also runs on a timer)
     void collectRetiredEngines() { stack.collectGarbage(); }
 
@@ -154,6 +157,7 @@ private:
     ps::harmony::LoudnessTrim loudnessTrim;
     ps::TruePeakClipper clipper;
     ps::TruePeakLimiter limiter;
+    ps::MixHealth mixHealth;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> masterGain { 1.0f };
     juce::SmoothedValue<float> stackGain { 1.0f };
 

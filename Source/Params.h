@@ -10,7 +10,7 @@ namespace ps::params
     // 8: BUILD, DROP, the XY pad, layer anchors, layer filter and drive, reverb and delay sends.
     // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
     // 10: HOLD, the main page's CUTOFF and RESO, pitch bend / MPE, mod wheel and aftertouch.
-    // 11: layers 5-8.
+    // 11: layers 5-8. 12: the master chain (OTT, glue, width), Sub Duck and the layers' insert slots.
     // Parameters missing from an older save load at their defaults.
     inline constexpr int stateVersion = 12;
 
@@ -128,6 +128,18 @@ namespace ps::params
     inline juce::ParameterID layerChorus (int i)        { return layerParam (i, "chorus", 8); }
     inline juce::ParameterID layerChorusRate (int i)    { return layerParam (i, "chorus_rate", 8); }
     inline juce::ParameterID layerChorusDepth (int i)   { return layerParam (i, "chorus_depth", 8); }
+    // Two insert slots per layer (Inserts.h): type (inserts::Type index), Amount (percent) and three controls
+    // (0..1, meaning set by the type), plus the slot order
+    inline constexpr int numInsertSlots = 2;
+    inline juce::ParameterID layerInsert (int i, int slot, const juce::String& name)
+    {
+        return { "L" + juce::String (i + 1) + "_ins" + juce::String (slot + 1) + "_" + name, 12 };
+    }
+    inline juce::ParameterID layerInsertType (int i, int slot)          { return layerInsert (i, slot, "type"); }
+    inline juce::ParameterID layerInsertAmount (int i, int slot)        { return layerInsert (i, slot, "amt"); }
+    inline juce::ParameterID layerInsertControl (int i, int slot, int k) { return layerInsert (i, slot, "p" + juce::String (k + 1)); }
+    inline juce::ParameterID layerInsertSwap (int i)                    { return layerParam (i, "ins_swap", 12); }
+    inline const juce::StringArray insertTypeNames { "Off", "Drive", "Crush", "Phaser", "Flanger", "Comb", "Freq Shift", "Formant", "EQ", "Transient" };
     enum class FilterType { off, ladder24, lowPass12, bandPass, highPass };
     inline const juce::StringArray filterTypeNames { "Off", "Ladder 24", "LP 12", "BP", "HP" };
 
@@ -347,6 +359,16 @@ namespace ps::params
                 layout.add (std::make_unique<Float> (layerChorusRate (i), role + " Chorus Rate", rate, 0.4f,
                     juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction ([] (float v, int) { return juce::String (v, 2) + " Hz"; })));
                 layout.add (std::make_unique<Float> (layerChorusDepth (i), role + " Chorus Depth", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
+                for (int k = 0; k < numInsertSlots; ++k)
+                {
+                    const juce::String ins = role + " Insert " + juce::String (k + 1);
+                    layout.add (std::make_unique<juce::AudioParameterChoice> (layerInsertType (i, k), ins + " Type", insertTypeNames, 0));
+                    layout.add (std::make_unique<Float> (layerInsertAmount (i, k), ins + " Amount", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
+                    for (int c = 0; c < 3; ++c)
+                        layout.add (std::make_unique<Float> (layerInsertControl (i, k, c), ins + " " + juce::String::charToString ((juce::juce_wchar) ('A' + c)),
+                                                             juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
+                }
+                layout.add (std::make_unique<juce::AudioParameterBool> (layerInsertSwap (i), role + " Swap Inserts", false));
             }
             for (int k = 0; k < numEngineSlots; ++k)
                 layout.add (std::make_unique<Float> (layerSlot (i, k), role + " Engine " + juce::String (k + 1),
