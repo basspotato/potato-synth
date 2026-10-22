@@ -1657,6 +1657,81 @@ void testLayerDrive()
     CHECK (worst < 1.1f, "jumping the drive does not click (" + std::to_string (worst) + "x the steadier slope)");
 }
 
+// ---- Shared sends ---------------------------------------------------------------------------------------
+
+void testSends()
+{
+    namespace p = ps::params;
+    // Reverb: the tail after a release grows with Amount and lasts longer with Size
+    auto tail = [] (float amount, float size)
+    {
+        Rig rig;
+        rig.set (p::reverbAmount, amount);
+        rig.set (p::reverbSize, size);
+        auto x = rig.render (96000, { { 0, on (57) }, { 24000, off (57) } });
+        return juce::Decibels::gainToDecibels (rms (x, 24000 + 24000, 24000 + 36000) / rms (x, 12000, 24000), -200.0f);
+    };
+    const float dry = tail (0.0f, 2.2f), wet = tail (60.0f, 2.2f), longer = tail (60.0f, 8.0f);
+    std::cout << "info: reverb tail 0.5 s after release: dry " << dry << " dB, 60 % " << wet << " dB, 60 % at 8 s " << longer << " dB\n";
+    CHECK (wet > dry + 20.0f && wet < -6.0f, "the reverb send rings on after the release");
+    CHECK (longer > wet + 3.0f, "a larger reverb size rings longer");
+
+    // Delay: a short blip at 120 BPM, 1/4 note: repeats every 0.5 s, the first in the left (ping-pong)
+    {
+        Rig rig;
+        rig.set (p::delayAmount, 100.0f);
+        rig.set (p::delayTime, 8.0f);   // 1/4
+        rig.set (p::delayFeedback, 50.0f);
+        rig.set (p::layerRelease (2), 5.0f);
+        auto x = rig.render (96000, { { 0, on (69) }, { 1200, off (69) } });
+        const int lat = rig.proc->getLatencySamples();
+        const float blip = rms (x, (size_t) lat, (size_t) lat + 1200);
+        const float gap = rms (x, (size_t) lat + 6000, (size_t) lat + 20000);
+        const float echoL = rms (x, (size_t) lat + 24000, (size_t) lat + 25200), echoR = rms (rig.right, (size_t) lat + 24000, (size_t) lat + 25200);
+        const float echo2R = rms (rig.right, (size_t) lat + 48000, (size_t) lat + 49200);
+        std::cout << "info: delay echo 1 L " << juce::Decibels::gainToDecibels (echoL / blip) << " dB, R " << juce::Decibels::gainToDecibels (echoR / blip)
+                  << " dB, echo 2 R " << juce::Decibels::gainToDecibels (echo2R / blip) << " dB, gap " << juce::Decibels::gainToDecibels (gap / blip, -200.0f) << " dB\n";
+        CHECK (echoL > 0.2f * blip && echoL > 4.0f * echoR, "the delay repeats on the beat, first in the left");
+        CHECK (echo2R > 0.05f * blip && gap < 0.02f * blip, "ping-pong: the second repeat crosses to the right, silence between");
+    }
+
+    // Full feedback stays bounded, and switching the time while it rings never clicks
+    {
+        Rig rig;
+        rig.set (p::delayAmount, 100.0f);
+        rig.set (p::delayFeedback, 95.0f);
+        rig.set (p::reverbAmount, 100.0f);
+        rig.set (p::reverbSize, 12.0f);
+        auto steady = rig.render (48000, { { 0, on (57) } });
+        float worst = 0.0f;
+        for (float division : { 2.0f, 11.0f, 5.0f, 0.0f })
+        {
+            rig.set (p::delayTime, division);
+            auto x = rig.render (24000);
+            worst = std::max (worst, maxStep (x) / maxStep (std::vector<float> (steady.begin() + 24000, steady.end())));
+        }
+        auto x = rig.render (48000 * 8, { { 0, off (57) } });
+        CHECK (allFinite (x) && peak (x) < 1.0f, "full delay feedback and the longest reverb stay bounded");
+        CHECK (worst < 1.5f, "changing the delay time while it rings does not click (" + std::to_string (worst) + "x)");
+    }
+
+    // Mono lows: the sends add no side signal under 150 Hz
+    {
+        Rig rig;
+        rig.set (p::delayAmount, 100.0f);
+        rig.set (p::reverbAmount, 100.0f);
+        auto x = rig.render (96000, { { 0, on (33) }, { 0, on (69) } });   // 55 Hz and 440 Hz
+        std::vector<float> side (x.size()), mid (x.size());
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            side[i] = 0.5f * (x[i] - rig.right[i]);
+            mid[i] = 0.5f * (x[i] + rig.right[i]);
+        }
+        const float ratio = bandEnergy (side, 48000, 20.0, 150.0) / bandEnergy (mid, 48000, 20.0, 150.0);
+        CHECK (ratio < 1.0e-4f, "the sends keep the lows mono (side/mid under 150 Hz " + std::to_string (juce::Decibels::gainToDecibels (ratio) * 0.5f) + " dB)");
+    }
+}
+
 void testOddBlockSizes()
 {
     Rig rig;
@@ -1680,6 +1755,7 @@ int main()
     {
         testLayerFilter();
         testLayerDrive();
+        testSends();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_CHAIN_ONLY", {}).isNotEmpty())   // iterating on the knobs
@@ -1736,6 +1812,7 @@ int main()
     testWavetableEngine();
     testLayerFilter();
     testLayerDrive();
+    testSends();
     testChainPaths();
     testOnsetDuck();
     testBloomSpace();

@@ -25,6 +25,13 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     buildButton = apvts.getRawParameterValue (ps::params::build.getParamID());
     dropButton = apvts.getRawParameterValue (ps::params::drop.getParamID());
     padX = apvts.getRawParameterValue (ps::params::padX.getParamID());
+    {
+        namespace p = ps::params;
+        auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
+        sendParams = { raw (p::reverbAmount), raw (p::reverbSize), raw (p::reverbDamping), raw (p::reverbDuck),
+                       raw (p::delayAmount), raw (p::delayTime), raw (p::delayFeedback), raw (p::delayTone),
+                       raw (p::delayPingPong), raw (p::delayDuck) };
+    }
     padY = apvts.getRawParameterValue (ps::params::padY.getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
         anchors[(size_t) i] = apvts.getRawParameterValue (ps::params::layerAnchor (i).getParamID());
@@ -69,6 +76,12 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     tilt.prepare (sampleRate);
     deHarsh.prepare (sampleRate);
     space.prepare (sampleRate, samplesPerBlock);
+    delay.prepare (sampleRate);
+    for (auto* r : { &reverbReturn, &delayReturn })
+        for (auto& ch : *r)
+            ch.assign ((size_t) juce::jmax (samplesPerBlock, 4096), 0.0f);
+    reverbSend = bloomSend = delaySend = 0.0f;
+    reverbRunning = false;
     buildStage.prepare (sampleRate);
     performance = {};
     padXSmoothed = padX->load();
@@ -181,12 +194,25 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     stackGain.applyGain (buffer, n);
     bus.process (left, right, n, crossoverLowHz->load() * std::exp2 (offsets.monoBassOctaves), monoBassOn->load() > 0.5f);
 
+    // The shared sends, fed from the dry stack; the patch's own send levels go in here, before the knob stages
+    // are measured, since they are part of the patch's loudness
+    const bool bloomAfterKnobs = n <= (int) reverbReturn[0].size();
+    renderSends (left, right, n, offsets, bpm);
+
     // The bus stages the knobs drive, measured in and out for the loudness trim (only while one is working)
     knobStagesIn.process (left, right, n);
     bool active = lowFocus.process (left, right, n, offsets.lowFocusDb);
     active = buildStage.process (left, right, n, performance.build, 0.5f * knobStagesIn.getPower(), bpm) || active;
     active = tilt.process (left, right, n, offsets.tiltDbPerOct) || active;
-    active = space.process (left, right, n, offsets.spaceWet, offsets.spaceRt60, 0.5f, offsets.spaceDuck) || active;
+    // BLOOM's extra reverb send is one of the knob stages, so the loudness trim compensates it
+    if (bloomAfterKnobs && reverbRunning)
+    {
+        const float to = juce::jmax (0.0f, offsets.spaceWet);
+        addRamped (left, reverbReturn[0].data(), n, bloomSend, to);
+        addRamped (right, reverbReturn[1].data(), n, bloomSend, to);
+        active = active || bloomSend > 0.0f || to > 0.0f;
+        bloomSend = to;
+    }
     active = deHarsh.process (left, right, n, offsets.deHarsh) || active;
     pressure.setTempoLock (offsets.tempoLock, 60.0 / juce::jlimit (20.0, 400.0, bpm));
     active = pressure.process (left, right, n, offsets.pressure) || active;
@@ -226,6 +252,64 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const bool safe = safeOutputOn->load() > 0.5f;
     clipper.process (buffer, safe, pressure.getAmount(), offsets.exciter, trim);
     limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
+}
+
+void PotatoSynthProcessor::addRamped (float* out, const float* in, int numSamples, float from, float to) noexcept
+{
+    if (from <= 0.0f && to <= 0.0f)
+        return;
+    const float step = (to - from) / (float) numSamples;
+    for (int i = 0; i < numSamples; ++i)
+        out[i] += (from + step * (float) (i + 1)) * in[i];
+}
+
+void PotatoSynthProcessor::renderSends (float* left, float* right, int n, const ps::chain::Offsets& offsets, double bpm)
+{
+    const auto& sp = sendParams;
+    const float reverbTo = juce::square (sp.reverbAmount->load() * 0.01f);   // 100 % returns at unity
+    const float bloomTo = juce::jmax (0.0f, offsets.spaceWet);
+    const float delayTo = 0.5f * juce::square (sp.delayAmount->load() * 0.01f);
+    // BLOOM lengthens the patch's space (never shortens it) and adds to its ducking
+    const float rt60 = juce::jmax (sp.reverbSize->load(), offsets.spaceRt60);
+    const float damping = juce::jlimit (0.05f, 1.0f, 1.0f - sp.reverbDamping->load() * 0.01f);
+    const float reverbDuck = juce::jlimit (0.0f, 1.0f, sp.reverbDuck->load() * 0.01f + offsets.spaceDuck);
+    const int division = juce::jlimit (0, (int) std::size (ps::params::delayDivisionBeats) - 1, juce::roundToInt (sp.delayTime->load()));
+    const float seconds = (float) (ps::params::delayDivisionBeats[division] * 60.0 / juce::jlimit (20.0, 400.0, bpm));
+    const bool reverbOn = reverbTo > 0.0f || reverbSend > 0.0f || bloomTo > 0.0f || bloomSend > 0.0f;
+    const bool delayOn = delayTo > 0.0f || delaySend > 0.0f;
+
+    // Blocks longer than prepared are split; then BLOOM's send has no whole-block return to read later and
+    // goes in here with the patch's
+    const int capacity = (int) reverbReturn[0].size();
+    const bool bloomHere = n > capacity;
+    for (int start = 0; start < n; start += capacity)
+    {
+        const int len = std::min (capacity, n - start);
+        const float t0 = (float) start / (float) n, t1 = (float) (start + len) / (float) n;
+        auto lerp = [] (float a, float b, float t) { return a + (b - a) * t; };
+        float* l = left + start;
+        float* r = right + start;
+        // Both sends read the dry signal: render both returns before adding either
+        reverbRunning = space.render (l, r, reverbReturn[0].data(), reverbReturn[1].data(), len, reverbOn, rt60, damping, reverbDuck);
+        const bool delayRunning = delay.render (l, r, delayReturn[0].data(), delayReturn[1].data(), len, delayOn, seconds,
+                                                sp.delayFeedback->load() * 0.01f, sp.delayTone->load(), sp.delayPingPong->load() > 0.5f,
+                                                sp.delayDuck->load() * 0.01f);
+        if (reverbRunning)
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                float* out = ch == 0 ? l : r;
+                addRamped (out, reverbReturn[(size_t) ch].data(), len, lerp (reverbSend, reverbTo, t0), lerp (reverbSend, reverbTo, t1));
+                if (bloomHere)
+                    addRamped (out, reverbReturn[(size_t) ch].data(), len, lerp (bloomSend, bloomTo, t0), lerp (bloomSend, bloomTo, t1));
+            }
+        if (delayRunning)
+            for (int ch = 0; ch < 2; ++ch)
+                addRamped (ch == 0 ? l : r, delayReturn[(size_t) ch].data(), len, lerp (delaySend, delayTo, t0), lerp (delaySend, delayTo, t1));
+    }
+    reverbSend = reverbTo;
+    delaySend = delayTo;
+    if (bloomHere)
+        bloomSend = bloomTo;
 }
 
 void PotatoSynthProcessor::updatePerformance (int numSamples, double bpm, double ppq, double barStart, double barLength)

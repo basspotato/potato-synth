@@ -7,7 +7,7 @@ namespace ps::params
 {
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
     // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots. 7: chain knobs and SUPER.
-    // 8: BUILD, DROP, the XY pad and layer anchors.
+    // 8: BUILD, DROP, the XY pad, layer anchors, layer filter and drive, reverb and delay sends.
     // Parameters missing from an older save load at their defaults.
     inline constexpr int stateVersion = 7;
 
@@ -33,6 +33,19 @@ namespace ps::params
     // The stack XY pad (StackMorph.h): 0..1 each way, the centre is the full stack
     inline const juce::ParameterID padX { "xy_x", 8 };
     inline const juce::ParameterID padY { "xy_y", 8 };
+    // The two shared sends (Space.h): plate/FDN reverb and tempo-synced delay. BLOOM moves the reverb on top.
+    inline const juce::ParameterID reverbAmount { "fx_rev_amount", 8 };
+    inline const juce::ParameterID reverbSize { "fx_rev_size", 8 };       // RT60, seconds
+    inline const juce::ParameterID reverbDamping { "fx_rev_damp", 8 };    // percent
+    inline const juce::ParameterID reverbDuck { "fx_rev_duck", 8 };       // percent
+    inline const juce::ParameterID delayAmount { "fx_dly_amount", 8 };
+    inline const juce::ParameterID delayTime { "fx_dly_time", 8 };        // DelayDivision index
+    inline const juce::ParameterID delayFeedback { "fx_dly_feedback", 8 };
+    inline const juce::ParameterID delayTone { "fx_dly_tone", 8 };        // feedback high cut, Hz
+    inline const juce::ParameterID delayPingPong { "fx_dly_pingpong", 8 };
+    inline const juce::ParameterID delayDuck { "fx_dly_duck", 8 };
+    inline const juce::StringArray delayDivisionNames { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/1" };
+    inline constexpr double delayDivisionBeats[] = { 0.125, 1.0 / 6.0, 0.25, 0.375, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0 };
 
     // Per-layer parameters follow the pattern L{n}_name with n = 1..4 (expandable to 8)
     inline juce::ParameterID layerParam (int layerIndex, const char* name, int version)
@@ -144,6 +157,28 @@ namespace ps::params
         layout.add (std::make_unique<juce::AudioParameterBool> (drop, "DROP", false));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padX, "XY X", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padY, "XY Y", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
+        {
+            using Float = juce::AudioParameterFloat;
+            auto percent = juce::AudioParameterFloatAttributes().withLabel ("%")
+                               .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; });
+            juce::NormalisableRange<float> size (0.3f, 12.0f, 0.01f);
+            size.setSkewForCentre (2.0f);
+            juce::NormalisableRange<float> tone (1000.0f, 20000.0f, 1.0f);
+            tone.setSkewForCentre (5000.0f);
+            layout.add (std::make_unique<Float> (reverbAmount, "Reverb", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+            layout.add (std::make_unique<Float> (reverbSize, "Reverb Size", size, 2.2f,
+                juce::AudioParameterFloatAttributes().withLabel ("s").withStringFromValueFunction ([] (float v, int) { return juce::String (v, 2) + " s"; })));
+            layout.add (std::make_unique<Float> (reverbDamping, "Reverb Damping", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
+            layout.add (std::make_unique<Float> (reverbDuck, "Reverb Duck", juce::NormalisableRange<float> (0.0f, 100.0f), 30.0f, percent));
+            layout.add (std::make_unique<Float> (delayAmount, "Delay", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (delayTime, "Delay Time", delayDivisionNames, 6));
+            layout.add (std::make_unique<Float> (delayFeedback, "Delay Feedback", juce::NormalisableRange<float> (0.0f, 95.0f), 35.0f, percent));
+            layout.add (std::make_unique<Float> (delayTone, "Delay Tone", tone, 6000.0f,
+                juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction ([] (float v, int) {
+                    return v < 1000.0f ? juce::String (juce::roundToInt (v)) + " Hz" : juce::String (v * 0.001f, 1) + " kHz"; })));
+            layout.add (std::make_unique<juce::AudioParameterBool> (delayPingPong, "Delay Ping-Pong", true));
+            layout.add (std::make_unique<Float> (delayDuck, "Delay Duck", juce::NormalisableRange<float> (0.0f, 100.0f), 50.0f, percent));
+        }
 
         for (int i = 0; i < numLayers; ++i)
             layout.add (std::make_unique<juce::AudioParameterFloat> (

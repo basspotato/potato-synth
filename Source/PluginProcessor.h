@@ -92,6 +92,16 @@ private:
     ps::Tilt tilt;
     ps::DeHarsh deHarsh;
     ps::Space space;
+    ps::SyncDelay delay;
+    // The sends' parameters, returns (one block) and last send levels (ramped per block)
+    struct SendParams { std::atomic<float>* reverbAmount, *reverbSize, *reverbDamping, *reverbDuck,
+                        *delayAmount, *delayTime, *delayFeedback, *delayTone, *delayPingPong, *delayDuck; };
+    SendParams sendParams {};
+    std::array<std::vector<float>, 2> reverbReturn, delayReturn;
+    float reverbSend = 0.0f, bloomSend = 0.0f, delaySend = 0.0f;
+    bool reverbRunning = false;
+    void renderSends (float* left, float* right, int numSamples, const ps::chain::Offsets& offsets, double bpm);
+    static void addRamped (float* out, const float* in, int numSamples, float from, float to) noexcept;
     ps::BuildStage buildStage;
     // BLOOM's motion: the stack's drift (Ornstein-Uhlenbeck, then smoothed) and slow slot LFO phases
     float driftState = 0.0f, driftSmoothed = 0.0f;
