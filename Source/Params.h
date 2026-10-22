@@ -44,11 +44,15 @@ namespace ps::params
             return r;
         }
 
+        inline juce::String formatMs (float v)
+        {
+            return v >= 1000.0f ? juce::String (v * 0.001f, 2) + " s" : juce::String (v, v < 10.0f ? 2 : 0) + " ms";
+        }
+
         inline juce::AudioParameterFloatAttributes msAttributes()
         {
             return juce::AudioParameterFloatAttributes().withLabel ("ms")
-                .withStringFromValueFunction ([] (float v, int) {
-                    return v >= 1000.0f ? juce::String (v * 0.001f, 2) + " s" : juce::String (v, v < 10.0f ? 2 : 0) + " ms"; })
+                .withStringFromValueFunction ([] (float v, int) { return formatMs (v); })
                 .withValueFromStringFunction ([] (const juce::String& t) {
                     const auto v = t.getFloatValue();
                     return t.trimEnd().endsWithIgnoreCase ("s") && ! t.trimEnd().endsWithIgnoreCase ("ms") ? v * 1000.0f : v; });
@@ -98,7 +102,8 @@ namespace ps::params
                 detail::msAttributes()));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerVoiceMode (i), role + " Voice Mode", voiceModeNames, 0));
             layout.add (std::make_unique<Float> (layerGlide (i), role + " Glide", detail::timeRange (0.0f, 5000.0f, 250.0f), 0.0f,
-                detail::msAttributes()));
+                detail::msAttributes().withStringFromValueFunction ([] (float v, int) {
+                    return v < 0.05f ? juce::String ("OFF") : detail::formatMs (v); })));
         }
 
         return layout;
