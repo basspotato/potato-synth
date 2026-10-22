@@ -1183,6 +1183,22 @@ void testChainPaths()
     CHECK (o.monoBassOctaves > 0.0f && o.lowFocusDb > 2.0f, "MASS widens the mono zone and lifts the tactile band");
 }
 
+void testOnsetDuck()
+{
+    // GROOVE ducks the Body and Air layers under each new note; Full (like Sub and Mid) leads and isn't ducked.
+    // The pump is the same in both rigs, so the ratio across the onset compares only the duck.
+    auto dipAt = [] (ps::params::Role role)
+    {
+        Rig rig;
+        rig.set (ps::params::layerRole (2), (float) role);
+        rig.set (ps::params::chainKnob (ps::chain::groove), 1.0f);
+        auto x = rig.render (40000, { { 0, on (57) }, { 36000, on (69) } });
+        return juce::Decibels::gainToDecibels (rms (x, 36096, 36480) / rms (x, 35000, 35900));
+    };
+    const float full = dipAt (ps::params::Role::full), body = dipAt (ps::params::Role::body);
+    CHECK (body < full - 3.0f, "GROOVE ducks the Body layer under a new note's onset (" + std::to_string (body - full) + " dB)");
+}
+
 void testChainKnobInvariants()
 {
     // A control rig plays the same notes with the knobs untouched: the loudness change is measured against it at
@@ -1266,6 +1282,23 @@ void testChainKnobInvariants()
             const double plrBefore = ps::loudness::truePeakDb (cm.data() + settle, cm.size() - (size_t) settle) - reference;
             const double plrAfter = ps::loudness::truePeakDb (bm.data() + settle, bm.size() - (size_t) settle) - lufs (b, bR, (size_t) settle, b.size());
             CHECK (plrAfter < plrBefore - 2.0, "PRESSURE makes it denser (peak-to-loudness " + std::to_string (plrBefore) + " -> " + std::to_string (plrAfter) + " dB)");
+        }
+        if (name == "GROOVE")
+        {
+            // The pump: the short-term level swings with the beat (10 ms windows, loudest against quietest)
+            auto swing = [&] (const std::vector<float>& m)
+            {
+                float lo = 1.0e9f, hi = 0.0f;
+                for (size_t i = (size_t) settle; i + 480 <= m.size(); i += 480)
+                {
+                    const float r = rms (m, i, i + 480);
+                    lo = std::min (lo, r);
+                    hi = std::max (hi, r);
+                }
+                return juce::Decibels::gainToDecibels (hi / lo);
+            };
+            const float before = swing (cm), after = swing (bm);
+            CHECK (after > before + 4.0f, "GROOVE pumps with the beat (swing " + std::to_string (before) + " -> " + std::to_string (after) + " dB)");
         }
         if (name == "SHINE")
         {
@@ -1408,6 +1441,7 @@ int main()
     testSubEngine();
     testWavetableEngine();
     testChainPaths();
+    testOnsetDuck();
     testChainKnobInvariants();
     benchmarkJp();
     benchmarkWavetable();

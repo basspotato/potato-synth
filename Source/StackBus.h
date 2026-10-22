@@ -188,6 +188,14 @@ public:
     }
 
     // u: the PRESSURE knob 0..1, glided over 30 ms. Returns false when the stage is fully out and settled.
+    // GROOVE: lock = 0..1 moves the OTT releases toward a 1/16 note and the glue's toward a 1/8 note, so the
+    // dynamics breathe in time
+    void setTempoLock (float lock, double secondsPerBeat) noexcept
+    {
+        tempoLock = juce::jlimit (0.0f, 1.0f, lock);
+        beatSeconds = (float) juce::jlimit (0.1, 4.0, secondsPerBeat);
+    }
+
     bool process (float* left, float* right, int numSamples, float u) noexcept
     {
         const float target = juce::jlimit (0.0f, 1.0f, u);
@@ -215,11 +223,13 @@ private:
     void ott (float* left, float* right, int n, float depth) noexcept
     {
         static constexpr float attackMs[3] = { 8.0f, 4.0f, 2.0f }, releaseMs[3] = { 120.0f, 80.0f, 50.0f };
+        const float sixteenthMs = 250.0f * beatSeconds;
         float attack[3], release[3];
         for (int b = 0; b < 3; ++b)
         {
             attack[b] = 1.0f - std::exp (-1.0f / (attackMs[b] * 0.001f * sr));
-            release[b] = 1.0f - std::exp (-1.0f / (releaseMs[b] * 0.001f * sr));
+            const float ms = releaseMs[b] + tempoLock * (sixteenthMs - releaseMs[b]);
+            release[b] = 1.0f - std::exp (-1.0f / (ms * 0.001f * sr));
         }
         for (int i = 0; i < n; ++i)
         {
@@ -260,7 +270,9 @@ private:
     void glue (float* left, float* right, int n, float targetDb) noexcept
     {
         const float rmsCoef = 1.0f - std::exp (-1.0f / (0.01f * sr)), shortCoef = 1.0f - std::exp (-1.0f / (0.4f * sr));
-        const float attack = 1.0f - std::exp (-1.0f / (0.03f * sr)), release = 1.0f - std::exp (-1.0f / (0.2f * sr));
+        const float attack = 1.0f - std::exp (-1.0f / (0.03f * sr));
+        const float releaseSeconds = 0.2f + tempoLock * (0.5f * beatSeconds - 0.2f);
+        const float release = 1.0f - std::exp (-1.0f / (releaseSeconds * sr));
         for (int i = 0; i < n; ++i)
         {
             const float p = 0.5f * (left[i] * left[i] + right[i] * right[i]);
@@ -283,7 +295,7 @@ private:
         }
     }
 
-    float sr = 48000.0f, amount = 0.0f;
+    float sr = 48000.0f, amount = 0.0f, tempoLock = 0.0f, beatSeconds = 0.5f;
     bool wasActive = false;
     using LR = LinkwitzRiley4;
     using Pair = std::array<LR, 2>;
@@ -363,6 +375,96 @@ private:
     std::array<float, 3> g {};
     float sr = 48000.0f, currentDb = 0.0f;
     bool active = false;
+};
+
+// GROOVE's tempo pump, the sidechain duck of a four-on-the-floor kick: on every beat the gain falls over 4 ms
+// and recovers, g = 1 - D env(p) with p the phase in the beat. The recovery morphs from a half cosine (smooth)
+// to a normalised exponential exp(-t / tau), tau = k * beat (hard), shifted so it reaches 0 exactly at the
+// next beat, so the curve is continuous everywhere. Follows the host's beat position while it plays and
+// free-runs at its tempo otherwise. One gain for both channels: linear, so the mono lows stay mono.
+// The power it takes is known exactly (mean of g^2 over a beat), so the loudness trim compensates without
+// measuring, and never chases the pump itself.
+class TempoPump
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        smoothCoef = 1.0f - std::exp (-1.0f / (0.0015f * sr));
+        reset();
+    }
+
+    void reset()
+    {
+        phase = 0.0;
+        gain = 1.0f;
+        meanSquare = 1.0f;
+        settled = true;
+    }
+
+    // depthDb: the dip at its deepest; hardness 0..1: cosine to exponential; k: tau in beats.
+    // ppq: the host's beat position at the block start, or a negative value when the transport is stopped.
+    bool process (float* left, float* right, int numSamples, float depthDb, float hardness, float k,
+                  double bpm, double ppq) noexcept
+    {
+        const float depth = 1.0f - juce::Decibels::decibelsToGain (-juce::jmax (0.0f, depthDb));
+        const double beatsPerSample = juce::jlimit (20.0, 400.0, bpm) / 60.0 / sr;
+        if (ppq >= 0.0)
+            phase = ppq - std::floor (ppq);
+        if (depth < 1.0e-5f && settled)
+        {
+            phase = std::fmod (phase + beatsPerSample * numSamples, 1.0);
+            meanSquare = 1.0f;
+            return false;
+        }
+        const Shape sh = makeShape (hardness, k, (float) (1.0 / (beatsPerSample * sr)));
+        float sumSquare = 0.0f;
+        constexpr int points = 128;
+        for (int i = 0; i < points; ++i)
+            sumSquare += juce::square (1.0f - depth * envelope ((i + 0.5f) / points, sh));
+        meanSquare = sumSquare / points;
+
+        settled = depth < 1.0e-5f;
+        for (int i = 0; i < numSamples; ++i)
+        {
+            const float target = 1.0f - depth * envelope ((float) phase, sh);
+            gain += (target - gain) * smoothCoef;   // smooths a jump in the host's position
+            settled = settled && std::abs (gain - 1.0f) < 1.0e-5f;
+            left[i] *= gain;
+            right[i] *= gain;
+            phase += beatsPerSample;
+            if (phase >= 1.0)
+                phase -= 1.0;
+        }
+        return true;
+    }
+
+    // The fraction of power the pump keeps, mean g^2 over a beat (1 when off)
+    float powerRatio() const noexcept { return meanSquare; }
+
+private:
+    struct Shape { float attack, hardness, invTau, floor; };
+
+    static Shape makeShape (float hardness, float k, float beatSeconds) noexcept
+    {
+        const float attack = juce::jmin (0.1f, 0.004f / beatSeconds);
+        const float invTau = 1.0f / juce::jmax (0.02f, k);   // in beats
+        return { attack, juce::jlimit (0.0f, 1.0f, hardness), invTau, std::exp (-(1.0f - attack) * invTau) };
+    }
+
+    static float envelope (float p, const Shape& s) noexcept
+    {
+        if (p < s.attack)
+            return 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * p / s.attack));
+        const float t = p - s.attack;
+        const float smooth = 0.5f * (1.0f + std::cos (juce::MathConstants<float>::pi * t / (1.0f - s.attack)));
+        const float hard = (std::exp (-t * s.invTau) - s.floor) / (1.0f - s.floor);
+        return smooth + s.hardness * (hard - smooth);
+    }
+
+    float sr = 48000.0f, smoothCoef = 0.03f, gain = 1.0f, meanSquare = 1.0f;
+    double phase = 0.0;
+    bool settled = true;
 };
 
 // The last stage before the host: a 4x oversampled soft clipper that keeps inter-sample peaks under

@@ -75,6 +75,7 @@ private:
     ps::LowFocus lowFocus;
     ps::Pressure pressure;
     ps::Tilt tilt;
+    ps::TempoPump pump;
     ps::harmony::KPowerMeter knobStagesIn, knobStagesOut;   // around the bus stages the knobs drive
     bool knobStagesActive = false;
     ps::harmony::LoudnessTrim loudnessTrim;

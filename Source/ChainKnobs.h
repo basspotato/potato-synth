@@ -81,6 +81,12 @@ enum class Target
     pressure,          // the PRESSURE bus stage's amount, 0..1 (StackBus.h)
     tiltDbPerOct,      // bus spectral tilt around 1 kHz, dB per octave (StackBus.h Tilt)
     exciter,           // oversampled harmonic exciter above 6 kHz, wet mix 0..1 (StackBus.h TruePeakClipper)
+    pumpDb,            // tempo pump depth, dB (StackBus.h TempoPump)
+    pumpHardness,      // tempo pump curve, 0 = half cosine .. 1 = exponential
+    pumpTau,           // tempo pump exponential time constant, beats
+    onsetDuckDb,       // matching layers dip at each new note, dB (Layer.h OnsetDuck)
+    onsetDuckMs,       // that dip's window, ms
+    tempoLock,         // PRESSURE's dynamics' releases toward 1/16 and 1/8 notes, 0..1
 };
 
 // Which layers a route applies to: a bit per params::Role
@@ -125,6 +131,15 @@ inline const std::vector<Route>& routes()
         { shine, Target::tiltDbPerOct, anyRole, SlotRole::none, Path ({ 0.0f, 0.4f, 0.8f, 1.2f, 1.5f }) },
         { shine, Target::exciter, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.19f, 0.25f }) },
 
+        // GROOVE: the pump and the bounce. The transient roles (Sub, Mid) lead; Body and Air duck under their
+        // onsets inside the forward-masking window.
+        { groove, Target::pumpDb, anyRole, SlotRole::none, Path ({ 0.0f, 2.5f, 5.0f, 7.0f, 9.0f }) },
+        { groove, Target::pumpHardness, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
+        { groove, Target::pumpTau, anyRole, SlotRole::none, Path ({ 0.12f, 0.18f, 0.24f, 0.3f, 0.35f }) },
+        { groove, Target::onsetDuckDb, body | roleBit (R::air), SlotRole::none, Path ({ 0.0f, 2.0f, 4.0f, 6.0f, 8.0f }) },
+        { groove, Target::onsetDuckMs, anyRole, SlotRole::none, Path ({ 10.0f, 20.0f, 30.0f, 40.0f, 50.0f }) },
+        { groove, Target::tempoLock, anyRole, SlotRole::none, Path ({ 0.0f, 0.3f, 0.6f, 0.85f, 1.0f }) },
+
         // MORPH: every layer's spectral identity moves together
         { morph, Target::slot, anyRole, SlotRole::position, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
         { morph, Target::slot, anyRole, SlotRole::warp, Path ({ 0.0f, 0.05f, 0.12f, 0.2f, 0.3f }) },
@@ -142,6 +157,10 @@ struct Offsets
     float pressure = 0.0f;
     float tiltDbPerOct = 0.0f;
     float exciter = 0.0f;
+    float pumpDb = 0.0f, pumpHardness = 0.0f, pumpTau = 0.0f;
+    std::array<float, params::numLayers> onsetDuckDb {};
+    float onsetDuckMs = 0.0f;
+    float tempoLock = 0.0f;
 };
 
 // u: each knob's position 0..1 (SUPER already folded in); roles: each layer's role
@@ -160,6 +179,12 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
             case Target::pressure:        o.pressure += v; break;
             case Target::tiltDbPerOct:    o.tiltDbPerOct += v; break;
             case Target::exciter:         o.exciter += v; break;
+            case Target::pumpDb:          o.pumpDb += v; break;
+            case Target::pumpHardness:    o.pumpHardness += v; break;
+            case Target::pumpTau:         o.pumpTau += v; break;
+            case Target::onsetDuckMs:     o.onsetDuckMs += v; break;
+            case Target::tempoLock:       o.tempoLock += v; break;
+            case Target::onsetDuckDb:
             case Target::layerLevelDb:
             case Target::slot:
                 for (int l = 0; l < params::numLayers; ++l)
@@ -168,6 +193,8 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
                         continue;
                     if (r.target == Target::layerLevelDb)
                         o.levelDb[(size_t) l] += v;
+                    else if (r.target == Target::onsetDuckDb)
+                        o.onsetDuckDb[(size_t) l] += v;
                     else
                         o.slot[(size_t) l][(size_t) r.slotRole] += v;
                 }

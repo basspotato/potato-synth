@@ -57,6 +57,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     lowFocus.prepare (sampleRate);
     pressure.prepare (sampleRate);
     tilt.prepare (sampleRate);
+    pump.prepare (sampleRate);
     knobStagesIn.prepare (sampleRate);
     knobStagesOut.prepare (sampleRate);
     knobStagesActive = false;
@@ -131,6 +132,17 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const auto offsets = updateChainKnobs (n);
     stack.process (buffer, midi);
 
+    // The host's tempo and beat position (120 BPM, free-running, without a host transport)
+    double bpm = 120.0, ppq = -1.0;
+    if (auto* playHead = getPlayHead())
+        if (const auto position = playHead->getPosition())
+        {
+            if (const auto b = position->getBpm())
+                bpm = *b;
+            if (const auto p = position->getPpqPosition(); p && position->getIsPlaying())
+                ppq = *p;
+        }
+
     // Stack sum with sqrt-weights: the layers are scaled by 1 / sqrt(n), n the number of layers counted by
     // their level (a layer at 0 dB counts 1, a fading one less), so adding or fading in a layer keeps the
     // stack's power. A single quieter layer is never boosted.
@@ -146,6 +158,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     knobStagesIn.process (left, right, n);
     bool active = lowFocus.process (left, right, n, offsets.lowFocusDb);
     active = tilt.process (left, right, n, offsets.tiltDbPerOct) || active;
+    pressure.setTempoLock (offsets.tempoLock, 60.0 / juce::jlimit (20.0, 400.0, bpm));
     active = pressure.process (left, right, n, offsets.pressure) || active;
     knobStagesOut.process (left, right, n);
     knobStagesIn.update();
@@ -156,6 +169,8 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         knobStagesOut.reset();
     }
     knobStagesActive = active;
+    // The pump's power loss is known exactly, so it sits outside the measured stages
+    pump.process (left, right, n, offsets.pumpDb, offsets.pumpHardness, offsets.pumpTau, bpm, ppq);
 
     // Harmony Engine, invariant 1: hold the loudness the patch has without the knobs
     std::array<float, ps::params::numLayers> power {}, patchGain {}, knobGain {};
@@ -167,7 +182,8 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         knobGain[(size_t) i] = layer.knobGain();
     }
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
-                         (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n);
+                         (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio()
+                         / pump.powerRatio(), n);
     loudnessTrim.apply (left, right, n);
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
@@ -197,7 +213,10 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
         roles[(size_t) i] = stack.layer (i).role();
     const auto offsets = ps::chain::compute (u, roles);
     for (int i = 0; i < ps::params::numLayers; ++i)
+    {
         stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
+        stack.layer (i).setOnsetDuck (offsets.onsetDuckDb[(size_t) i], offsets.onsetDuckMs);
+    }
     return offsets;
 }
 

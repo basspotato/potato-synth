@@ -99,6 +99,8 @@ public:
         band.prepare (sr);
         updateBand (true);
         meter.prepare (sr);
+        duckRate = (float) sr;
+        duck.attackSamples = 0.002f * duckRate;
 
         for (auto* e : { active, outgoing })
             if (e != nullptr)
@@ -118,6 +120,14 @@ public:
     {
         chainLevelDb = levelDb;
         chainSlots = slotOffsets;
+    }
+
+    // GROOVE's inter-layer ducking: each new note dips this layer by depthDb for about windowMs, so the
+    // transient layers' attacks read through it (forward masking). 0 dB turns it off.
+    void setOnsetDuck (float depthDb, float windowMs) noexcept
+    {
+        duck.depth = 1.0f - juce::Decibels::decibelsToGain (-juce::jmax (0.0f, depthDb));
+        duck.releaseSamples = juce::jmax (1.0f, windowMs * 0.001f * duckRate);
     }
 
     // The patch's own level and the chain knobs' extra gain, for the Harmony Engine's loudness model
@@ -200,6 +210,7 @@ public:
         if (! canPlay())
             return;
 
+        duck.trigger();
         if (mode == params::VoiceMode::poly)
         {
             enforceVoiceCap (slot);
@@ -282,13 +293,60 @@ public:
 
         for (int i = 0; i < numSamples; ++i)
         {
-            const float g = level.getNextValue();
+            const float g = level.getNextValue() * duck.next();
             outL[i] += scratchL[(size_t) i] * g * panL.getNextValue();
             outR[i] += scratchR[(size_t) i] * g * panR.getNextValue();
         }
     }
 
 private:
+    // A dip that falls over 2 ms (from wherever it is, so a retrigger never steps) and recovers along a half
+    // cosine over the window. Gain = 1 - depth * shape.
+    struct OnsetDuck
+    {
+        float depth = 0.0f, releaseSamples = 1440.0f, attackSamples = 96.0f;
+        float shape = 0.0f, from = 0.0f, t = 0.0f;
+        bool attacking = false, releasing = false;
+
+        void trigger() noexcept
+        {
+            if (depth <= 0.0f && shape <= 0.0f)
+                return;
+            from = shape;
+            t = 0.0f;
+            attacking = true;
+            releasing = false;
+        }
+
+        float next() noexcept
+        {
+            if (attacking)
+            {
+                t += 1.0f;
+                const float x = std::min (1.0f, t / attackSamples);
+                shape = from + (1.0f - from) * 0.5f * (1.0f - std::cos (juce::MathConstants<float>::pi * x));
+                if (x >= 1.0f)
+                {
+                    attacking = false;
+                    releasing = true;
+                    t = 0.0f;
+                }
+            }
+            else if (releasing)
+            {
+                t += 1.0f;
+                const float x = std::min (1.0f, t / releaseSamples);
+                shape = 0.5f * (1.0f + std::cos (juce::MathConstants<float>::pi * x));
+                if (x >= 1.0f)
+                {
+                    releasing = false;
+                    shape = 0.0f;
+                }
+            }
+            return 1.0f - depth * shape;
+        }
+    };
+
     // Placeholder posted when a layer is cleared; never becomes the active engine.
     struct Empty final : Engine
     {
@@ -498,6 +556,8 @@ private:
     std::array<float, Engine::numSlots> lastSlot {};   // audio thread only
     float chainLevelDb = 0.0f;
     std::array<float, numSlotRoles> chainSlots {};
+    OnsetDuck duck;
+    float duckRate = 48000.0f;
     harmony::KPowerMeter meter;
     bool slotsSent = false;
     bool voicesClearedWhileMuted = false;
