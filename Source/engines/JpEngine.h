@@ -341,7 +341,8 @@ private:
         // OSC2, one sample late: hard sync resets are corrected on both sides of the reset
         const float ratio2 = fastExp2 ((pitch2Semis (v.smooth[pitch2]) + (v.smooth[fine2] * 2.0f - 1.0f) * 0.5f) / 12.0f);
         // Skipped while it can't be heard (balance fully on OSC1 and no X-Mod)
-        const bool osc2Heard = v.mod == 3 || previous[balance] > 0.0f || v.smooth[balance] > 0.0f;
+        const bool xmodOn = previous[xmodDepth] > 0.0f || v.smooth[xmodDepth] > 0.0f;
+        const bool osc2Heard = xmodOn || previous[balance] > 0.0f || v.smooth[balance] > 0.0f;
         if (! osc2Heard)
             v.held2 = 0.0f;
         for (int j = 0; j < (osc2Heard ? n2 : 0); ++j)
@@ -379,8 +380,9 @@ private:
             v.held2 = value;
         }
 
-        // OSC1 through the unison bank; X-Mod scales its increments by OSC2
-        if (v.mod == 3)
+        // OSC1 through the unison bank; X-Mod scales its increments by OSC2. As on the JP-8000, X-Mod depth is its
+        // own control and works alongside Sync and Ring (so MORPH's cross-mod reaches every JP patch).
+        if (xmodOn)
         {
             const float depth = v.smooth[xmodDepth] * 2.0f;
             for (int j = 0; j < n2; ++j)

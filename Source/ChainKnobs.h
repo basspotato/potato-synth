@@ -131,6 +131,10 @@ inline const std::vector<Route>& routes()
         { mass, Target::monoBassOctaves, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.18f, 0.22f }) },
         // The body's drive and the limiter on the bigger sub peaks cost loudness the open-loop trim can't see
         { mass, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
+        // Listening (build #25): still too subtle. The balance of the stack leans onto the low roles (the trim holds
+        // the total), so the weight shift is heard on any speaker, not only on a sub.
+        { mass, Target::layerLevelDb, sub, SlotRole::none, Path ({ 0.0f, 0.8f, 1.6f, 2.4f, 3.0f }) },
+        { mass, Target::layerLevelDb, body, SlotRole::none, Path ({ 0.0f, 0.6f, 1.2f, 1.8f, 2.2f }) },
 
         // PRESSURE: distributed gain reduction across saturation, OTT, glue and clipper (the stage owns the split)
         { pressure, Target::pressure, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },

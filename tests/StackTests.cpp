@@ -850,6 +850,21 @@ void testJpOsc2()
                    "OSC2 wave " + std::to_string (w) + " with mod " + std::to_string (mod) + " sounds and stays bounded");
         }
 
+    // X-Mod depth works with OSC2 Mod off (OSC2 silent in the mix): it reshapes OSC1's spectrum
+    {
+        JpRig dry ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) }, { Jp::pitch2, 0.5f + 7.0f / 48.0f } });
+        JpRig wet ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) }, { Jp::pitch2, 0.5f + 7.0f / 48.0f }, { Jp::xmodDepth, 0.25f } });
+        auto a = dry.render (24000, { { 0, on (57) } });
+        auto b = wet.render (24000, { { 0, on (57) } });
+        double diff = 0, energy = 0;
+        for (size_t i = 4000; i < 20000; ++i)
+        {
+            diff += std::pow (a[i] - b[i], 2.0);
+            energy += (double) a[i] * a[i];
+        }
+        CHECK (allFinite (b) && diff > 0.1 * energy, "X-Mod depth changes the sound with OSC2 Mod off");
+    }
+
     // Hard sync: OSC2 alone, synced at a fifth above, repeats at OSC1's period
     JpRig sync ({ { Jp::unison, Jp::choiceValue (0, Jp::numUnison) }, { Jp::balance, 1.0f }, { Jp::osc2Mod, Jp::choiceValue (1, Jp::numMods) },
                   { Jp::pitch2, 0.5f + 7.0f / 48.0f } });
