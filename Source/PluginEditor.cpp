@@ -5,12 +5,27 @@ namespace
 {
     const char* const chainNames[] = { "MASS", "SCALE", "PRESSURE", "GROOVE", "CLARITY", "SHINE", "MORPH", "BLOOM" };
     constexpr int baseWidth = 1180, baseHeight = 720;
-    const char* const roleNames[] = { "SUB", "BODY", "MID", "AIR" };
-    juce::Colour roleColour (int i)
+
+    juce::String hzText (float hz)
     {
-        const juce::Colour c[] = { ps::theme::sub, ps::theme::body, ps::theme::mid, ps::theme::air };
-        return c[(size_t) i];
+        return hz >= 1000.0f ? juce::String (hz * 0.001f, 1) + " KHZ" : juce::String (juce::roundToInt (hz)) + " HZ";
     }
+
+    // The band a role covers, as shown on its layer card (matches Layer::updateBand)
+    juce::String bandText (int role, float low, float high)
+    {
+        switch ((ps::params::Role) role)
+        {
+            case ps::params::Role::sub:  return "MONO  <" + hzText (low);
+            case ps::params::Role::body: return hzText (low) + " - " + hzText (high);
+            case ps::params::Role::mid:  return ">" + hzText (2.0f * low) + "  WIDE";
+            case ps::params::Role::air:  return ">" + hzText (high) + "  WIDEST";
+            case ps::params::Role::full: break;
+        }
+        return "FULL RANGE";
+    }
+
+    juce::String roleTitle (int role) { return ps::params::roleNames[juce::jlimit (0, 4, role)].toUpperCase(); }
 }
 
 PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
@@ -18,18 +33,15 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
 {
     setLookAndFeel (&look);
 
-    layers[0] = std::make_unique<ps::LayerCard> ("SUB",  "MONO  <120 HZ",       ps::theme::sub);
-    layers[1] = std::make_unique<ps::LayerCard> ("BODY", "120 HZ - 3 KHZ",      ps::theme::body);
-    layers[2] = std::make_unique<ps::LayerCard> ("MID",  "300 HZ - 3 KHZ",      ps::theme::mid);
-    layers[3] = std::make_unique<ps::LayerCard> ("AIR",  "WIDE  >2.5 KHZ",      ps::theme::air);
     for (int i = 0; i < 4; ++i)
     {
+        layers[(size_t) i] = std::make_unique<ps::LayerCard> (roleTitle (i), juce::String(), ps::theme::roleColour (i));
         addAndMakeVisible (*layers[(size_t) i]);
         layers[(size_t) i]->onSelect = [this, i] { selectLayer (i); showPage (true); };
         layers[(size_t) i]->onEngineClick = [this, i] { selectLayer (i); showEngineMenu (i); };
 
         auto& k = layerLevels[(size_t) i];
-        setUpKnob (k, "LEVEL", roleColour (i));
+        setUpKnob (k, "LEVEL", ps::theme::roleColour (i));
         k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
         layerLevelAttachments[(size_t) i] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
             processor.apvts, ps::params::layerLevel (i).getParamID(), k.slider);
@@ -60,6 +72,15 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     master.slider.textFromValueFunction = [] (double v) { return juce::String (std::abs (v) < 0.05 ? 0.0 : v, 1) + " dB"; };
     master.slider.updateText();
 
+    setUpBusKnob (crossoverLow, "LOW X", ps::params::crossoverLow, crossoverLowAttachment);
+    setUpBusKnob (crossoverHigh, "HIGH X", ps::params::crossoverHigh, crossoverHighAttachment);
+    monoBass.setClickingTogglesState (true);
+    monoBass.setColour (juce::TextButton::buttonOnColourId, ps::theme::sub);
+    monoBass.setColour (juce::TextButton::buttonColourId, ps::theme::panel);
+    monoBassAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
+        processor.apvts, ps::params::monoBass.getParamID(), monoBass);
+    addAndMakeVisible (monoBass);
+
     build.setColour (juce::TextButton::buttonColourId, ps::theme::mid);
     drop.setColour (juce::TextButton::buttonColourId, ps::theme::sub);
     addAndMakeVisible (build);
@@ -87,6 +108,50 @@ void PotatoSynthEditor::timerCallback()
         if (i == selectedLayer)
             layerPage.setEngineName (name);
     }
+
+    // Roles and crossovers drive each card's title, band and colour
+    const float low = processor.apvts.getRawParameterValue (ps::params::crossoverLow.getParamID())->load();
+    const float high = processor.apvts.getRawParameterValue (ps::params::crossoverHigh.getParamID())->load();
+    const bool crossoversMoved = std::abs (low - shownLow) > 0.05f || std::abs (high - shownHigh) > 0.5f;
+    shownLow = low;
+    shownHigh = high;
+    for (int i = 0; i < 4; ++i)
+    {
+        const int role = layerRole (i);
+        if (role == shownRoles[(size_t) i] && ! crossoversMoved)
+            continue;
+        const bool roleChanged = role != shownRoles[(size_t) i];
+        shownRoles[(size_t) i] = role;
+        const auto colour = ps::theme::roleColour (role);
+        layers[(size_t) i]->setRole (roleTitle (role), bandText (role, low, high), colour);
+        layerLevels[(size_t) i].slider.setColour (juce::Slider::rotarySliderFillColourId, colour);
+        layerLevels[(size_t) i].label.setColour (juce::Label::textColourId, colour.interpolatedWith (ps::theme::text, 0.35f));
+        if (roleChanged && i == selectedLayer)
+            selectLayer (i);
+    }
+}
+
+int PotatoSynthEditor::layerRole (int layerIndex) const
+{
+    return juce::jlimit (0, 4, juce::roundToInt (processor.apvts.getRawParameterValue (
+        ps::params::layerRole (layerIndex).getParamID())->load()));
+}
+
+void PotatoSynthEditor::setUpBusKnob (Knob& k, const juce::String& name, const juce::ParameterID& id,
+                                      std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment)
+{
+    setUpKnob (k, name, ps::theme::full);
+    k.label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    k.label.setJustificationType (juce::Justification::centredLeft);
+    attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, id.getParamID(), k.slider);
+    auto* p = processor.apvts.getParameter (id.getParamID());
+    k.slider.setDoubleClickReturnValue (true, p->convertFrom0to1 (p->getDefaultValue()));
+    k.slider.onValueChange = [&k, name]
+    {
+        k.label.setText (name + "\n" + k.slider.getTextFromValue (k.slider.getValue()), juce::dontSendNotification);
+        k.slider.repaint();
+    };
+    k.slider.onValueChange();
 }
 
 void PotatoSynthEditor::selectLayer (int layerIndex)
@@ -94,10 +159,10 @@ void PotatoSynthEditor::selectLayer (int layerIndex)
     selectedLayer = layerIndex;
     for (int i = 0; i < 4; ++i)
         layers[(size_t) i]->setSelected (i == layerIndex);
-    layerPage.showLayer (layerIndex, roleNames[layerIndex], roleColour (layerIndex));
-    layerTab.setButtonText (juce::String ("LAYER: ") + roleNames[layerIndex]);
-    layerTab.setColour (juce::TextButton::buttonColourId, roleColour (layerIndex));
-    timerCallback();
+    const int role = layerRole (layerIndex);
+    layerPage.showLayer (layerIndex, roleTitle (role), ps::theme::roleColour (role));
+    layerTab.setButtonText ("LAYER " + juce::String (layerIndex + 1) + ": " + roleTitle (role));
+    layerTab.setColour (juce::TextButton::buttonColourId, ps::theme::roleColour (role));
 }
 
 void PotatoSynthEditor::showPage (bool layerPageVisible)
@@ -214,7 +279,19 @@ void PotatoSynthEditor::resized()
     auto tabs = area.withY (scaled (24)).withHeight (scaled (34));
     stackTab.setBounds (tabs.removeFromLeft (scaled (120)));
     tabs.removeFromLeft (scaled (8));
-    layerTab.setBounds (tabs.removeFromLeft (scaled (160)));
+    layerTab.setBounds (tabs.removeFromLeft (scaled (180)));
+
+    // Stack bus controls, top right
+    auto bus = juce::Rectangle<int> (area.getRight() - scaled (420), scaled (20), scaled (420) + scaled (240), scaled (42));
+    bus = bus.withRight (getWidth() - scaled (24));
+    for (auto* k : { &crossoverHigh, &crossoverLow })
+    {
+        auto cell = bus.removeFromRight (scaled (130));
+        k->slider.setBounds (cell.removeFromLeft (scaled (42)));
+        k->label.setBounds (cell.withTrimmedLeft (scaled (4)));
+        bus.removeFromRight (scaled (8));
+    }
+    monoBass.setBounds (bus.removeFromRight (scaled (120)).reduced (0, scaled (4)));
     xyPad.setBounds (area);
     layerPage.setBounds (area);
 

@@ -82,12 +82,20 @@ public:
         engineButton.onClick = [this] { if (onEngineClick != nullptr) onEngineClick(); };
         addAndMakeVisible (engineButton);
 
+        for (int r = 0; r < (int) roleButtons.size(); ++r)
+        {
+            auto& b = roleButtons[(size_t) r];
+            b.setButtonText (params::roleNames[r].toUpperCase());
+            b.onClick = [this, r] { setChoice (params::layerRole (layer), r); };
+            addAndMakeVisible (b);
+        }
+
         for (int m = 0; m < (int) modeButtons.size(); ++m)
         {
             auto& b = modeButtons[(size_t) m];
             b.setButtonText (params::voiceModeNames[m].toUpperCase());
             b.setClickingTogglesState (false);
-            b.onClick = [this, m] { setVoiceMode (m); };
+            b.onClick = [this, m] { setChoice (params::layerVoiceMode (layer), m); };
             addAndMakeVisible (b);
         }
 
@@ -146,7 +154,8 @@ public:
 
         g.setColour (theme::text);
         g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
-        g.drawText (roleName + " LAYER", getLocalBounds().reduced (18, 12).removeFromTop (28), juce::Justification::centredLeft);
+        g.drawText ("LAYER " + juce::String (layer + 1) + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + roleName,
+                    getLocalBounds().reduced (18, 12).removeFromTop (28), juce::Justification::centredLeft);
     }
 
     void resized() override
@@ -154,7 +163,12 @@ public:
         auto r = getLocalBounds().reduced (18, 12);
         auto header = r.removeFromTop (28);
         engineButton.setBounds (header.removeFromRight (juce::jmin (260, header.getWidth() / 2)));
-        r.removeFromTop (10);
+        r.removeFromTop (8);
+        auto roleRow = r.removeFromTop (26);
+        const int rw = roleRow.getWidth() / (int) roleButtons.size();
+        for (auto& b : roleButtons)
+            b.setBounds (roleRow.removeFromLeft (rw).reduced (2, 0));
+        r.removeFromTop (8);
 
         auto rows = r;
         const int knobRowH = juce::jmin (110, rows.getHeight() / 3);
@@ -199,18 +213,23 @@ private:
 
         const int mode = juce::roundToInt (value (params::layerVoiceMode (layer)));
         for (int m = 0; m < (int) modeButtons.size(); ++m)
-        {
-            auto& b = modeButtons[(size_t) m];
-            b.setColour (juce::TextButton::buttonColourId, m == mode ? accent : theme::panel);
-            b.setAlpha (m == mode ? 1.0f : 0.7f);
-        }
+            highlight (modeButtons[(size_t) m], m == mode, accent);
+        const int role = juce::roundToInt (value (params::layerRole (layer)));
+        for (int r = 0; r < (int) roleButtons.size(); ++r)
+            highlight (roleButtons[(size_t) r], r == role, theme::roleColour (r));
     }
 
-    void setVoiceMode (int mode)
+    static void highlight (juce::TextButton& b, bool on, juce::Colour colour)
     {
-        auto* p = apvts.getParameter (params::layerVoiceMode (layer).getParamID());
+        b.setColour (juce::TextButton::buttonColourId, on ? colour : theme::panel);
+        b.setAlpha (on ? 1.0f : 0.7f);
+    }
+
+    void setChoice (const juce::ParameterID& id, int index)
+    {
+        auto* p = apvts.getParameter (id.getParamID());
         p->beginChangeGesture();
-        p->setValueNotifyingHost (p->convertTo0to1 ((float) mode));
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) index));
         p->endChangeGesture();
         timerCallback();
     }
@@ -223,5 +242,6 @@ private:
     juce::TextButton engineButton;
     std::array<Knob, 9> knobs;
     std::array<juce::TextButton, 3> modeButtons;
+    std::array<juce::TextButton, 5> roleButtons;
 };
 }

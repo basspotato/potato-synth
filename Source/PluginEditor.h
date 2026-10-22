@@ -26,6 +26,9 @@ private:
     void showEngineMenu (int layerIndex);
     void selectLayer (int layerIndex);
     void showPage (bool layerPageVisible);
+    int layerRole (int layerIndex) const;
+    void setUpBusKnob (Knob&, const juce::String& name, const juce::ParameterID&,
+                       std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>&);
     void timerCallback() override;
 
     PotatoSynthProcessor& processor;
@@ -42,6 +45,14 @@ private:
     Knob super, master;
     juce::TextButton build { "BUILD" }, drop { "DROP" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> masterAttachment;
+    // Stack bus controls in the header
+    Knob crossoverLow, crossoverHigh;
+    juce::TextButton monoBass { "MONO BASS" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> crossoverLowAttachment, crossoverHighAttachment;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> monoBassAttachment;
+    std::array<int, 4> shownRoles { -1, -1, -1, -1 };
+    float shownLow = 0.0f, shownHigh = 0.0f;
+
     std::array<Knob, 4> layerLevels;
     std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 4> layerLevelAttachments;
 
