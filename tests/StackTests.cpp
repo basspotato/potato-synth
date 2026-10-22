@@ -1178,7 +1178,7 @@ void testChainPaths()
     u[ps::chain::mass] = 1.0f;
     using R = ps::params::Role;
     const auto o = ps::chain::compute (u, { R::sub, R::body, R::mid, R::air });
-    CHECK (o.slot[0][(size_t) ps::SlotRole::translate] > 0.5f && std::abs (o.slot[2][(size_t) ps::SlotRole::translate]) < 1.0e-9f,
+    CHECK (o.slot[0][(size_t) ps::SlotRole::translate] > 0.4f && std::abs (o.slot[2][(size_t) ps::SlotRole::translate]) < 1.0e-9f,
            "MASS adds Translate on the Sub layer only");
     CHECK (o.monoBassOctaves > 0.0f && o.lowFocusDb > 2.0f, "MASS widens the mono zone and lifts the tactile band");
 }
@@ -1225,6 +1225,53 @@ void testChainKnobInvariants()
 
         const float side = lowSideDb (b, bR, (size_t) settle);
         CHECK (side < -40.0f, name + " keeps the lows mono (side " + std::to_string (side) + " dB below 120 Hz)");
+
+        // Each knob does what its name says, measured against the untouched control at the same moment
+        auto midOf = [] (const std::vector<float>& l, const std::vector<float>& r)
+        {
+            std::vector<float> m (l.size());
+            for (size_t i = 0; i < l.size(); ++i)
+                m[i] = 0.5f * (l[i] + r[i]);
+            return m;
+        };
+        auto correlation = [&] (const std::vector<float>& l, const std::vector<float>& r)
+        {
+            double lr = 0, ll = 0, rr = 0;
+            for (size_t i = (size_t) settle; i < l.size(); ++i)
+            {
+                lr += (double) l[i] * r[i];
+                ll += (double) l[i] * l[i];
+                rr += (double) r[i] * r[i];
+            }
+            return lr / std::sqrt (ll * rr);
+        };
+        const auto bm = midOf (b, bR), cm = midOf (c1, c1R);
+        auto bandShare = [&] (const std::vector<float>& m, double lo, double hi)
+        {
+            return 10.0 * std::log10 (bandEnergy (m, (size_t) settle, lo, hi) / bandEnergy (m, (size_t) settle, 20.0, 20000.0));
+        };
+        if (name == "MASS")
+        {
+            // At the same loudness (the trim holds it), the tactile band carries more energy
+            const double lift = 10.0 * std::log10 (bandEnergy (bm, (size_t) settle, 40.0, 80.0) / bandEnergy (cm, (size_t) settle, 40.0, 80.0));
+            CHECK (lift > 1.0, "MASS lifts the 40-80 Hz tactile band at the same loudness (+" + std::to_string (lift) + " dB)");
+        }
+        if (name == "SCALE")
+        {
+            const double before = correlation (c1, c1R), after = correlation (b, bR);
+            CHECK (after < before - 0.05 && after > 0.2, "SCALE widens (correlation " + std::to_string (before) + " -> " + std::to_string (after) + ")");
+        }
+        if (name == "PRESSURE")
+        {
+            const double plrBefore = ps::loudness::truePeakDb (cm.data() + settle, cm.size() - (size_t) settle) - reference;
+            const double plrAfter = ps::loudness::truePeakDb (bm.data() + settle, bm.size() - (size_t) settle) - lufs (b, bR, (size_t) settle, b.size());
+            CHECK (plrAfter < plrBefore - 2.0, "PRESSURE makes it denser (peak-to-loudness " + std::to_string (plrBefore) + " -> " + std::to_string (plrAfter) + " dB)");
+        }
+        if (name == "SHINE")
+        {
+            const double lift = bandShare (bm, 6000.0, 20000.0) - bandShare (cm, 6000.0, 20000.0);
+            CHECK (lift > 1.0, "SHINE brightens the top (+" + std::to_string (lift) + " dB above 6 kHz)");
+        }
 
         // No click while sweeping: no step larger than the steady states have on their own
         const float steady = std::max (maxStep (std::vector<float> (a.begin() + settle, a.end())), maxStep (std::vector<float> (b.begin() + settle, b.end())));

@@ -62,8 +62,16 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     showPage (false);
 
     for (int i = 0; i < 8; ++i)
+    {
         setUpKnob (chain[(size_t) i], chainNames[i], ps::theme::chainAccent (i));
+        chainAttachments[(size_t) i] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+            processor.apvts, ps::params::chainKnob (i).getParamID(), chain[(size_t) i].slider);
+        chain[(size_t) i].slider.setDoubleClickReturnValue (true, 0.0);
+    }
     setUpKnob (super, "SUPER", juce::Colours::white);
+    superAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        processor.apvts, ps::params::super.getParamID(), super.slider);
+    super.slider.setDoubleClickReturnValue (true, 0.0);
     setUpKnob (master, "MASTER", ps::theme::mid);
 
     masterAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
@@ -245,7 +253,7 @@ void PotatoSynthEditor::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (13.0f * s));
     g.drawText (juce::CharPointer_UTF8 ("SUPER STACK  \xc2\xb7  PREVIEW BUILD"), juce::Rectangle<float> (26.0f * s, 48.0f * s, 400.0f * s, 18.0f * s),
                 juce::Justification::centredLeft);
-    g.drawText (juce::CharPointer_UTF8 ("HARMONY ENGINE  \xc2\xb7  ARRIVES IN PHASE 3"),
+    g.drawText (juce::CharPointer_UTF8 ("HARMONY ENGINE  \xc2\xb7  ON"),
                 juce::Rectangle<float> (0.0f, r.getBottom() - 26.0f * s, r.getWidth() - 24.0f * s, 18.0f * s),
                 juce::Justification::centredRight);
 }

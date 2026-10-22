@@ -55,6 +55,8 @@ private:
 
     std::array<Knob, 4> layerLevels;
     std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 4> layerLevelAttachments;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 8> chainAttachments;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> superAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PotatoSynthEditor)
 };

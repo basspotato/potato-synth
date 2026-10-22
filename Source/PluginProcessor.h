@@ -73,6 +73,10 @@ private:
     std::atomic<float>* superKnob = nullptr;
     std::array<float, ps::params::numChainKnobs> knobPosition {};   // smoothed, audio thread
     ps::LowFocus lowFocus;
+    ps::Pressure pressure;
+    ps::Tilt tilt;
+    ps::harmony::KPowerMeter knobStagesIn, knobStagesOut;   // around the bus stages the knobs drive
+    bool knobStagesActive = false;
     ps::harmony::LoudnessTrim loudnessTrim;
     ps::TruePeakClipper clipper;
     ps::TruePeakLimiter limiter;

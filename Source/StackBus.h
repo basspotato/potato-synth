@@ -3,7 +3,9 @@
 #include "Loudness.h"
 #include "Filter.h"
 #include "HarmonyEngine.h"
+#include "Drive.h"
 #include <juce_dsp/juce_dsp.h>
+#include <complex>
 
 namespace ps
 {
@@ -87,7 +89,7 @@ private:
 // MASS's energy focus: a bell on the tactile band (60 Hz, Q 0.8) on the summed stack, after the mono-bass
 // stage, so the lows it lifts are already mono. A ZDF SVF bell (Simper): y = x + k (A^2 - 1) band, with
 // k = 1 / (Q A) and A = 10^(dB / 40), so the gain at 60 Hz is exactly the knob's dB and stays smooth while
-// it moves. It measures its own K-weighted input and output for the Harmony Engine's loudness trim.
+// it moves.
 class LowFocus
 {
 public:
@@ -98,8 +100,6 @@ public:
         sr = (float) sampleRate;
         g = tptGain (centreHz, sr);
         smoothCoef = 1.0f - std::exp (-(float) subBlock / (0.03f * sr));
-        in.prepare (sampleRate);
-        out.prepare (sampleRate);
         reset();
     }
 
@@ -108,8 +108,6 @@ public:
         for (auto& f : filters)
             f.reset();
         currentDb = 0.0f;
-        in.reset();
-        out.reset();
     }
 
     // Returns false (and leaves the signal alone) when the focus is flat and settled
@@ -125,7 +123,6 @@ public:
             return false;
         }
         active = true;
-        in.process (left, right, numSamples);
         for (int start = 0; start < numSamples; start += subBlock)
         {
             currentDb += (targetDb - currentDb) * smoothCoef;
@@ -138,20 +135,233 @@ public:
                 right[i] += m1 * filters[1].process (right[i], c).band;
             }
         }
-        out.process (left, right, numSamples);
-        in.update();
-        out.update();
         return true;
     }
-
-    float inputPower() const noexcept  { return active ? in.getPower() : 0.0f; }
-    float outputPower() const noexcept { return active ? out.getPower() : 0.0f; }
 
 private:
     static constexpr int subBlock = 16;
     std::array<ZdfSvf, 2> filters {};
-    harmony::KPowerMeter in, out;
     float sr = 48000.0f, g = 0.0f, smoothCoef = 0.1f, currentDb = 0.0f;
+    bool active = false;
+};
+
+// PRESSURE: loud and dense like a finished master, but clean. Distributed gain reduction: the knob asks for
+// G(u) = 12 u^1.3 dB of total reduction, shared out so no single stage pumps or distorts:
+//   OTT 30 % (3 bands, up + down), glue 20 % (2:1) here, and saturation 25 % (parallel ADAA tanh) plus soft
+//   clipping 25 % inside TruePeakClipper's 4x oversampled loop (pressureSaturate), so they never alias and
+//   add no latency of their own.
+// The dynamics are stereo-linked (one gain for both channels) and the saturation and clipping act on the mid
+// only, so nothing PRESSURE does can create side signal in the mono lows. The Harmony Engine trims the result back to the patch's loudness: PRESSURE raises density, not
+// level.
+class Pressure
+{
+public:
+    static constexpr float crossoverLowHz = 88.0f, crossoverHighHz = 2500.0f;
+
+    static float totalReductionDb (float u) noexcept { return 12.0f * std::pow (u, 1.3f); }
+
+    void prepare (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            for (int b = 0; b < 2; ++b)
+            {
+                splitLow[(size_t) b][(size_t) ch].setCutoff (b == 0 ? crossoverLowHz : crossoverHighHz, sampleRate);
+                splitHigh[(size_t) b][(size_t) ch].setCutoff (b == 0 ? crossoverLowHz : crossoverHighHz, sampleRate);
+            }
+            for (auto& f : lowAllpass[(size_t) ch])
+                f.setCutoff (crossoverHighHz, sampleRate);
+        }
+        reset();
+    }
+
+    void reset()
+    {
+        for (auto& b : splitLow) for (auto& f : b) f.reset();
+        for (auto& b : splitHigh) for (auto& f : b) f.reset();
+        for (auto& c : lowAllpass) for (auto& f : c) f.reset();
+        bandEnvelope.fill (0.0f);
+        glueDetector = glueShortTerm = 0.0f;
+        glueGainDb = 0.0f;
+        amount = 0.0f;
+    }
+
+    // u: the PRESSURE knob 0..1, glided over 30 ms. Returns false when the stage is fully out and settled.
+    bool process (float* left, float* right, int numSamples, float u) noexcept
+    {
+        const float target = juce::jlimit (0.0f, 1.0f, u);
+        amount += (target - amount) * (1.0f - std::exp (-(float) numSamples / (0.03f * sr)));
+        if (target < 1.0e-4f && amount < 1.0e-4f)
+        {
+            if (wasActive)
+                reset();
+            wasActive = false;
+            return false;
+        }
+        wasActive = true;
+        const float g = totalReductionDb (amount);
+        ott (left, right, numSamples, 0.55f * g / 12.0f);
+        glue (left, right, numSamples, 0.2f * g);
+        return true;
+    }
+
+    // The glided amount, for the saturation and clipping shares in TruePeakClipper
+    float getAmount() const noexcept { return amount; }
+
+private:
+    // OTT: 3 bands (LR4 at 88 Hz and 2.5 kHz), each compressed downward above -22 dB (4:1) and upward below
+    // -40 dB (3:1, at most +12 dB, never below -70 dB, so silence isn't pumped up). depth scales the gain in dB.
+    void ott (float* left, float* right, int n, float depth) noexcept
+    {
+        static constexpr float attackMs[3] = { 8.0f, 4.0f, 2.0f }, releaseMs[3] = { 120.0f, 80.0f, 50.0f };
+        float attack[3], release[3];
+        for (int b = 0; b < 3; ++b)
+        {
+            attack[b] = 1.0f - std::exp (-1.0f / (attackMs[b] * 0.001f * sr));
+            release[b] = 1.0f - std::exp (-1.0f / (releaseMs[b] * 0.001f * sr));
+        }
+        for (int i = 0; i < n; ++i)
+        {
+            float band[3][2];
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const auto c = (size_t) ch;
+                const double x = ch == 0 ? left[i] : right[i];
+                const double low = splitLow[0][c].process (x), rest = splitHigh[0][c].process (x);
+                // The low band also takes the 2.5 kHz split's phase (its LR4 all-pass), so the bands sum back flat
+                band[0][ch] = (float) (lowAllpass[c][0].process (low) + lowAllpass[c][1].process (low));
+                band[1][ch] = (float) splitLow[1][c].process (rest);
+                band[2][ch] = (float) splitHigh[1][c].process (rest);
+            }
+            float outL = 0.0f, outR = 0.0f;
+            for (int b = 0; b < 3; ++b)
+            {
+                const float level = std::max (std::abs (band[b][0]), std::abs (band[b][1]));
+                auto& env = bandEnvelope[(size_t) b];
+                env += (level - env) * (level > env ? attack[b] : release[b]);
+                const float db = 20.0f * std::log10 (env + 1.0e-9f);
+                float gainDb = 0.0f;
+                if (db > -22.0f)
+                    gainDb = (-22.0f - db) * 0.75f;
+                else if (db < -40.0f && db > -70.0f)
+                    gainDb = std::min (12.0f, (-40.0f - db) * (2.0f / 3.0f));
+                const float gain = std::exp2 (gainDb * depth * (1.0f / 6.0206f));
+                outL += band[b][0] * gain;
+                outR += band[b][1] * gain;
+            }
+            left[i] = outL;
+            right[i] = outR;
+        }
+    }
+
+    // Glue: 2:1 with a 6 dB soft knee, 30 ms attack, 200 ms release, linked. Its threshold sits 2x the target
+    // reduction under the short-term (400 ms) level, so it lands on its share of G(u) whatever the patch's level.
+    void glue (float* left, float* right, int n, float targetDb) noexcept
+    {
+        const float rmsCoef = 1.0f - std::exp (-1.0f / (0.01f * sr)), shortCoef = 1.0f - std::exp (-1.0f / (0.4f * sr));
+        const float attack = 1.0f - std::exp (-1.0f / (0.03f * sr)), release = 1.0f - std::exp (-1.0f / (0.2f * sr));
+        for (int i = 0; i < n; ++i)
+        {
+            const float p = 0.5f * (left[i] * left[i] + right[i] * right[i]);
+            glueDetector += (p - glueDetector) * rmsCoef;
+            glueShortTerm += (p - glueShortTerm) * shortCoef;
+            const float level = 10.0f * std::log10 (glueDetector + 1.0e-12f);
+            const float over = level - (10.0f * std::log10 (glueShortTerm + 1.0e-12f) - 2.0f * targetDb);
+            float wanted = 0.0f;
+            if (targetDb > 1.0e-3f && level > -80.0f)
+            {
+                if (over > 3.0f)
+                    wanted = -0.5f * over;
+                else if (over > -3.0f)
+                    wanted = -0.5f * (over + 3.0f) * (over + 3.0f) / 12.0f;
+            }
+            glueGainDb += (wanted - glueGainDb) * (wanted < glueGainDb ? attack : release);
+            const float gain = std::exp2 (glueGainDb * (1.0f / 6.0206f));
+            left[i] *= gain;
+            right[i] *= gain;
+        }
+    }
+
+    float sr = 48000.0f, amount = 0.0f;
+    bool wasActive = false;
+    using LR = LinkwitzRiley4;
+    using Pair = std::array<LR, 2>;
+    std::array<Pair, 2> splitLow { Pair { LR (LR::Type::lowPass), LR (LR::Type::lowPass) }, Pair { LR (LR::Type::lowPass), LR (LR::Type::lowPass) } };
+    std::array<Pair, 2> splitHigh { Pair { LR (LR::Type::highPass), LR (LR::Type::highPass) }, Pair { LR (LR::Type::highPass), LR (LR::Type::highPass) } };
+    std::array<Pair, 2> lowAllpass { Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) }, Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) } };
+    std::array<float, 3> bandEnvelope {};
+    float glueDetector = 0.0f, glueShortTerm = 0.0f, glueGainDb = 0.0f;
+};
+
+// SHINE's spectral tilt: three first-order high shelves at 500 Hz, 2 kHz and 8 kHz, each lifting by the same
+// dB, add up to a near-constant slope of about half that per octave between them; the result is normalised to
+// unity at the 1 kHz pivot, so the mids stay put while the top brightens and the low mids recede. Linear and
+// identical on both channels, so the image and the mono lows are untouched.
+class Tilt
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        for (size_t k = 0; k < 3; ++k)
+            g[k] = tptGain (corners[k], sr);
+        reset();
+    }
+
+    void reset()
+    {
+        for (auto& ch : filters)
+            for (auto& f : ch)
+                f.reset();
+        currentDb = 0.0f;
+    }
+
+    // dbPerOctave: the added slope; returns false when flat and settled
+    bool process (float* left, float* right, int numSamples, float dbPerOctave) noexcept
+    {
+        const float targetDb = 2.0f * dbPerOctave;   // per shelf
+        if (std::abs (targetDb) < 1.0e-3f && std::abs (currentDb) < 1.0e-3f)
+        {
+            if (active)
+                reset();
+            active = false;
+            return false;
+        }
+        active = true;
+        const float coef = 1.0f - std::exp (-(float) subBlock / (0.03f * sr));
+        for (int start = 0; start < numSamples; start += subBlock)
+        {
+            currentDb += (targetDb - currentDb) * coef;
+            const float a = juce::Decibels::decibelsToGain (currentDb) - 1.0f;
+            // |H| at the pivot for the analog prototypes: |1 + a s/(s + wc)| at s = j w
+            float pivot = 1.0f;
+            for (float fc : corners)
+            {
+                const std::complex<float> s (0.0f, 1000.0f / fc);
+                pivot *= std::abs (1.0f + a * s / (s + 1.0f));
+            }
+            const float norm = 1.0f / pivot;
+            const int end = std::min (numSamples, start + subBlock);
+            float* io[2] = { left, right };
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = start; i < end; ++i)
+                {
+                    float x = io[ch][i];
+                    for (size_t k = 0; k < 3; ++k)
+                        x += a * filters[(size_t) ch][k].process (x, g[k]);
+                    io[ch][i] = x * norm;
+                }
+        }
+        return true;
+    }
+
+private:
+    static constexpr int subBlock = 16;
+    static constexpr float corners[3] = { 500.0f, 2000.0f, 8000.0f };
+    std::array<std::array<ZdfHighPass1, 3>, 2> filters {};
+    std::array<float, 3> g {};
+    float sr = 48000.0f, currentDb = 0.0f;
     bool active = false;
 };
 
@@ -174,18 +384,54 @@ public:
         oversampler->initProcessing ((size_t) maxBlock);
         gainStep = (float) (1.0 / (0.02 * sampleRate * 4.0));
         gain = gainTarget;
+        sectionIn.prepare (sampleRate * 4.0);
+        sectionOut.prepare (sampleRate * 4.0);
+        const auto upRate = (float) (sampleRate * 4.0);
+        exciterSourceG = tptGain (3000.0f, upRate);
+        exciterOutputG = tptGain (6000.0f, upRate);
+        exciterEnvCoef = 1.0f - std::exp (-1.0f / (0.005f * upRate));
     }
 
-    void reset() { if (oversampler != nullptr) oversampler->reset(); }
+    void reset()
+    {
+        if (oversampler != nullptr)
+            oversampler->reset();
+        pressureState = {};
+        exciters = {};
+        sectionIn.reset();
+        sectionOut.reset();
+    }
+
+    // P_in / P_out of the knob-driven stages in here (PRESSURE's saturation and clipping, SHINE's exciter),
+    // K-weighted, for the loudness trim; 1 while they are idle
+    double knobStageRatio() const noexcept { return wasActive ? harmony::stageRatio (sectionIn, sectionOut) : 1.0; }
 
     int getLatencySamples() const
     {
         return oversampler != nullptr ? juce::roundToInt (oversampler->getLatencyInSamples()) : 0;
     }
 
-    void process (juce::AudioBuffer<float>& buffer, bool enabled)
+    // pressure: PRESSURE's glided amount (0..1); its saturation and clipping shares run here, oversampled.
+    // excite: SHINE's exciter mix (0..1).
+    void process (juce::AudioBuffer<float>& buffer, bool enabled, float pressure = 0.0f, float excite = 0.0f)
     {
         gainTarget = enabled ? 1.0f : 0.0f;
+        const float g = Pressure::totalReductionDb (pressure);
+        const bool pressing = pressure > 1.0e-4f;
+        const float satDrive = juce::Decibels::decibelsToGain (0.75f * g), satWet = juce::jmin (0.8f, pressure);
+        const float clipDrive = juce::Decibels::decibelsToGain (0.375f * g);
+        const bool exciting = excite > 1.0e-4f || exciteMix > 1.0e-4f;
+        const bool active = pressing || exciting;
+        if (active != wasActive)
+        {
+            sectionIn.reset();
+            sectionOut.reset();
+            wasActive = active;
+        }
+        if (! pressing)
+            pressureState = {};
+        if (! exciting)
+            exciters = {};
         const int numSamples = buffer.getNumSamples();
         for (int start = 0; start < numSamples; start += maxBlock)
         {
@@ -194,6 +440,34 @@ public:
             auto up = oversampler->processSamplesUp (block);
             auto* l = up.getChannelPointer (0);
             auto* r = up.getChannelPointer (1);
+            const int upN = (int) up.getNumSamples();
+            if (active)
+                sectionIn.process (l, r, upN);
+            if (exciting)
+            {
+                const float from = exciteMix, step = (excite - exciteMix) / (float) upN;
+                for (int i = 0; i < upN; ++i)
+                {
+                    const float mix = from + step * (float) (i + 1);
+                    l[i] += mix * exciters[0].process (l[i], *this);
+                    r[i] += mix * exciters[1].process (r[i], *this);
+                }
+                exciteMix = excite;
+            }
+            if (pressing)
+            {
+                // Mid only: a nonlinearity on L and R would intermodulate the side with the mid and leave side
+                // energy in the mono lows; the side passes untouched
+                for (int i = 0; i < upN; ++i)
+                {
+                    const float mid = pressureSaturate (0.5f * (l[i] + r[i]), satDrive, satWet, clipDrive, pressureState);
+                    const float side = 0.5f * (l[i] - r[i]);
+                    l[i] = mid + side;
+                    r[i] = mid - side;
+                }
+            }
+            if (active)
+                sectionOut.process (l, r, upN);
             for (size_t i = 0; i < up.getNumSamples(); ++i)
             {
                 if (gain < gainTarget)      gain = std::min (gainTarget, gain + gainStep);
@@ -202,6 +476,11 @@ public:
                 r[i] += gain * (shape (r[i]) - r[i]);
             }
             oversampler->processSamplesDown (block);
+            if (active)
+            {
+                sectionIn.update();
+                sectionOut.update();
+            }
         }
     }
 
@@ -217,7 +496,47 @@ public:
     }
 
 private:
+    struct PressureState { AdaaTanh saturator, clipper; };
+
+    // SHINE's exciter: the band above 3 kHz, normalised by its own envelope, through the Chebyshev polynomials
+    // T2 and T3 (a unit sine becomes exactly its 2nd and 3rd harmonic), scaled back by the envelope, then
+    // high-passed at 6 kHz. A cubic only triples the bandwidth (24 kHz becomes 72 kHz), which stays under the
+    // 96 kHz Nyquist of this 4x loop, so the exciter adds air without any aliasing.
+    struct Exciter
+    {
+        ZdfSvf source, output;
+        float envelope = 0.0f;
+
+        float process (float x, const TruePeakClipper& c) noexcept
+        {
+            const float h = source.process (x, c.exciterSourceG, juce::MathConstants<float>::sqrt2).high;
+            envelope += (2.0f * h * h - envelope) * c.exciterEnvCoef;
+            const float amplitude = std::sqrt (envelope) + 1.0e-6f;
+            const float u = juce::jlimit (-1.5f, 1.5f, h / amplitude);
+            const float harmonics = amplitude * (0.7f * (2.0f * u * u - 1.0f) + 0.5f * (4.0f * u * u * u - 3.0f * u));
+            return output.process (harmonics, c.exciterOutputG, juce::MathConstants<float>::sqrt2).high;
+        }
+    };
+
+    // PRESSURE's saturation (parallel tanh, level-matched to the dry for small signals) and soft clipper (drive
+    // in, the same gain out, linear below -6 dBFS then a tanh bend into 0 dBFS), so they shave peaks without
+    // moving the level
+    static float pressureSaturate (float x, float satDrive, float satWet, float clipDrive, PressureState& st) noexcept
+    {
+        const float sat = st.saturator.process (x * satDrive) / satDrive;
+        const float y = (x + satWet * (sat - x)) * clipDrive;
+        constexpr float knee = 0.5f, span = 0.5f;
+        const float a = std::abs (y);
+        const float bent = knee + span * st.clipper.process (juce::jmax (0.0f, a - knee) / span);
+        return (a <= knee ? y : std::copysign (bent, y)) / clipDrive;
+    }
+
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
+    PressureState pressureState {};
+    std::array<Exciter, 2> exciters {};
+    float exciterSourceG = 0.1f, exciterOutputG = 0.2f, exciterEnvCoef = 0.01f, exciteMix = 0.0f;
+    harmony::KPowerMeter sectionIn, sectionOut;   // at the oversampled rate
+    bool wasActive = false;
     int maxBlock = 512;
     float gain = 1.0f, gainTarget = 1.0f, gainStep = 1.0f;
 };

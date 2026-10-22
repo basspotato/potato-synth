@@ -78,6 +78,9 @@ enum class Target
     slot,              // a slot role on matching layers, in normalised slot units
     monoBassOctaves,   // mono-bass crossover, octaves relative to the patch's
     lowFocusDb,        // bus peak EQ on the tactile band (about 60 Hz)
+    pressure,          // the PRESSURE bus stage's amount, 0..1 (StackBus.h)
+    tiltDbPerOct,      // bus spectral tilt around 1 kHz, dB per octave (StackBus.h Tilt)
+    exciter,           // oversampled harmonic exciter above 6 kHz, wet mix 0..1 (StackBus.h TruePeakClipper)
 };
 
 // Which layers a route applies to: a bit per params::Role
@@ -99,11 +102,16 @@ inline const std::vector<Route>& routes()
     const unsigned sub = roleBit (R::sub), body = roleBit (R::body), upper = roleBit (R::mid) | roleBit (R::air);
     static const std::vector<Route> table {
         // MASS: more felt low end at the same meter level
-        { mass, Target::slot, sub, SlotRole::translate, Path ({ 0.0f, 0.3f, 0.55f, 0.75f, 0.9f }) },
-        { mass, Target::lowFocusDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.9f, 1.8f, 2.5f, 3.0f }) },
+        // (Translate's harmonics spend loudness the trim then takes back from the whole stack, so MASS leans on
+        // the low focus, which K-weighting barely counts, and uses Translate lightly)
+        { mass, Target::slot, sub, SlotRole::translate, Path ({ 0.0f, 0.15f, 0.3f, 0.4f, 0.5f }) },
+        { mass, Target::lowFocusDb, anyRole, SlotRole::none, Path ({ 0.0f, 1.2f, 2.5f, 3.6f, 4.5f }) },
         { mass, Target::slot, body, SlotRole::drive, Path ({ 0.0f, 0.08f, 0.17f, 0.26f, 0.35f }) },
         { mass, Target::slot, body, SlotRole::subOctave, Path ({ 0.0f, 0.1f, 0.25f, 0.38f, 0.5f }) },
         { mass, Target::monoBassOctaves, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.18f, 0.22f }) },
+
+        // PRESSURE: distributed gain reduction across saturation, OTT, glue and clipper (the stage owns the split)
+        { pressure, Target::pressure, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
 
         // SCALE: wider and bigger on the upper roles; the lows are untouched
         { scale, Target::slot, upper, SlotRole::detune, Path ({ 0.0f, 0.08f, 0.16f, 0.24f, 0.3f }) },
@@ -114,6 +122,8 @@ inline const std::vector<Route>& routes()
         // SHINE: air and sparkle
         { shine, Target::layerLevelDb, roleBit (R::air), SlotRole::none, Path ({ 0.0f, 1.5f, 3.0f, 4.5f, 6.0f }) },
         { shine, Target::slot, upper, SlotRole::brightness, Path ({ 0.0f, 0.04f, 0.08f, 0.12f, 0.15f }) },
+        { shine, Target::tiltDbPerOct, anyRole, SlotRole::none, Path ({ 0.0f, 0.4f, 0.8f, 1.2f, 1.5f }) },
+        { shine, Target::exciter, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.19f, 0.25f }) },
 
         // MORPH: every layer's spectral identity moves together
         { morph, Target::slot, anyRole, SlotRole::position, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
@@ -129,6 +139,9 @@ struct Offsets
     std::array<std::array<float, numSlotRoles>, params::numLayers> slot {};
     float monoBassOctaves = 0.0f;
     float lowFocusDb = 0.0f;
+    float pressure = 0.0f;
+    float tiltDbPerOct = 0.0f;
+    float exciter = 0.0f;
 };
 
 // u: each knob's position 0..1 (SUPER already folded in); roles: each layer's role
@@ -144,6 +157,9 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
         {
             case Target::monoBassOctaves: o.monoBassOctaves += v; break;
             case Target::lowFocusDb:      o.lowFocusDb += v; break;
+            case Target::pressure:        o.pressure += v; break;
+            case Target::tiltDbPerOct:    o.tiltDbPerOct += v; break;
+            case Target::exciter:         o.exciter += v; break;
             case Target::layerLevelDb:
             case Target::slot:
                 for (int l = 0; l < params::numLayers; ++l)

@@ -98,13 +98,20 @@ private:
     int blockCount = 0;
 };
 
+// P_in / P_out of a measured stage, or 1 while either side is too quiet to tell
+inline double stageRatio (const KPowerMeter& in, const KPowerMeter& out) noexcept
+{
+    constexpr float floor = 1.0e-10f;
+    return in.getPower() > floor && out.getPower() > floor ? (double) in.getPower() / out.getPower() : 1.0;
+}
+
 // Invariant 1: the chain knobs never change the loudness. The trim compensates only what the knobs change,
 // never the player's dynamics, by comparing the stack with and without the knobs' effect:
 //
 //   layer gains:  each layer's K-weighted power P_l is measured at unity gain, so the knobs' level change is
 //                 known exactly:  ratio_layers = sum P_l g_l^2 / sum P_l (g_l c_l)^2   (g: patch, c: knob gain)
-//   bus stages:   a stage the knobs drive (e.g. MASS's low focus EQ) is measured in and out:
-//                 ratio_stage = P_in / P_out, which is 1 when the knob is at rest
+//   bus stages:   a stage the knobs drive (MASS's low focus EQ, PRESSURE's dynamics and clipping) is measured
+//                 in and out: ratio_stage = P_in / P_out, which is 1 when the knob is at rest
 //
 // The trim is sqrt of their product, smoothed over 300 ms. Engine slot moves are kept loudness-neutral by the
 // engines themselves (power-normalised unison, translate, frames); the knob-sweep tests hold everything to
@@ -129,9 +136,10 @@ public:
         smoothed = 1.0f;
     }
 
-    // Once per block. Powers are K-weighted (KPowerMeter); stageIn/stageOut may be equal when no stage is active.
+    // Once per block. Powers are K-weighted (KPowerMeter). stageRatio is the product of P_in / P_out over the bus
+    // stages the knobs drive (1 when none is working).
     void update (const float* layerPower, const float* patchGain, const float* knobGain, int numLayers,
-                 float stageIn, float stageOut, int numSamples) noexcept
+                 double stageRatio, int numSamples) noexcept
     {
         double withoutKnobs = 0.0, withKnobs = 0.0;
         for (int l = 0; l < numLayers; ++l)
@@ -148,9 +156,9 @@ public:
             ratio = withoutKnobs / withKnobs;
             valid = true;
         }
-        if (stageOut > floor && stageIn > floor)
+        if (std::abs (stageRatio - 1.0) > 1.0e-9)
         {
-            ratio *= (double) stageIn / stageOut;
+            ratio *= stageRatio;
             valid = true;
         }
         if (valid)

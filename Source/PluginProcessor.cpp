@@ -55,6 +55,11 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     clipper.prepare (sampleRate, samplesPerBlock);
     limiter.prepare (sampleRate);
     lowFocus.prepare (sampleRate);
+    pressure.prepare (sampleRate);
+    tilt.prepare (sampleRate);
+    knobStagesIn.prepare (sampleRate);
+    knobStagesOut.prepare (sampleRate);
+    knobStagesActive = false;
     loudnessTrim.prepare (sampleRate, samplesPerBlock);
     for (int k = 0; k < ps::params::numChainKnobs; ++k)
         knobPosition[(size_t) k] = chainKnobs[(size_t) k]->load();
@@ -136,7 +141,21 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     stackGain.setTargetValue (1.0f / std::sqrt (juce::jmax (1.0f, layerCount)));
     stackGain.applyGain (buffer, n);
     bus.process (left, right, n, crossoverLowHz->load() * std::exp2 (offsets.monoBassOctaves), monoBassOn->load() > 0.5f);
-    lowFocus.process (left, right, n, offsets.lowFocusDb);
+
+    // The bus stages the knobs drive, measured in and out for the loudness trim (only while one is working)
+    knobStagesIn.process (left, right, n);
+    bool active = lowFocus.process (left, right, n, offsets.lowFocusDb);
+    active = tilt.process (left, right, n, offsets.tiltDbPerOct) || active;
+    active = pressure.process (left, right, n, offsets.pressure) || active;
+    knobStagesOut.process (left, right, n);
+    knobStagesIn.update();
+    knobStagesOut.update();
+    if (! active && knobStagesActive)
+    {
+        knobStagesIn.reset();
+        knobStagesOut.reset();
+    }
+    knobStagesActive = active;
 
     // Harmony Engine, invariant 1: hold the loudness the patch has without the knobs
     std::array<float, ps::params::numLayers> power {}, patchGain {}, knobGain {};
@@ -148,7 +167,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         knobGain[(size_t) i] = layer.knobGain();
     }
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
-                         lowFocus.inputPower(), lowFocus.outputPower(), n);
+                         (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n);
     loudnessTrim.apply (left, right, n);
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
@@ -157,7 +176,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // Safe output: a 4x oversampled soft clipper shapes overs musically, then a look-ahead limiter
     // guarantees the -1 dBTP ceiling the clipper's decimation filter can overshoot
     const bool safe = safeOutputOn->load() > 0.5f;
-    clipper.process (buffer, safe);
+    clipper.process (buffer, safe, pressure.getAmount(), offsets.exciter);
     limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
 }
 
