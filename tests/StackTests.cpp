@@ -1263,6 +1263,53 @@ void testDropOnTheBar()
                                                         + std::to_string (after) + " dB after)");
 }
 
+void testXyPad()
+{
+    // Each corner emphasises its layer (Sub is anchored, so its corner changes nothing) at the same loudness,
+    // click-free, with mono lows
+    StackRig control;
+    const int settle = 48000, measure = 96000;
+    control.render (settle + measure, StackRig::chord());
+    control.render (96000);
+    auto c = control.render (settle + measure);
+    auto cR = control.right;
+    const double reference = lufs (c, cR, (size_t) settle, c.size());
+    const char* names[] = { "Sub", "Body", "Mid", "Air" };
+    const float cx[] = { 0.0f, 1.0f, 0.0f, 1.0f }, cy[] = { 1.0f, 1.0f, 0.0f, 0.0f };
+    for (int corner = 0; corner < 4; ++corner)
+    {
+        StackRig rig;
+        auto a = rig.render (settle + measure, StackRig::chord());
+        std::vector<float> sweep;
+        for (int pos = 0; pos < 96000; pos += blockSize)
+        {
+            const float t = (float) (pos + blockSize) / 96000.0f;
+            rig.set (ps::params::padX, 0.5f + (cx[corner] - 0.5f) * t);
+            rig.set (ps::params::padY, 0.5f + (cy[corner] - 0.5f) * t);
+            auto x = rig.render (blockSize);
+            sweep.insert (sweep.end(), x.begin(), x.end());
+        }
+        auto b = rig.render (settle + measure);
+        auto bR = rig.right;
+        const double change = lufs (b, bR, (size_t) settle, b.size()) - reference;
+        const std::string name = std::string ("XY to the ") + names[corner] + " corner";
+        CHECK (std::abs (change) <= 0.5, name + " keeps the loudness within 0.5 LU (" + std::to_string (change) + " LU)");
+        const float side = lowSideDb (b, bR, (size_t) settle);
+        CHECK (side < -40.0f, name + " keeps the lows mono (side " + std::to_string (side) + " dB)");
+        const float steady = std::max (maxStep (std::vector<float> (a.begin() + settle, a.end())), maxStep (std::vector<float> (b.begin() + settle, b.end())));
+        CHECK (maxStep (sweep) < steady * 1.5f, name + " moves click-free");
+        if (corner > 0)
+        {
+            // With three free layers its layer comes up 4 dB (10 log 2.5) and the others go down 6 dB; the anchored Sub stays
+            auto db = [&] (int l) { return juce::Decibels::gainToDecibels (rig.proc->getStack().layer (l).knobGain()); };
+            bool others = std::abs (db (0)) < 0.01f;
+            for (int l = 1; l < 4; ++l)
+                others = others && (l == corner || std::abs (db (l) + 6.0f) < 0.1f);
+            CHECK (std::abs (db (corner) - 3.98f) < 0.1f && others, name + " brings its layer forward (" + std::to_string (db (corner)) + " dB)");
+        }
+    }
+}
+
 void testChainKnobInvariants()
 {
     // A control rig plays the same notes with the knobs untouched: the loudness change is measured against it at
@@ -1495,6 +1542,7 @@ int main()
         testOnsetDuck();
         testBloomSpace();
         testDropOnTheBar();
+        testXyPad();
         testChainKnobInvariants();
         return failures == 0 ? 0 : 1;
     }
@@ -1544,6 +1592,7 @@ int main()
     testOnsetDuck();
     testBloomSpace();
     testDropOnTheBar();
+    testXyPad();
     testChainKnobInvariants();
     benchmarkJp();
     benchmarkWavetable();

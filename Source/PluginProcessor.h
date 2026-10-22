@@ -5,6 +5,7 @@
 #include "StackBus.h"
 #include "ChainKnobs.h"
 #include "Space.h"
+#include "StackMorph.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -78,6 +79,10 @@ private:
     std::array<std::atomic<float>*, ps::params::numChainKnobs> chainKnobs {};
     std::atomic<float>* superKnob = nullptr;
     std::atomic<float>* buildButton = nullptr;
+    std::atomic<float>* padX = nullptr;
+    std::atomic<float>* padY = nullptr;
+    std::array<std::atomic<float>*, ps::params::numLayers> anchors {};
+    float padXSmoothed = 0.5f, padYSmoothed = 0.5f;
     std::atomic<float>* dropButton = nullptr;
     Performance performance;
     float dropSmoothed = 0.0f;

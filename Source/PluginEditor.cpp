@@ -49,6 +49,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     }
 
     addAndMakeVisible (xyPad);
+    xyPad.attach (*processor.apvts.getParameter (ps::params::padX.getParamID()), *processor.apvts.getParameter (ps::params::padY.getParamID()));
     addChildComponent (layerPage);
     layerPage.onEngineClick = [this] { showEngineMenu (selectedLayer); };
     for (auto* tab : { &stackTab, &layerTab })

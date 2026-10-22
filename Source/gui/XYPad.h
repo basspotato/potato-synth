@@ -4,13 +4,22 @@
 namespace ps
 {
 // Stack XY pad: one layer role per corner. The background blends the four role colours by
-// the same bilinear weights the stack morph will use, so the colour under the puck shows the mix.
+// the same bilinear weights the stack morph uses, so the colour under the puck shows the mix.
+// Bound to the xy_x / xy_y parameters (y is 1 at the top there, 0 at the top on screen).
 class XYPad : public juce::Component
 {
 public:
     XYPad() { setRepaintsOnMouseActivity (false); }
 
     juce::Point<float> getPosition() const noexcept { return pos; }
+
+    void attach (juce::RangedAudioParameter& paramX, juce::RangedAudioParameter& paramY)
+    {
+        xAttachment = std::make_unique<juce::ParameterAttachment> (paramX, [this] (float v) { pos.x = v; repaint(); });
+        yAttachment = std::make_unique<juce::ParameterAttachment> (paramY, [this] (float v) { pos.y = 1.0f - v; repaint(); });
+        xAttachment->sendInitialUpdate();
+        yAttachment->sendInitialUpdate();
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -59,13 +68,35 @@ public:
     }
 
     void resized() override { background = {}; }
-    void mouseDown (const juce::MouseEvent& e) override { setFromMouse (e); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (xAttachment != nullptr) { xAttachment->beginGesture(); yAttachment->beginGesture(); }
+        setFromMouse (e);
+    }
     void mouseDrag (const juce::MouseEvent& e) override { setFromMouse (e); }
-    void mouseDoubleClick (const juce::MouseEvent&) override { pos = { 0.5f, 0.5f }; repaint(); }
+    void mouseUp (const juce::MouseEvent&) override
+    {
+        if (xAttachment != nullptr) { xAttachment->endGesture(); yAttachment->endGesture(); }
+    }
+    void mouseDoubleClick (const juce::MouseEvent&) override
+    {
+        pos = { 0.5f, 0.5f };
+        send();
+        repaint();
+    }
 
 private:
     juce::Point<float> pos { 0.5f, 0.5f };
     juce::Image background;
+    std::unique_ptr<juce::ParameterAttachment> xAttachment, yAttachment;
+
+    void send()
+    {
+        if (xAttachment == nullptr)
+            return;
+        xAttachment->setValueAsPartOfGesture (pos.x);
+        yAttachment->setValueAsPartOfGesture (1.0f - pos.y);
+    }
 
     static juce::Colour blend (juce::Point<float> p)
     {
@@ -92,6 +123,7 @@ private:
         const auto r = getLocalBounds().toFloat().reduced (16.0f);
         pos = { juce::jlimit (0.0f, 1.0f, (e.position.x - r.getX()) / r.getWidth()),
                 juce::jlimit (0.0f, 1.0f, (e.position.y - r.getY()) / r.getHeight()) };
+        send();
         repaint();
     }
 

@@ -7,6 +7,7 @@ namespace ps::params
 {
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
     // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots. 7: chain knobs and SUPER.
+    // 8: BUILD, DROP, the XY pad and layer anchors.
     // Parameters missing from an older save load at their defaults.
     inline constexpr int stateVersion = 7;
 
@@ -29,6 +30,9 @@ namespace ps::params
     // Momentary performance buttons (ChainKnobs.h Performance)
     inline const juce::ParameterID build { "build", 8 };
     inline const juce::ParameterID drop { "drop", 8 };
+    // The stack XY pad (StackMorph.h): 0..1 each way, the centre is the full stack
+    inline const juce::ParameterID padX { "xy_x", 8 };
+    inline const juce::ParameterID padY { "xy_y", 8 };
 
     // Per-layer parameters follow the pattern L{n}_name with n = 1..4 (expandable to 8)
     inline juce::ParameterID layerParam (int layerIndex, const char* name, int version)
@@ -47,6 +51,7 @@ namespace ps::params
     inline juce::ParameterID layerVoiceMode (int i) { return layerParam (i, "voice", 3); }
     inline juce::ParameterID layerGlide (int i)   { return layerParam (i, "glide", 3); }
     inline juce::ParameterID layerRole (int i)    { return layerParam (i, "role", 4); }
+    inline juce::ParameterID layerAnchor (int i)  { return layerParam (i, "anchor", 8); }   // XY pad leaves it at full
 
     // Engine slots: 16 generic 0..1 parameters per layer. Each engine says what its slots mean.
     inline constexpr int numEngineSlots = 24;
@@ -124,6 +129,8 @@ namespace ps::params
         layout.add (std::make_unique<juce::AudioParameterFloat> (super, "SUPER", juce::NormalisableRange<float> (0.0f, 1.0f), 0.0f, percentText));
         layout.add (std::make_unique<juce::AudioParameterBool> (build, "BUILD", false));
         layout.add (std::make_unique<juce::AudioParameterBool> (drop, "DROP", false));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (padX, "XY X", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
+        layout.add (std::make_unique<juce::AudioParameterFloat> (padY, "XY Y", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
 
         for (int i = 0; i < numLayers; ++i)
             layout.add (std::make_unique<juce::AudioParameterFloat> (
@@ -159,6 +166,7 @@ namespace ps::params
                 detail::msAttributes()));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerVoiceMode (i), role + " Voice Mode", voiceModeNames, 0));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerRole (i), role + " Role", roleNames, i));
+            layout.add (std::make_unique<juce::AudioParameterBool> (layerAnchor (i), role + " Anchor", i == 0));   // the Sub holds the floor
             for (int k = 0; k < numEngineSlots; ++k)
                 layout.add (std::make_unique<Float> (layerSlot (i, k), role + " Engine " + juce::String (k + 1),
                     juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f,

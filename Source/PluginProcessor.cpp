@@ -24,6 +24,10 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     superKnob = apvts.getRawParameterValue (ps::params::super.getParamID());
     buildButton = apvts.getRawParameterValue (ps::params::build.getParamID());
     dropButton = apvts.getRawParameterValue (ps::params::drop.getParamID());
+    padX = apvts.getRawParameterValue (ps::params::padX.getParamID());
+    padY = apvts.getRawParameterValue (ps::params::padY.getParamID());
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        anchors[(size_t) i] = apvts.getRawParameterValue (ps::params::layerAnchor (i).getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         namespace p = ps::params;
@@ -63,6 +67,8 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     space.prepare (sampleRate, samplesPerBlock);
     buildStage.prepare (sampleRate);
     performance = {};
+    padXSmoothed = padX->load();
+    padYSmoothed = padY->load();
     driftState = driftSmoothed = 0.0f;
     // Every layer and role starts at its own point of the cycle (golden-angle offsets)
     for (int l = 0; l < ps::params::numLayers; ++l)
@@ -278,6 +284,18 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     for (int i = 0; i < ps::params::numLayers; ++i)
         roles[(size_t) i] = stack.layer (i).role();
     auto offsets = ps::chain::compute (u, roles);
+    // The XY pad: layer emphasis at constant power (StackMorph.h), glided like the knobs
+    padXSmoothed += (padX->load() - padXSmoothed) * coef;
+    padYSmoothed += (padY->load() - padYSmoothed) * coef;
+    {
+        std::array<bool, ps::params::numLayers> free {};
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            free[(size_t) i] = stack.layer (i).engine() != nullptr && anchors[(size_t) i]->load() < 0.5f;
+        const auto padDb = ps::morph::mixGainsDb (padXSmoothed, padYSmoothed, free);
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            offsets.levelDb[(size_t) i] += padDb[(size_t) i];
+    }
+
     // DROP's -1 octave: the Sub and Body layers bring in their sub-octave
     for (int i = 0; i < ps::params::numLayers; ++i)
         if (roles[(size_t) i] == ps::params::Role::sub || roles[(size_t) i] == ps::params::Role::body)
