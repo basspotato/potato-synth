@@ -2135,6 +2135,263 @@ void benchmarkDirt()
     CHECK (best < 20.0, "Dirt stack CPU is within budget");
 }
 
+// ---- Genome engine ---------------------------------------------------------------------------------------
+
+using Genome = ps::GenomeEngine;
+
+struct GenomeRig : Rig
+{
+    explicit GenomeRig (std::initializer_list<std::pair<int, float>> slots = {})
+    {
+        proc->setLayerEngine (2, "genome");
+        render (blockSize);
+        collectRetired();
+        for (auto& [slot, value] : slots)
+            setSlot (slot, value);
+    }
+
+    void setSlot (int slot, float value) { set (ps::params::layerSlot (2, slot), value); }
+};
+
+// A plain, harmonic Genome at one architecture: no detune, strike or index envelope
+GenomeRig genomeAt (float architecture, std::initializer_list<std::pair<int, float>> more = {})
+{
+    GenomeRig rig ({ { Genome::architecture, architecture }, { Genome::detune, 0.0f }, { Genome::strike, 0.0f },
+                     { Genome::fmEnv, 0.0f } });
+    for (auto& [slot, value] : more)
+        rig.setSlot (slot, value);
+    return rig;
+}
+
+// Period by normalised autocorrelation (robust to several zero crossings per period), parabolic peak
+double estimatePitchHz (const std::vector<float>& x, size_t from, size_t to, double fMin, double fMax)
+{
+    const int lo = (int) (sampleRate / fMax), hi = (int) (sampleRate / fMin) + 1;
+    std::vector<double> c ((size_t) hi + 2, 0.0);
+    for (int lag = lo - 1; lag <= hi + 1; ++lag)
+    {
+        double xy = 0.0, xx = 0.0, yy = 0.0;
+        for (size_t i = from; i + (size_t) lag < to; ++i)
+        {
+            xy += (double) x[i] * x[i + (size_t) lag];
+            xx += (double) x[i] * x[i];
+            yy += (double) x[i + (size_t) lag] * x[i + (size_t) lag];
+        }
+        c[(size_t) lag] = xy / std::sqrt (xx * yy + 1.0e-30);
+    }
+    int best = lo;
+    for (int lag = lo; lag <= hi; ++lag)
+        if (c[(size_t) lag] > c[(size_t) best] + 1.0e-9)
+            best = lag;
+    const double a = c[(size_t) best - 1], b = c[(size_t) best], d = c[(size_t) best + 1];
+    const double offset = 0.5 * (a - d) / (a - 2.0 * b + d);
+    return sampleRate / ((double) best + offset);
+}
+
+const float genomeStops[] = { 0.0f, 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.0f };
+
+std::string genomeName (float a)
+{
+    return Genome().info().slots[(size_t) Genome::architecture].toText (a).toStdString();
+}
+
+void testGenomeEngine()
+{
+    // Exact pitch at every design and every halfway blend, and a held note never moves
+    for (float a : genomeStops)
+    {
+        auto rig = genomeAt (a);
+        auto x = rig.render (72000, { { 0, on (57) } });
+        double lo = 1.0e9, hi = 0.0;
+        for (size_t start = 8000; start + 16000 <= x.size(); start += 16000)
+        {
+            const double f = estimatePitchHz (x, start, start + 16000, 150.0, 300.0);
+            lo = std::min (lo, f);
+            hi = std::max (hi, f);
+        }
+        CHECK (std::abs (lo - 220.0) < 0.1 && std::abs (hi - 220.0) < 0.1,
+               "Genome " + genomeName (a) + ": A3 holds 220 Hz (" + std::to_string (lo) + " .. " + std::to_string (hi) + " Hz)");
+    }
+
+    // Deterministic: the same note renders the same samples every time
+    {
+        auto first = GenomeRig ({ { Genome::architecture, 0.3f } }).render (12000, { { 0, on (52) } });
+        auto second = GenomeRig ({ { Genome::architecture, 0.3f } }).render (12000, { { 0, on (52) } });
+        CHECK (first == second, "Genome: a note renders identically every time (no random drift or phase)");
+    }
+
+    // Shared phase: the 2x designs and the 1x harmonics line up to a fraction of a sample
+    {
+        auto va = genomeAt (0.0f).render (24000, { { 0, on (45) } });
+        auto adds = genomeAt (0.75f).render (24000, { { 0, on (45) } });
+        auto corrAt = [&] (int lag)
+        {
+            double xy = 0.0, xx = 0.0, yy = 0.0;
+            for (size_t i = 8000; i < 20000; ++i)
+            {
+                xy += (double) va[i] * adds[(size_t) ((int) i + lag)];
+                xx += (double) va[i] * va[i];
+                yy += (double) adds[(size_t) ((int) i + lag)] * adds[(size_t) ((int) i + lag)];
+            }
+            return xy / std::sqrt (xx * yy);
+        };
+        int best = 0;
+        for (int lag = -20; lag <= 20; ++lag)
+            if (corrAt (lag) > corrAt (best))
+                best = lag;
+        const double a = corrAt (best - 1), b = corrAt (best), d = corrAt (best + 1);
+        const double lag = best + 0.5 * (a - d) / (a - 2.0 * b + d);
+        CHECK (std::abs (lag) < 0.25 && b > 0.95, "Genome: Jupiter and Additive share one phase (offset " + std::to_string (lag)
+                                                  + " samples, correlation " + std::to_string (b) + ")");
+    }
+
+    // Band-limited at every design and blend, at 2.1 kHz with the FM index and resonance up
+    for (float a : genomeStops)
+    {
+        auto rig = genomeAt (a, { { Genome::fmIndex, 0.7f }, { Genome::fmFeedback, 0.5f }, { Genome::pdRes, 0.4f } });
+        auto x = rig.render (48000, { { 0, on (96, 1.0f) } });
+        const float db = worstAliasDb (x, 24000, 440.0 * std::pow (2.0, (96 - 69) / 12.0), true);
+        std::cout << "info: Genome " << genomeName (a) << " at 2.1 kHz, worst alias " << db << " dB\n";
+        CHECK (db < -60.0f, "Genome " + genomeName (a) + " is band-limited (aliases below -60 dB of the strongest harmonic at 2.1 kHz)");
+    }
+
+    // The FM index cap: full index and feedback on a high note stay clean
+    {
+        auto rig = genomeAt (0.25f, { { Genome::fmIndex, 1.0f }, { Genome::fmFeedback, 1.0f }, { Genome::fmRatio, 1.0f } });
+        auto x = rig.render (48000, { { 0, on (100, 1.0f) } });
+        const double f0 = 440.0 * std::pow (2.0, (100 - 69) / 12.0);
+        const float db = worstAliasDb (x, 24000, f0, true);
+        std::cout << "info: Genome FM at full index, feedback and ratio 8 at 2.6 kHz, worst alias " << db << " dB\n";
+        CHECK (db < -50.0f, "Genome: FM at full index stays under Carson's limit (aliases below -50 dB)");
+    }
+
+    // Sweeping the architecture end to end: no clicks, and the level stays within 1 dB
+    for (int note : { 40, 57, 76 })
+    {
+        auto rig = genomeAt (0.0f);
+        auto x = rig.render (24000, { { 0, on (note) } });
+        const float steady = maxStep (std::vector<float> (x.begin() + 12000, x.end()));
+        std::vector<float> sweep;
+        constexpr int steps = 400;
+        for (int i = 1; i <= steps; ++i)
+        {
+            rig.setSlot (Genome::architecture, (float) i / steps);
+            auto y = rig.render (blockSize);
+            sweep.insert (sweep.end(), y.begin(), y.end());
+        }
+        float worstStep = maxStep (sweep), lo = 1.0e9f, hi = -1.0e9f;
+        for (size_t start = 0; start + 4800 <= sweep.size(); start += 2400)
+        {
+            const float db = juce::Decibels::gainToDecibels (rms (sweep, start, start + 4800));
+            lo = std::min (lo, db);
+            hi = std::max (hi, db);
+        }
+        const float ref = juce::Decibels::gainToDecibels (rms (x, 12000, 24000));
+        const float spread = std::max (hi - ref, ref - lo);
+        std::cout << "info: Genome sweep at note " << note << ": " << lo - ref << " .. " << hi - ref << " dB, max step "
+                  << worstStep / steady << "x steady\n";
+        CHECK (worstStep < steady * 2.0f, "Genome: sweeping the architecture never clicks (note " + std::to_string (note) + ")");
+        CHECK (spread < 1.0f, "Genome: the architecture sweep keeps the level within 1 dB (note " + std::to_string (note) + ", "
+                              + std::to_string (spread) + " dB)");
+    }
+
+    // Every slot to its extreme on low and high notes: finite and bounded (FM feedback, modes, resonance)
+    {
+        for (float a : genomeStops)
+        {
+            GenomeRig rig ({ { Genome::architecture, a } });
+            for (int s = 1; s < Genome::numUsedSlots; ++s)
+                rig.setSlot (s, 1.0f);
+            auto x = rig.render (48000, { { 0, on (24, 1.0f) }, { 0, on (60, 1.0f) }, { 0, on (108, 1.0f) } });
+            CHECK (allFinite (x) && peak (x) < 2.0f, "Genome " + genomeName (a) + ": every slot at its maximum stays finite and bounded ("
+                                                     + std::to_string (peak (x)) + ")");
+        }
+    }
+
+    // Body: the strike rings and decays at Body Decay; retriggering a ringing voice doesn't click
+    {
+        auto rig = genomeAt (1.0f, { { Genome::strike, 1.0f }, { Genome::bodyDecay, 0.5f } });
+        auto x = rig.render (96000, { { 0, on (57) } });
+        const float early = rms (x, 0, 2400), late = rms (x, 48000, 52800);
+        CHECK (early > late * 1.3f, "Genome Body: the strike rings above the sustain (" + std::to_string (early / late) + "x)");
+        auto y = rig.render (24000, { { 0, on (57) } });
+        CHECK (maxStep (y) < 2.0f * maxStep (std::vector<float> (x.begin(), x.begin() + 24000)),
+               "Genome Body: a new strike on a ringing voice doesn't click");
+    }
+}
+
+void testGenomeSwitchesDoNotClick()
+{
+    const std::pair<int, float> moves[] = {
+        { Genome::shape, 1.0f }, { Genome::detune, 1.0f }, { Genome::fmIndex, 1.0f }, { Genome::fmRatio, 0.6f },
+        { Genome::fmFeedback, 1.0f }, { Genome::pdAmount, 0.0f }, { Genome::pdRes, 0.8f }, { Genome::tilt, 0.0f },
+        { Genome::oddEven, 0.0f }, { Genome::bodyTone, 1.0f }, { Genome::tone, 0.3f } };
+    // Body Tone retunes ringing modes, which legitimately raises their sample steps, so the click test for it
+    // looks for broadband energy instead: an A2's modes stay under 3.6 kHz, so anything above 8 kHz in the move
+    // (8th-order high-pass) would be a click
+    {
+        auto rig = genomeAt (1.0f, { { Genome::bodyDecay, 0.8f } });
+        auto x = rig.render (12000, { { 0, on (45) } });
+        rig.setSlot (Genome::bodyTone, 1.0f);
+        auto y = rig.render (24000);
+        x.insert (x.end(), y.begin(), y.end());
+        std::vector<float> high (x);
+        for (float q : { 0.5098f, 0.6013f, 0.9000f, 2.5629f })
+        {
+            juce::dsp::IIR::Filter<float> hp (juce::dsp::IIR::Coefficients<float>::makeHighPass (sampleRate, 8000.0, q));
+            for (auto& v : high)
+                v = hp.processSample (v);
+        }
+        const float before = rms (high, 6000, 12000), during = rms (high, 12000, 14400), level = rms (x, 6000, 12000);
+        const float floor = std::max (2.0f * before, 1.0e-4f * level);
+        CHECK (during < floor, "Genome Body: changing Body Tone mid-note does not click (energy above 8 kHz "
+                               + std::to_string (juce::Decibels::gainToDecibels (during / level)) + " dB)");
+    }
+    for (float a : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+        for (auto [slot, value] : moves)
+        {
+            if (a == 1.0f && slot == Genome::bodyTone)
+                continue;
+            auto rig = genomeAt (a, { { Genome::bodyDecay, 0.8f } });
+            auto x = rig.render (12000, { { 0, on (45) } });
+            const float baseline = maxStep (std::vector<float> (x.begin() + 6000, x.end()));
+            rig.setSlot (slot, value);
+            auto y = rig.render (9600);
+            const float steady = std::max (baseline, maxStep (std::vector<float> (y.begin() + 4800, y.end())));
+            const float worst = maxStep (std::vector<float> (y.begin(), y.begin() + 2400));
+            const auto name = Genome().info().slots[(size_t) slot].name.toStdString();
+            CHECK (worst < steady * 1.5f, "Genome " + genomeName (a) + ": changing " + name + " mid-note does not click ("
+                                          + std::to_string (worst / steady) + "x the steady step)");
+        }
+}
+
+void benchmarkGenome()
+{
+    for (float a : { 0.125f, 0.625f, 0.875f })
+    {
+        Rig rig (false);
+        for (int i = 0; i < 4; ++i)
+            rig.proc->setLayerEngine (i, "genome");
+        rig.render (blockSize);
+        rig.collectRetired();
+        for (int i = 0; i < 4; ++i)
+            rig.set (ps::params::layerSlot (i, Genome::architecture), a);
+        std::vector<std::pair<int, juce::MidiMessage>> chord;
+        for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
+            chord.push_back ({ 0, on (n) });
+        rig.render (blockSize, chord);
+        double best = 1.0e9;
+        for (int run = 0; run < 3; ++run)
+        {
+            const auto start = juce::Time::getHighResolutionTicks();
+            rig.render ((int) sampleRate * 2);
+            best = std::min (best, 50.0 * juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start));
+        }
+        std::cout << "info: 8-note chord on 4 Genome layers at " << genomeName (a) << " uses " << best << "% of one core\n";
+        CHECK (best < 20.0, "Genome stack CPU is within budget (" + genomeName (a) + ")");
+    }
+}
+
 // ---- Arpeggiator and step sequencer -------------------------------------------------------------------
 
 using Gen = ps::NoteGenerator;
@@ -2886,6 +3143,13 @@ int main()
         benchmarkDirt();
         return failures == 0 ? 0 : 1;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_GENOME_ONLY", {}).isNotEmpty())
+    {
+        testGenomeEngine();
+        testGenomeSwitchesDoNotClick();
+        benchmarkGenome();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_SPECTRAL_ONLY", {}).isNotEmpty())
     {
         testSpectralEngine();
@@ -2965,6 +3229,8 @@ int main()
     testSpectralEngine();
     testDirtEngine();
     testDirtSwitchesDoNotClick();
+    testGenomeEngine();
+    testGenomeSwitchesDoNotClick();
     testArpeggiator();
     testStepSequencer();
     testArpThroughTheSynth();
@@ -2985,6 +3251,7 @@ int main()
     benchmarkWavetable();
     benchmarkSpectral();
     benchmarkDirt();
+    benchmarkGenome();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
     return failures == 0 ? 0 : 1;

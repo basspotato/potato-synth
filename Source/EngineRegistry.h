@@ -5,6 +5,7 @@
 #include "engines/WavetableEngine.h"
 #include "engines/SpectralEngine.h"
 #include "engines/DirtEngine.h"
+#include "engines/GenomeEngine.h"
 #include <memory>
 
 namespace ps
@@ -27,6 +28,7 @@ namespace engines
             { "wavetable", "Wavetable", [] { return std::unique_ptr<Engine> (std::make_unique<WavetableEngine>()); } },
             { "spectral", "Spectral", [] { return std::unique_ptr<Engine> (std::make_unique<SpectralEngine>()); } },
             { "dirt", "Dirt", [] { return std::unique_ptr<Engine> (std::make_unique<DirtEngine>()); } },
+            { "genome", "Genome", [] { return std::unique_ptr<Engine> (std::make_unique<GenomeEngine>()); } },
             { "test.sine", "Test Sine", [] { return std::unique_ptr<Engine> (std::make_unique<TestSineEngine>()); } },
         };
         return list;
