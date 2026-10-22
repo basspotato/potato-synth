@@ -17,6 +17,14 @@ namespace ps::theme
     inline const juce::Colour body        { 0xffff8a1f };   // orange
     inline const juce::Colour mid         { 0xff21e0ff };   // cyan
     inline const juce::Colour air         { 0xffc79bff };   // violet
+    inline const juce::Colour full        { 0xffd9d4f5 };   // silver: no band limit
+
+    // Indexed by params::Role (Sub, Body, Mid, Air, Full)
+    inline juce::Colour roleColour (int role)
+    {
+        const juce::Colour c[] = { sub, body, mid, air, full };
+        return c[(size_t) juce::jlimit (0, 4, role)];
+    }
 
     // Chain knob accents, cycling through a warm-to-cool spectrum
     inline juce::Colour chainAccent (int index)

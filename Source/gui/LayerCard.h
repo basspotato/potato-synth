@@ -10,6 +10,17 @@ class LayerCard : public juce::Component
 public:
     std::function<void()> onSelect, onEngineClick;
 
+    void setRole (const juce::String& roleName, const juce::String& bandText, juce::Colour roleColour)
+    {
+        if (roleName != role || bandText != band || roleColour != colour)
+        {
+            role = roleName;
+            band = bandText;
+            colour = roleColour;
+            repaint();
+        }
+    }
+
     void setSelected (bool shouldBeSelected)
     {
         if (shouldBeSelected != selected)
