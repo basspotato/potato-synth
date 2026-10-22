@@ -6,14 +6,15 @@
 namespace ps::params
 {
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
-    // 4: layer roles, crossovers and mono bass.
+    // 4: layer roles, crossovers and mono bass. 5: safe output.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 4;
+    inline constexpr int stateVersion = 5;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
     inline const juce::ParameterID crossoverHigh { "xover_high", 4 };
     inline const juce::ParameterID monoBass { "mono_bass", 4 };
+    inline const juce::ParameterID safeOutput { "safe_output", 5 };
 
     // Per-layer parameters follow the pattern L{n}_name with n = 1..4 (expandable to 8)
     inline juce::ParameterID layerParam (int layerIndex, const char* name, int version)
@@ -90,6 +91,7 @@ namespace ps::params
         layout.add (std::make_unique<juce::AudioParameterFloat> (crossoverHigh, "High Crossover", highRange, 2500.0f,
             juce::AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hz)));
         layout.add (std::make_unique<juce::AudioParameterBool> (monoBass, "Mono Bass", true));
+        layout.add (std::make_unique<juce::AudioParameterBool> (safeOutput, "Safe Output", true));
 
         for (int i = 0; i < numLayers; ++i)
             layout.add (std::make_unique<juce::AudioParameterFloat> (

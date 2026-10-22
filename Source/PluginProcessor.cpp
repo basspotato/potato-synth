@@ -18,6 +18,7 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     masterDb = apvts.getRawParameterValue (ps::params::master.getParamID());
     crossoverLowHz = apvts.getRawParameterValue (ps::params::crossoverLow.getParamID());
     monoBassOn = apvts.getRawParameterValue (ps::params::monoBass.getParamID());
+    safeOutputOn = apvts.getRawParameterValue (ps::params::safeOutput.getParamID());
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         namespace p = ps::params;
@@ -41,6 +42,9 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 {
     stack.prepare (sampleRate, samplesPerBlock);
     bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
+    clipper.prepare (sampleRate, samplesPerBlock);
+    limiter.prepare (sampleRate);
+    setLatencySamples (clipper.getLatencySamples() + limiter.getLatencySamples());   // constant for a given sample rate
     masterGain.reset (sampleRate, 0.02);
     masterGain.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
 }
@@ -77,6 +81,12 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
     masterGain.applyGain (buffer, buffer.getNumSamples());
+
+    // Safe output: a 4x oversampled soft clipper shapes overs musically, then a look-ahead limiter
+    // guarantees the -1 dBTP ceiling the clipper's decimation filter can overshoot
+    const bool safe = safeOutputOn->load() > 0.5f;
+    clipper.process (buffer, safe);
+    limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
 }
 
 // Parameters missing from older state (added in a later version) load at their defaults, not at whatever

@@ -55,6 +55,9 @@ private:
     std::atomic<float>* masterDb = nullptr;
     std::atomic<float>* crossoverLowHz = nullptr;
     std::atomic<float>* monoBassOn = nullptr;
+    std::atomic<float>* safeOutputOn = nullptr;
+    ps::TruePeakClipper clipper;
+    ps::TruePeakLimiter limiter;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> masterGain { 1.0f };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PotatoSynthProcessor)
