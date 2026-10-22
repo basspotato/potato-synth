@@ -145,6 +145,73 @@ private:
     bool active = false;
 };
 
+// MASS's bass harmonics: the stack's lows made audible on speakers that can't play them (the missing
+// fundamental: the ear rebuilds a low pitch from its 2nd and 3rd harmonics). The mono low band (below 120 Hz)
+// is normalised by its envelope and fed through Chebyshev polynomials, T2 and T3, which turn a sine into
+// exactly its 2nd and 3rd harmonic, so nothing above 3 x 120 Hz is made and nothing can alias. The result goes
+// back to the envelope's level, through a 90-400 Hz band-pass, and is added in mono, so the lows stay mono.
+// It runs among the knob stages, so the loudness trim takes the level it adds back out of the whole stack.
+class BassHarmonics
+{
+public:
+    void prepare (double sampleRate)
+    {
+        sr = (float) sampleRate;
+        gLow = tptGain (120.0f, sr);
+        gHigh = tptGain (90.0f, sr);
+        gTop = tptGain (400.0f, sr);
+        attack = 1.0f - std::exp (-1.0f / (0.002f * sr));
+        release = 1.0f - std::exp (-1.0f / (0.06f * sr));
+        smoothCoef = 1.0f - std::exp (-1.0f / (0.03f * sr));
+        reset();
+    }
+
+    void reset()
+    {
+        for (auto* f : { &low1, &low2, &high, &top })
+            f->reset();
+        envelope = current = 0.0f;
+    }
+
+    // amount 0..1: the harmonics' level against the low band they come from. Returns false when off and settled.
+    bool process (float* left, float* right, int numSamples, float amount) noexcept
+    {
+        if (amount < 1.0e-4f && current < 1.0e-4f)
+        {
+            if (active)
+            {
+                reset();
+                active = false;
+            }
+            return false;
+        }
+        active = true;
+        constexpr float k = 1.4142f;   // Butterworth
+        for (int i = 0; i < numSamples; ++i)
+        {
+            current += (amount - current) * smoothCoef;
+            const float mid = 0.5f * (left[i] + right[i]);
+            const float lowBand = low2.process (low1.process (mid, gLow, k).low, gLow, k).low;
+            const float a = std::abs (lowBand);
+            envelope += (a - envelope) * (a > envelope ? attack : release);
+            const float u = juce::jlimit (-1.0f, 1.0f, lowBand / std::max (envelope, 1.0e-6f));
+            const float t2 = 2.0f * u * u - 1.0f, t3 = u * (4.0f * u * u - 3.0f);
+            const float h = envelope * (0.6f * t2 + 0.4f * t3);
+            const float shaped = top.process (high.process (h, gHigh, k).high, gTop, k).low;
+            const float add = 2.0f * current * shaped;
+            left[i] += add;
+            right[i] += add;
+        }
+        return true;
+    }
+
+private:
+    ZdfSvf low1, low2, high, top;
+    float sr = 48000.0f, gLow = 0.0f, gHigh = 0.0f, gTop = 0.0f;
+    float attack = 0.01f, release = 0.001f, smoothCoef = 0.001f, envelope = 0.0f, current = 0.0f;
+    bool active = false;
+};
+
 // PRESSURE: loud and dense like a finished master, but clean. Distributed gain reduction: the knob asks for
 // G(u) = 12 u^1.3 dB of total reduction, shared out so no single stage pumps or distorts:
 //   OTT 30 % (3 bands, up + down), glue 20 % (2:1) here, and saturation 25 % (parallel ADAA tanh) plus soft

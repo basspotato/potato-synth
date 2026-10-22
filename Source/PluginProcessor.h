@@ -117,6 +117,7 @@ private:
     float dropSmoothed = 0.0f;
     std::array<float, ps::params::numChainKnobs> knobPosition {};   // smoothed, audio thread
     ps::LowFocus lowFocus;
+    ps::BassHarmonics bassHarmonics;
     ps::Pressure pressure;
     ps::Tilt tilt;
     ps::DeHarsh deHarsh;

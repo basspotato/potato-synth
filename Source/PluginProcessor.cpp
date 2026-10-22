@@ -92,6 +92,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     clipper.prepare (sampleRate, samplesPerBlock);
     limiter.prepare (sampleRate);
     lowFocus.prepare (sampleRate);
+    bassHarmonics.prepare (sampleRate);
     pressure.prepare (sampleRate);
     tilt.prepare (sampleRate);
     deHarsh.prepare (sampleRate);
@@ -289,6 +290,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     // The bus stages the knobs drive, measured in and out for the loudness trim (only while one is working)
     knobStagesIn.process (left, right, n);
     bool active = lowFocus.process (left, right, n, offsets.lowFocusDb);
+    active = bassHarmonics.process (left, right, n, offsets.bassHarmonics) || active;
     active = buildStage.process (left, right, n, performance.build, 0.5f * knobStagesIn.getPower(), bpm) || active;
     active = tilt.process (left, right, n, offsets.tiltDbPerOct) || active;
     // BLOOM's extra reverb send is one of the knob stages, so the loudness trim compensates it
@@ -322,7 +324,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         const auto& layer = stack.layer (i);
         power[(size_t) i] = layer.measuredPower();
         patchGain[(size_t) i] = layer.patchGain();
-        knobGain[(size_t) i] = layer.knobGain() * std::sqrt (layer.carvePowerRatio());
+        knobGain[(size_t) i] = layer.knobGain() * std::sqrt (layer.carvePowerRatio() * layer.drivePowerRatio());
     }
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
                          (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n);

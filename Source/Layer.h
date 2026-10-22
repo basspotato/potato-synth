@@ -126,6 +126,8 @@ public:
         updateBand (true);
         meter.prepare (sr, false);
         carvedMeter.prepare (sr, false);
+        driveInMeter.prepare (sr, false);
+        driveOutMeter.prepare (sr, false);
         carve.prepare (sr);
         duckRate = (float) sr;
         duck.attackSamples = 0.002f * duckRate;
@@ -186,6 +188,16 @@ public:
     {
         return carving ? 1.0f / (float) harmony::stageRatio (meter, carvedMeter) : 1.0f;
     }
+    // The power the chain knobs' share of the drive adds (P_out / P_in), which the loudness trim counts as the
+    // knobs'. Measured across the whole drive; the knobs' share of it is taken in proportion to their share of
+    // the drive amount, in dB (exact when the patch has no drive of its own, as on the init stack).
+    float drivePowerRatio() const noexcept
+    {
+        if (! measuringDrive)
+            return 1.0f;
+        return (float) std::pow (1.0 / harmony::stageRatio (driveInMeter, driveOutMeter), (double) knobDriveShare);
+    }
+
     // The drive's oversampler delay, the same on every layer (each sounding layer runs through it)
     float driveLatencySamples() const noexcept { return layerDrive.getLatencySamples(); }
 
@@ -264,6 +276,11 @@ public:
         meter.update();
         if (carving)
             carvedMeter.update();
+        if (measuringDrive)
+        {
+            driveInMeter.update();
+            driveOutMeter.update();
+        }
         // Swap only when the previous engine has finished fading and there is room to retire this one
         if (outgoing == nullptr && freeRetireSlots() >= 2)
         {
@@ -410,7 +427,23 @@ public:
         if (filterFade > 0)
             filterFade = std::max (0, filterFade - numSamples);
 
-        layerDrive.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.drive, 0.0f) * 0.01f + chainDrive));
+        const float patchDrive = juce::jlimit (0.0f, 1.0f, load (params.drive, 0.0f) * 0.01f);
+        const float totalDrive = juce::jlimit (0.0f, 1.0f, patchDrive + chainDrive);
+        const bool knobDriving = totalDrive > patchDrive + 1.0e-4f;
+        if (knobDriving != measuringDrive)
+        {
+            driveInMeter.reset();
+            driveOutMeter.reset();
+            measuringDrive = knobDriving;
+        }
+        if (measuringDrive)
+            driveInMeter.process (scratchL.data(), scratchR.data(), numSamples);
+        layerDrive.process (scratchL.data(), scratchR.data(), numSamples, totalDrive);
+        if (measuringDrive)
+        {
+            driveOutMeter.process (scratchL.data(), scratchR.data(), numSamples);
+            knobDriveShare = (totalDrive - patchDrive) / totalDrive;
+        }
 
         band.process (scratchL.data(), scratchR.data(), numSamples);
         chorus.process (scratchL.data(), scratchR.data(), numSamples, juce::jlimit (0.0f, 1.0f, load (params.chorus, 0.0f) * 0.01f + chainChorus),
@@ -869,7 +902,9 @@ private:
     OnsetDuck duck;
     float chainDriftCents = 0.0f, chainDrive = 0.0f, chainChorus = 0.0f;
     harmony::CarveBank carve;
-    harmony::KPowerMeter carvedMeter;
+    harmony::KPowerMeter carvedMeter, driveInMeter, driveOutMeter;
+    bool measuringDrive = false;
+    float knobDriveShare = 0.0f;
     std::array<float, harmony::CarveBank::numBands> carveTargets { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
     bool carving = false, carveAnalyse = false;
     float duckRate = 48000.0f;

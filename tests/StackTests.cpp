@@ -1382,6 +1382,102 @@ void testXyPad()
     }
 }
 
+// Developer report (POTATO_KNOB_REPORT=1): what each knob does to the init stack, knob at 0 vs full, in octave
+// bands (averaged over 2 s of frames), loudness and low/high stereo width. A tuning aid, not a test.
+std::vector<double> octaveBandsDb (const std::vector<float>& l, const std::vector<float>& r, size_t from, size_t to)
+{
+    constexpr int order = 13, size = 1 << order;
+    juce::dsp::FFT fft (order);
+    std::vector<double> bands (10, 0.0);
+    std::vector<float> data (2 * size);
+    for (size_t start = from; start + size <= to; start += size / 2)
+        for (const auto* x : { &l, &r })
+        {
+            std::fill (data.begin(), data.end(), 0.0f);
+            for (int i = 0; i < size; ++i)
+                data[(size_t) i] = (*x)[start + (size_t) i] * (float) (0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * i / size));
+            fft.performFrequencyOnlyForwardTransform (data.data());
+            for (int bin = 1; bin < size / 2; ++bin)
+            {
+                const double f = bin * sampleRate / size;
+                const int b = (int) std::floor (std::log2 (f / 22.0));
+                if (b >= 0 && b < 10)
+                    bands[(size_t) b] += (double) data[(size_t) bin] * data[(size_t) bin];
+            }
+        }
+    for (auto& b : bands)
+        b = 10.0 * std::log10 (b + 1.0e-20);
+    return bands;
+}
+
+void knobReport()
+{
+    const int settle = 48000, measure = 96000;
+    auto render = [&] (int knob, float value, bool chord, std::vector<float>& l, std::vector<float>& r)
+    {
+        StackRig rig;
+        if (knob >= 0)
+            rig.set (ps::params::chainKnob (knob), value);
+        std::vector<std::pair<int, juce::MidiMessage>> notes;
+        if (chord)
+            notes = StackRig::chord();
+        else
+            notes = { { 0, on (48, 0.9f) } };
+        l = rig.render (settle + measure, notes);
+        r = rig.right;
+    };
+    for (const bool chord : { false, true })
+    {
+        std::vector<float> l0, r0;
+        render (-1, 0.0f, chord, l0, r0);
+        const auto base = octaveBandsDb (l0, r0, (size_t) settle, l0.size());
+        const double lu0 = lufs (l0, r0, (size_t) settle, l0.size());
+        std::cout << (chord ? "CHORD" : "C3") << "  bands (Hz)  22   44   88  176  352  704  1.4k 2.8k 5.6k 11k\n";
+        std::cout << "  base dB     ";
+        for (auto b : base) std::cout << juce::String (b - base[2], 0).paddedLeft (' ', 5);
+        std::cout << "\n";
+        for (int k = 0; k < ps::params::numChainKnobs; ++k)
+        {
+            if (const char* only = std::getenv ("POTATO_REPORT_KNOB"); only != nullptr && std::atoi (only) != k)
+                continue;
+            std::vector<float> l1, r1;
+            render (k, 1.0f, chord, l1, r1);
+            const auto bands = octaveBandsDb (l1, r1, (size_t) settle, l1.size());
+            const double lu = lufs (l1, r1, (size_t) settle, l1.size()) - lu0;
+            double change = 0.0;
+            std::cout << "  " << juce::String (ps::params::chainKnobNames[k]).paddedRight (' ', 10) << "  ";
+            for (size_t b = 0; b < bands.size(); ++b)
+            {
+                const double d = bands[b] - base[b] - lu;
+                change += d * d;
+                std::cout << juce::String (d, 1).paddedLeft (' ', 5);
+            }
+            std::cout << "   LU " << juce::String (lu, 2) << "  tone " << juce::String (std::sqrt (change / (double) bands.size()), 2) << " dB\n";
+        }
+    }
+}
+
+void testBassHarmonics()
+{
+    ps::BassHarmonics h;
+    h.prepare (sampleRate);
+    const int n = 48000;
+    std::vector<float> l (n), r (n), dry (n);
+    for (int i = 0; i < n; ++i)
+        dry[(size_t) i] = 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 55.0 * i / sampleRate);
+    l = r = dry;
+    for (int pos = 0; pos < n; pos += 512)
+        h.process (l.data() + pos, r.data() + pos, std::min (512, n - pos), 1.0f);
+    std::vector<float> added (n);
+    for (int i = 0; i < n; ++i)
+        added[(size_t) i] = l[(size_t) i] - dry[(size_t) i];
+    const float second = bandEnergy (added, 24000, 100.0, 120.0), third = bandEnergy (added, 24000, 155.0, 175.0);
+    const float above = bandEnergy (added, 24000, 400.0, 20000.0), total = bandEnergy (added, 24000, 20.0, 20000.0);
+    CHECK (second > 0.2f * total && third > 0.1f * total, "MASS harmonics: a 55 Hz sine gets its 2nd and 3rd harmonics");
+    CHECK (above < 1.0e-3f * total, "MASS harmonics: nothing above 400 Hz (no aliasing, no fizz)");
+    CHECK (l == r, "MASS harmonics are added in mono");
+}
+
 void testChainKnobInvariants()
 {
     // A control rig plays the same notes with the knobs untouched: the loudness change is measured against it at
@@ -2727,9 +2823,15 @@ int main()
         testPhaseAlign();
         return failures == 0 ? 0 : 1;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_KNOB_REPORT", {}).isNotEmpty())
+    {
+        knobReport();
+        return 0;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_CHAIN_ONLY", {}).isNotEmpty())   // iterating on the knobs
     {
         testChainPaths();
+        testBassHarmonics();
         testOnsetDuck();
         testBloomSpace();
         testDropOnTheBar();
@@ -2794,6 +2896,7 @@ int main()
     testLayerChorus();
     testPhaseAlign();
     testChainPaths();
+    testBassHarmonics();
     testOnsetDuck();
     testBloomSpace();
     testDropOnTheBar();

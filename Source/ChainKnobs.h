@@ -78,6 +78,7 @@ enum class Target
     slot,              // a slot role on matching layers, in normalised slot units
     monoBassOctaves,   // mono-bass crossover, octaves relative to the patch's
     lowFocusDb,        // bus peak EQ on the tactile band (about 60 Hz)
+    bassHarmonics,     // the lows' 2nd and 3rd harmonics added on the bus, 0..1 (StackBus.h BassHarmonics)
     pressure,          // the PRESSURE bus stage's amount, 0..1 (StackBus.h)
     tiltDbPerOct,      // bus spectral tilt around 1 kHz, dB per octave (StackBus.h Tilt)
     exciter,           // oversampled harmonic exciter above 6 kHz, wet mix 0..1 (StackBus.h TruePeakClipper)
@@ -127,7 +128,8 @@ inline const std::vector<Route>& routes()
         { mass, Target::lowFocusDb, anyRole, SlotRole::none, Path ({ 0.0f, 1.8f, 3.5f, 5.0f, 6.0f }) },
         { mass, Target::layerDrive, body, SlotRole::none, Path ({ 0.0f, 0.1f, 0.2f, 0.3f, 0.4f }) },
         { mass, Target::monoBassOctaves, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.18f, 0.22f }) },
-        // The body's drive and the limiter on the bigger sub peaks cost loudness the open-loop trim can't see.
+        // The limiter on the bigger sub peaks costs loudness the open-loop trim can't see. (The body's drive no
+        // longer does: the layer measures what the knobs' drive adds, and the trim takes it back.)
         // (The body's own drive and sub-octave slots are left alone: on the init Dirt body they lost 0.8 LU
         // between them, the sub octave mostly under the Body role's 120 Hz band limit, where it can't be heard.)
         { mass, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.15f, 0.3f, 0.45f, 0.6f }) },
@@ -135,6 +137,10 @@ inline const std::vector<Route>& routes()
         // the total), so the weight shift is heard on any speaker, not only on a sub.
         { mass, Target::layerLevelDb, sub, SlotRole::none, Path ({ 0.0f, 0.8f, 1.6f, 2.4f, 3.0f }) },
         { mass, Target::layerLevelDb, body, SlotRole::none, Path ({ 0.0f, 0.6f, 1.2f, 1.8f, 2.2f }) },
+        // Listening (build #27): "MASS still sounds like it does nothing", most likely on speakers that don't
+        // reach 60 Hz, where the low focus and the sub can't be heard. The lows' own harmonics carry the weight
+        // into 120-400 Hz, which every speaker plays.
+        { mass, Target::bassHarmonics, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
 
         // PRESSURE: distributed gain reduction across saturation, OTT, glue and clipper (the stage owns the split)
         { pressure, Target::pressure, anyRole, SlotRole::none, Path ({ 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) },
@@ -211,6 +217,7 @@ struct Offsets
     std::array<std::array<float, numSlotRoles>, params::numLayers> slot {};
     float monoBassOctaves = 0.0f;
     float lowFocusDb = 0.0f;
+    float bassHarmonics = 0.0f;
     float pressure = 0.0f;
     float tiltDbPerOct = 0.0f;
     float exciter = 0.0f;
@@ -238,6 +245,7 @@ inline Offsets compute (const std::array<float, numKnobs>& u, const std::array<p
         switch (r.target)
         {
             case Target::monoBassOctaves: o.monoBassOctaves += v; break;
+            case Target::bassHarmonics: o.bassHarmonics += v; break;
             case Target::lowFocusDb:      o.lowFocusDb += v; break;
             case Target::pressure:        o.pressure += v; break;
             case Target::tiltDbPerOct:    o.tiltDbPerOct += v; break;
