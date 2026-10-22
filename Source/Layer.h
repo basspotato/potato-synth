@@ -198,6 +198,16 @@ public:
         return (float) std::pow (1.0 / harmony::stageRatio (driveInMeter, driveOutMeter), (double) knobDriveShare);
     }
 
+    // ---- Expression per note slot (pitch bend in semitones, MPE pressure and timbre 0..1), set by the stack ----
+    void setSlotExpression (int slot, float bendSemitones, float pressure, float timbre) noexcept
+    {
+        if (slot < 0 || slot >= Engine::maxVoices)
+            return;
+        slotBend[(size_t) slot] = bendSemitones;
+        slotPressure[(size_t) slot] = pressure;
+        slotTimbre[(size_t) slot] = timbre;
+    }
+
     // The drive's oversampler delay, the same on every layer (each sounding layer runs through it)
     float driveLatencySamples() const noexcept { return layerDrive.getLatencySamples(); }
 
@@ -347,6 +357,7 @@ public:
         {
             enforceVoiceCap (slot);
             startOrder[(size_t) slot] = order;
+            pushExpression (*active, slot, slot);
             active->noteOn (slot, { note, velocity, glideSeconds(), lastNote, false, fixedPhaseRole() });
             voiceFilters[(size_t) slot].start (note, envelopes[(size_t) slot].isActive());
             envelopes[(size_t) slot].trigger();
@@ -418,6 +429,10 @@ public:
 
         std::fill_n (scratchL.data(), numSamples, 0.0f);
         std::fill_n (scratchR.data(), numSamples, 0.0f);
+
+        for (auto* e : { active, outgoing })
+            if (e != nullptr)
+                pushAllExpression (*e);
 
         if (active != nullptr && ! isMuted())
             renderVoices (*active, envelopes, voiceFilters, numSamples);
@@ -747,6 +762,30 @@ private:
         return anySounding;
     }
 
+    // Each engine voice gets the expression of the note slot it plays: its own in Poly, the mono owner's in
+    // Mono and Legato
+    void pushExpression (Engine& e, int voice, int slot) noexcept
+    {
+        if (slot < 0 || slot >= Engine::maxVoices)
+            return;
+        e.setVoiceBend (voice, slotBend[(size_t) slot]);
+        e.setVoiceExpression (voice, slotPressure[(size_t) slot], slotTimbre[(size_t) slot]);
+    }
+
+    void pushAllExpression (Engine& e) noexcept
+    {
+        if (mode == params::VoiceMode::poly)
+        {
+            for (int v = 0; v < juce::jmin (numVoices, Engine::maxVoices); ++v)
+                if (envelopes[(size_t) v].isActive())
+                    pushExpression (e, v, v);
+        }
+        else if (monoOwner >= 0)
+        {
+            pushExpression (e, 0, monoOwner);
+        }
+    }
+
     struct MonoNote { int slot = -1, note = 60; float velocity = 1.0f; };
 
     void playMono (const MonoNote& n, bool keyAlreadyHeld)
@@ -756,6 +795,7 @@ private:
         const bool legatoMove = mode == params::VoiceMode::legato && keyAlreadyHeld && sounding;
         const bool glide = mode == params::VoiceMode::mono || legatoMove;
 
+        pushExpression (*active, 0, n.slot);
         active->noteOn (0, { n.note, n.velocity, glide ? glideSeconds() : 0.0, lastNote, legatoMove, fixedPhaseRole() });
         if (! legatoMove)
         {
@@ -934,6 +974,7 @@ private:
     params::VoiceMode mode = params::VoiceMode::poly;
     std::array<MonoNote, 16> monoNotes {};
     int numMonoNotes = 0, monoOwner = -1;
+    std::array<float, Engine::maxVoices> slotBend {}, slotPressure {}, slotTimbre {};
     float lastNote = -1.0f;   // MIDI note last played, where poly and mono glides start from
 };
 }

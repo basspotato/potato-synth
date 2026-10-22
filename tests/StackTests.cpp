@@ -246,6 +246,83 @@ void testCutoffSweep()
     CHECK (allFinite (x) && maxStep (x) < 0.05f, "sweeping CUTOFF and RESO in steps does not click");
 }
 
+// Pitch bend, MPE per-note bend, mod wheel and aftertouch
+void testExpression()
+{
+    namespace p = ps::params;
+    auto bend = [] (int channel, float amount)   // amount -1..1
+    {
+        return juce::MidiMessage::pitchWheel (channel, juce::jlimit (0, 16383, 8192 + juce::roundToInt (amount * 8191.0f)));
+    };
+    {
+        Rig rig;
+        auto x = rig.render (24000, { { 0, bend (1, 1.0f) }, { 100, on (69) } });
+        const double f = estimateFrequency (x, 4000, 24000);
+        CHECK (std::abs (f - 440.0 * std::exp2 (2.0 / 12.0)) < 0.2, "a full bend up raises a note 2 semitones (" + std::to_string (f) + " Hz)");
+        rig.set (p::bendRange, 12.0f);
+        x = rig.render (24000);
+        const double g = estimateFrequency (x, 4000, 24000);
+        CHECK (std::abs (g - 880.0) < 0.3, "with a 12 semitone range it raises an octave (" + std::to_string (g) + " Hz)");
+    }
+    // Every engine follows the bend (each adds it where it adds the layer tune)
+    for (const char* id : { "jp", "sub", "wavetable", "spectral", "dirt" })
+    {
+        auto peakHz = [id, &bend] (float amount)
+        {
+            Rig rig;
+            rig.proc->setLayerEngine (2, id);
+            rig.render (512);
+            rig.collectRetired();
+            auto x = rig.render (40000, { { 0, bend (1, amount) }, { 0, on (57) } });
+            constexpr int order = 15, size = 1 << order;
+            juce::dsp::FFT fft (order);
+            std::vector<float> data (2 * size, 0.0f);
+            for (int i = 0; i < size; ++i)
+                data[(size_t) i] = x[6000 + (size_t) i] * (float) (0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * i / size));
+            fft.performFrequencyOnlyForwardTransform (data.data());
+            int best = 0;
+            for (int b = (int) (90.0 * size / sampleRate); b < (int) (300.0 * size / sampleRate); ++b)
+                if (data[(size_t) b] > data[(size_t) best])
+                    best = b;
+            return best * sampleRate / size;
+        };
+        const double ratio = peakHz (1.0f) / peakHz (0.0f);
+        CHECK (std::abs (ratio / std::exp2 (2.0 / 12.0) - 1.0) < 0.01,
+               std::string (id) + " follows the pitch bend (ratio " + std::to_string (ratio) + ")");
+    }
+    {
+        // A bend sweep on a held note glides without steps
+        Rig rig;
+        std::vector<std::pair<int, juce::MidiMessage>> ev { { 0, on (57) } };
+        for (int i = 0; i <= 64; ++i)
+            ev.push_back ({ 4800 + i * 300, bend (1, (float) i / 64.0f) });
+        auto x = rig.render (48000, ev);
+        CHECK (allFinite (x) && maxStep (x) < 0.05f, "a pitch bend sweep does not click or zipper");
+    }
+    {
+        // MPE: each note bends on its own channel; channel 1 bends them all
+        Rig rig;
+        rig.set (p::mpe, 1.0f);
+        auto x = rig.render (24000, { { 0, bend (3, 1.0f) }, { 0, bend (2, 0.25f) }, { 100, juce::MidiMessage::noteOn (2, 69, 0.8f) } });
+        double f = estimateFrequency (x, 4000, 24000);
+        CHECK (std::abs (f - 880.0) < 0.5, "MPE: a quarter bend on the note's own channel is +12 semitones (" + std::to_string (f) + " Hz)");
+        x = rig.render (24000, { { 0, bend (1, 1.0f) } });
+        f = estimateFrequency (x, 4000, 24000);
+        CHECK (std::abs (f - 880.0 * std::exp2 (2.0 / 12.0)) < 0.5, "MPE: channel 1 bends every note on top (" + std::to_string (f) + " Hz)");
+    }
+    {
+        // The mod wheel moves MORPH by default; aftertouch goes where it is sent
+        Rig rig;
+        rig.render (9600, { { 0, juce::MidiMessage::controllerEvent (1, 1, 127) }, { 0, on (60) } });
+        CHECK (rig.proc->getEffectiveKnob (ps::chain::morph) > 0.95f, "the mod wheel turns MORPH up");
+        rig.set (p::aftertouchTarget, 12.0f);   // CUTOFF
+        rig.set (p::aftertouchDepth, -100.0f);
+        auto open = rig.render (9600);
+        auto closed = rig.render (24000, { { 0, juce::MidiMessage::channelPressureChange (1, 127) } });
+        CHECK (rms (closed, 12000, 24000) < 0.5f * rms (open, 0, 9600), "aftertouch on CUTOFF closes the filter");
+    }
+}
+
 void testVoiceStealingAndChords()
 {
     Rig rig;
@@ -2796,6 +2873,7 @@ int main()
         testArpeggiator();
         testHold();
     testCutoffSweep();
+    testExpression();
         testStepSequencer();
         testArpThroughTheSynth();
         testModLanes();
@@ -2846,6 +2924,7 @@ int main()
     testSustainPedal();
     testHold();
     testCutoffSweep();
+    testExpression();
     testLayerMuteAndEmpty();
     testEngineSwapWhileSounding();
     testLayersStack();

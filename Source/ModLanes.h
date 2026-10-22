@@ -19,8 +19,8 @@ class ModLanes
 {
 public:
     static constexpr int numLanes = 4, maxSteps = 32;
-    // Targets: 0 = off, 1..8 the chain knobs, then SUPER, XY X, XY Y
-    static constexpr int numTargets = 11, superTarget = 8, padXTarget = 9, padYTarget = 10;
+    // Targets: 0 = off, 1..8 the chain knobs, then SUPER, XY X, XY Y, CUTOFF
+    static constexpr int numTargets = 12, superTarget = 8, padXTarget = 9, padYTarget = 10, cutoffTarget = 11;
 
     struct Settings
     {

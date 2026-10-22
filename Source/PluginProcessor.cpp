@@ -36,6 +36,12 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     holdButton = apvts.getRawParameterValue (ps::params::hold.getParamID());
     cutoffKnob = apvts.getRawParameterValue (ps::params::cutoff.getParamID());
     resoKnob = apvts.getRawParameterValue (ps::params::resonance.getParamID());
+    {
+        namespace p = ps::params;
+        auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
+        expressionParams = { raw (p::bendRange), raw (p::mpe), raw (p::mpeRange), raw (p::modWheelTarget), raw (p::modWheelDepth),
+                             raw (p::aftertouchTarget), raw (p::aftertouchDepth) };
+    }
     padX = apvts.getRawParameterValue (ps::params::padX.getParamID());
     {
         namespace p = ps::params;
@@ -87,6 +93,9 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     generatedMidi.ensureSize (8192);
     heldMidi.ensureSize (8192);
     sweep.prepare (sampleRate);
+    modWheel = 0.0f;
+    channelPressure = {};
+    notePressure = {};
     realPedal = pedalSent = false;
     bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
     clipper.prepare (sampleRate, samplesPerBlock);
@@ -173,6 +182,28 @@ void PotatoSynthProcessor::applyLayerEnginesFromState()
     updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
 }
 
+void PotatoSynthProcessor::trackExpression (const juce::MidiBuffer& midi) noexcept
+{
+    for (const auto meta : midi)
+    {
+        const auto m = meta.getMessage();
+        if (m.isControllerOfType (1))
+            modWheel = (float) m.getControllerValue() / 127.0f;
+        else if (m.isChannelPressure())
+            channelPressure[(size_t) juce::jlimit (1, 16, m.getChannel())] = (float) m.getChannelPressureValue() / 127.0f;
+        else if (m.isAftertouch())
+            notePressure[(size_t) m.getNoteNumber()] = (float) m.getAfterTouchValue() / 127.0f;
+        else if (m.isNoteOff())
+            notePressure[(size_t) m.getNoteNumber()] = 0.0f;
+        else if (m.isResetAllControllers())
+        {
+            modWheel = 0.0f;
+            channelPressure = {};
+            notePressure = {};
+        }
+    }
+}
+
 const juce::MidiBuffer& PotatoSynthProcessor::applyHold (const juce::MidiBuffer& midi)
 {
     if (holdButton->load() <= 0.5f && ! pedalSent)
@@ -251,6 +282,23 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
         laneOffsets = modLanes.process (played, n, bpm, ppq, lanes);
     }
+    {
+        // The mod wheel and aftertouch (the strongest of channel and poly pressure) add to their targets, as a lane does
+        trackExpression (played);
+        float touch = 0.0f;
+        for (auto v : channelPressure) touch = juce::jmax (touch, v);
+        for (auto v : notePressure) touch = juce::jmax (touch, v);
+        const auto& e = expressionParams;
+        auto add = [this] (float target, float depthPercent, float value)
+        {
+            const int t = juce::roundToInt (target);
+            if (t > 0 && t <= ps::ModLanes::numTargets)
+                laneOffsets[(size_t) (t - 1)] += depthPercent * 0.01f * value;
+        };
+        add (e.wheelTarget->load(), e.wheelDepth->load(), modWheel);
+        add (e.touchTarget->load(), e.touchDepth->load(), touch);
+        stack.setBendSettings (e.bendRange->load(), e.mpe->load() > 0.5f, e.mpeRange->load());
+    }
     const auto offsets = updateChainKnobs (n);
     stack.setAlignStrength (juce::jlimit (0.0f, 1.0f, phaseAlign->load() * 0.01f));
     {
@@ -279,7 +327,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     stackGain.applyGain (buffer, n);
     bus.process (left, right, n, crossoverLowHz->load() * std::exp2 (offsets.monoBassOctaves), monoBassOn->load() > 0.5f);
     // CUTOFF and RESO: before the sends, so the reverb and delay hear the filtered stack, as on a hardware synth
-    sweep.setPosition (cutoffKnob->load() * 0.01f, resoKnob->load() * 0.01f);
+    sweep.setPosition (cutoffKnob->load() * 0.01f + laneOffsets[ps::ModLanes::cutoffTarget], resoKnob->load() * 0.01f);
     sweep.process (left, right, n);
 
     // The shared sends, fed from the dry stack; the patch's own send levels go in here, before the knob stages

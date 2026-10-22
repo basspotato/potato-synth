@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_core/juce_core.h>
+#include <array>
 #include <functional>
 
 namespace ps
@@ -71,6 +72,7 @@ class Engine
 {
 public:
     static constexpr int numSlots = 24;
+    static constexpr int maxVoices = 16;   // the stack's note slots
 
     virtual ~Engine() = default;
 
@@ -91,6 +93,16 @@ public:
     // Layer-wide pitch offset in semitones (octave + semitone + fine). Must stay phase-continuous.
     virtual void setTune (float semitones) = 0;
 
+    // Per-voice pitch offset in semitones (pitch bend, MPE per-note bend), on top of the note and the layer
+    // tune. The layer sets it before noteOn and while it moves, smoothed and in steps of at most 32 samples, so
+    // engines just add voiceBend (voice) wherever they add the tune. Must stay phase-continuous.
+    virtual void setVoiceBend (int voice, float semitones) { bends[(size_t) juce::jlimit (0, maxVoices - 1, voice)] = semitones; }
+    float voiceBend (int voice) const noexcept { return bends[(size_t) juce::jlimit (0, maxVoices - 1, voice)]; }
+
+    // Per-voice expression, 0..1 (MPE pressure or poly aftertouch; MPE timbre, CC74). Engines may map them to
+    // their own controls; the layer stores them either way.
+    virtual void setVoiceExpression (int voice, float pressure, float timbre) { juce::ignoreUnused (voice, pressure, timbre); }
+
     virtual void setSlot (int slot, float normalisedValue) { juce::ignoreUnused (slot, normalisedValue); }
 
     // Called once before the voices of each rendered chunk (numSamples at most the prepared block size), for
@@ -99,5 +111,8 @@ public:
 
     // Add one voice's output into left/right for numSamples.
     virtual void render (int voice, float* left, float* right, int numSamples) = 0;
+
+private:
+    std::array<float, maxVoices> bends {};
 };
 }

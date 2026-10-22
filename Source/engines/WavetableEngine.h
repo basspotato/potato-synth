@@ -93,6 +93,7 @@ public:
         auto& v = voices[(size_t) index];
         if (! v.active)
             return;
+        v.pitchBend = voiceBend (index);
         for (int pos = 0; pos < numSamples; pos += subBlock)
             renderSubBlock (v, left + pos, right + pos, juce::jmin (subBlock, numSamples - pos));
     }
@@ -111,6 +112,7 @@ private:
 
     struct Voice
     {
+        float pitchBend = 0.0f;   // semitones, from the layer (pitch bend, MPE)
         bool active = false;
         PitchGlide pitch;
         uint32_t rng = 1;
@@ -210,9 +212,9 @@ private:
         auto incrementFor = [this] (float pitch) { return 440.0f * fastExp2 ((pitch + tune - 69.0f) / 12.0f) / sr; };
         if (v.pitch.isGliding())
             for (int j = 0; j < n; ++j)
-                inc[(size_t) j] = incrementFor (v.pitch.next());
+                inc[(size_t) j] = incrementFor (v.pitch.next() + v.pitchBend);
         else
-            std::fill (inc.begin(), inc.begin() + n, incrementFor (v.pitch.getCurrent()));
+            std::fill (inc.begin(), inc.begin() + n, incrementFor (v.pitch.getCurrent() + v.pitchBend));
 
         // Position: knob plus envelope, ramped across the sub-block
         v.env *= std::exp (-(float) n / (envMs (v.smooth[posEnvTime]) * 0.001f * sr));

@@ -102,6 +102,7 @@ public:
         auto& v = voices[(size_t) index];
         if (! v.active)
             return;
+        v.pitchBend = voiceBend (index);
         for (int pos = 0; pos < numSamples; pos += subBlock)
             renderSubBlock (v, left + pos, right + pos, juce::jmin (subBlock, numSamples - pos));
     }
@@ -122,6 +123,7 @@ private:
 
     struct Voice
     {
+        float pitchBend = 0.0f;   // semitones, from the layer (pitch bend, MPE)
         bool active = false;
         float velocity = 1.0f;
         PitchGlide pitch;
@@ -332,10 +334,10 @@ private:
         auto incrementFor = [this, sr2] (float pitch) { return 440.0f * fastExp2 ((pitch + tune - 69.0f) / 12.0f) / sr2; };
         if (v.pitch.isGliding())
             for (int j = 0; j < n; ++j)
-                inc[(size_t) (2 * j)] = inc[(size_t) (2 * j + 1)] = incrementFor (v.pitch.next());
+                inc[(size_t) (2 * j)] = inc[(size_t) (2 * j + 1)] = incrementFor (v.pitch.next() + v.pitchBend);
         else
-            std::fill (inc.begin(), inc.begin() + n2, incrementFor (v.pitch.getCurrent()));
-        const float pitchNow = v.pitch.getCurrent() + tune;
+            std::fill (inc.begin(), inc.begin() + n2, incrementFor (v.pitch.getCurrent() + v.pitchBend));
+        const float pitchNow = v.pitch.getCurrent() + tune + v.pitchBend;
         const float pw = 0.5f + 0.45f * v.smooth[pulseWidth];
 
         // OSC2, one sample late: hard sync resets are corrected on both sides of the reset

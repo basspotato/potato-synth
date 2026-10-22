@@ -113,6 +113,7 @@ public:
         auto& v = voices[(size_t) index];
         if (! v.active)
             return;
+        v.pitchBend = voiceBend (index);
         for (int pos = 0; pos < numSamples; pos += subBlock)
             renderSubBlock (v, left + pos, right + pos, juce::jmin (subBlock, numSamples - pos));
     }
@@ -160,6 +161,7 @@ private:
 
     struct Voice
     {
+        float pitchBend = 0.0f;   // semitones, from the layer (pitch bend, MPE)
         bool active = false;
         int index = 0;
         float velocity = 1.0f;
@@ -412,7 +414,7 @@ private:
         const float sr2 = 2.0f * sr;
         alignas (32) std::array<float, subBlock> pitchAt {};
         for (int j = 0; j < n; ++j)
-            pitchAt[(size_t) j] = (v.pitch.isGliding() ? v.pitch.next() : v.pitch.getCurrent()) + tune + driftSemis;
+            pitchAt[(size_t) j] = (v.pitch.isGliding() ? v.pitch.next() : v.pitch.getCurrent()) + tune + v.pitchBend + driftSemis;
         const float maxDt = 440.0f * fastExp2 ((*std::max_element (pitchAt.begin(), pitchAt.begin() + n) - 69.0f) / 12.0f) / sr2;
         const bool gliding = pitchAt[0] != pitchAt[(size_t) (n - 1)];
 

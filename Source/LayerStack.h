@@ -31,6 +31,10 @@ public:
     {
         slots = {};
         sustainPedal = false;
+        channelBend = {};
+        channelPressure = {};
+        channelTimbre.fill (0.5f);
+        bendNow = {};
         for (auto& l : layers)
             l.reset();
     }
@@ -70,6 +74,15 @@ public:
             l.setAlignStrength (s);
     }
 
+    // Pitch bend: range in semitones for the whole keyboard; with MPE on, channels 2-16 are per-note channels
+    // (the lower zone) with their own range, and channel 1 bends every note
+    void setBendSettings (float rangeSemitones, bool mpeOn, float mpeRangeSemitones) noexcept
+    {
+        bendRange = rangeSemitones;
+        mpe = mpeOn;
+        mpeRange = mpeRangeSemitones;
+    }
+
     int activeNoteCount() const
     {
         int n = 0;
@@ -82,6 +95,8 @@ private:
     struct NoteSlot
     {
         int note = -1;            // -1: free
+        int channel = 1;          // 1..16
+        float pressure = 0.0f;    // poly aftertouch, 0..1
         bool held = false;        // key is down
         bool sustained = false;   // key released while the sustain pedal was down
         uint32_t order = 0;       // when it started, for stealing
@@ -89,10 +104,23 @@ private:
 
     void handleMidi (const juce::MidiMessage& m)
     {
+        const int ch = juce::jlimit (1, 16, m.getChannel());
         if (m.isNoteOn())
-            noteOn (m.getNoteNumber(), m.getFloatVelocity());
+            noteOn (m.getNoteNumber(), m.getFloatVelocity(), ch);
         else if (m.isNoteOff())
-            noteOff (m.getNoteNumber());
+            noteOff (m.getNoteNumber(), ch);
+        else if (m.isPitchWheel())
+            channelBend[(size_t) ch] = juce::jlimit (-1.0f, 1.0f, (float) (m.getPitchWheelValue() - 8192) / 8191.0f);
+        else if (m.isChannelPressure())
+            channelPressure[(size_t) ch] = (float) m.getChannelPressureValue() / 127.0f;
+        else if (m.isAftertouch())
+        {
+            for (auto& s : slots)
+                if (s.note == m.getNoteNumber() && s.channel == ch)
+                    s.pressure = (float) m.getAfterTouchValue() / 127.0f;
+        }
+        else if (m.isController() && m.getControllerNumber() == 74)
+            channelTimbre[(size_t) ch] = (float) m.getControllerValue() / 127.0f;
         else if (m.isSustainPedalOn())
             sustainPedal = true;
         else if (m.isSustainPedalOff())
@@ -110,21 +138,26 @@ private:
         }
     }
 
-    void noteOn (int note, float velocity)
+    void noteOn (int note, float velocity, int channel)
     {
-        const int i = findSlotFor (note);
+        const int i = findSlotFor (note, channel);
         auto& s = slots[(size_t) i];
-        s = { note, true, false, ++orderCounter };
+        s = { note, channel, 0.0f, true, false, ++orderCounter };
+        // A new note starts at its channel's bend at once (no glide from the slot's last note)
+        bendNow[(size_t) i] = targetBend (s);
         for (auto& l : layers)
+        {
+            l.setSlotExpression (i, bendNow[(size_t) i], pressureOf (s), channelTimbre[(size_t) channel]);
             l.startVoice (i, note, velocity, s.order);
+        }
     }
 
-    void noteOff (int note)
+    void noteOff (int note, int channel)
     {
         for (int i = 0; i < numNoteSlots; ++i)
         {
             auto& s = slots[(size_t) i];
-            if (s.note != note || ! s.held)
+            if (s.note != note || ! s.held || (mpe && s.channel != channel))
                 continue;
             if (sustainPedal)
             {
@@ -146,10 +179,10 @@ private:
 
     // Same note again reuses its slot (a click-free retrigger). Otherwise: a free slot, then the oldest
     // released slot, then the oldest held one.
-    int findSlotFor (int note) const
+    int findSlotFor (int note, int channel) const
     {
         for (int i = 0; i < numNoteSlots; ++i)
-            if (slots[(size_t) i].note == note)
+            if (slots[(size_t) i].note == note && (! mpe || slots[(size_t) i].channel == channel))
                 return i;
 
         int bestReleased = -1, bestHeld = -1;
@@ -181,11 +214,57 @@ private:
         }
     }
 
+    // The bend a slot is heading to, in semitones
+    float targetBend (const NoteSlot& s) const noexcept
+    {
+        if (! mpe)
+            return channelBend[(size_t) s.channel] * bendRange;
+        return channelBend[1] * bendRange + (s.channel != 1 ? channelBend[(size_t) s.channel] * mpeRange : 0.0f);
+    }
+
+    float pressureOf (const NoteSlot& s) const noexcept
+    {
+        return juce::jmax (s.pressure, channelPressure[(size_t) s.channel], mpe ? 0.0f : channelPressure[1]);
+    }
+
+    // Smooths the bends (5 ms) and hands every slot's expression to the layers; returns whether a bend is
+    // still moving, in which case the stack renders in 32-sample steps so the pitch never zippers
+    bool updateExpression (int numSamples) noexcept
+    {
+        const float coef = 1.0f - std::exp (-(float) numSamples / (0.005f * (float) rate));
+        bool moving = false;
+        for (int i = 0; i < numNoteSlots; ++i)
+        {
+            const auto& s = slots[(size_t) i];
+            if (s.note < 0)
+                continue;
+            auto& now = bendNow[(size_t) i];
+            const float target = targetBend (s);
+            now += (target - now) * coef;
+            if (std::abs (target - now) < 1.0e-4f)
+                now = target;
+            else
+                moving = true;
+            for (auto& l : layers)
+                l.setSlotExpression (i, now, pressureOf (s), channelTimbre[(size_t) s.channel]);
+        }
+        return moving;
+    }
+
+    bool bendMoving() const noexcept
+    {
+        for (int i = 0; i < numNoteSlots; ++i)
+            if (slots[(size_t) i].note >= 0 && std::abs (targetBend (slots[(size_t) i]) - bendNow[(size_t) i]) >= 1.0e-4f)
+                return true;
+        return false;
+    }
+
     void renderRange (juce::AudioBuffer<float>& buffer, int start, int length)
     {
         while (length > 0)
         {
-            const int n = juce::jmin (length, maxBlock);
+            const int n = juce::jmin (length, bendMoving() ? 32 : maxBlock);
+            updateExpression (n);
             float* l = buffer.getWritePointer (0, start);
             float* r = buffer.getWritePointer (1, start);
             for (auto& layer : layers)
@@ -243,6 +322,11 @@ private:
     std::array<NoteSlot, numNoteSlots> slots {};
     bool sustainPedal = false;
     uint32_t orderCounter = 0;
+    // Expression: per MIDI channel (index 1..16) and the slots' smoothed bends
+    std::array<float, 17> channelBend {}, channelPressure {}, channelTimbre {};
+    std::array<float, numNoteSlots> bendNow {};
+    float bendRange = 2.0f, mpeRange = 48.0f;
+    bool mpe = false;
     int maxBlock = 512;
 };
 }

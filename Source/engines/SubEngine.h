@@ -77,6 +77,7 @@ public:
         auto& v = voices[(size_t) index];
         if (! v.active)
             return;
+        v.pitchBend = voiceBend (index);
         for (int pos = 0; pos < numSamples; pos += subBlock)
             renderSubBlock (v, left + pos, right + pos, juce::jmin (subBlock, numSamples - pos));
     }
@@ -95,6 +96,7 @@ private:
 
     struct Voice
     {
+        float pitchBend = 0.0f;   // semitones, from the layer (pitch bend, MPE)
         bool active = false;
         PitchGlide pitch;
         float t = 0.0f, tSub = 0.0f, punch = 0.0f;
@@ -188,7 +190,7 @@ private:
             const float frac = (float) (j + 1) / (float) n;
             auto lerp = [&] (Slot s) { return previous[s] + (v.smooth[s] - previous[s]) * frac; };
 
-            const float pitch = (v.pitch.isGliding() ? v.pitch.next() : v.pitch.getCurrent()) + tune + v.punch * punchDepth;
+            const float pitch = (v.pitch.isGliding() ? v.pitch.next() : v.pitch.getCurrent()) + tune + v.pitchBend + v.punch * punchDepth;
             v.punch *= punchCoef;
             const float dt = juce::jmin (0.45f, 440.0f * fastExp2 ((pitch - 69.0f) / 12.0f) / sr);
             v.t += dt;

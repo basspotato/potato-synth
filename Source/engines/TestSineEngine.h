@@ -43,7 +43,7 @@ public:
             v.target = e.velocity;
         v.pitch.glideTo ((float) e.note, e.glideSeconds, sr);
         v.active = true;
-        v.increment = incrementFor (v.pitch.getCurrent());
+        v.increment = incrementFor (v.pitch.getCurrent(), voice);
     }
 
     void noteOff (int) override {}
@@ -54,9 +54,9 @@ public:
         if (std::abs (semitones - tune) < 1.0e-6f)
             return;
         tune = semitones;
-        for (auto& v : voices)
-            if (v.active)
-                v.increment = incrementFor (v.pitch.getCurrent());
+        for (int i = 0; i < (int) voices.size(); ++i)
+            if (voices[(size_t) i].active)
+                voices[(size_t) i].increment = incrementFor (voices[(size_t) i].pitch.getCurrent(), i);
     }
 
     void setSlot (int slot, float value) override
@@ -64,9 +64,17 @@ public:
         if (slot != 0)
             return;
         octaveShift = juce::roundToInt (value * 4.0f) - 2;
-        for (auto& v : voices)
-            if (v.active)
-                v.increment = incrementFor (v.pitch.getCurrent());
+        for (int i = 0; i < (int) voices.size(); ++i)
+            if (voices[(size_t) i].active)
+                voices[(size_t) i].increment = incrementFor (voices[(size_t) i].pitch.getCurrent(), i);
+    }
+
+    void setVoiceBend (int voice, float semitones) override
+    {
+        Engine::setVoiceBend (voice, semitones);
+        auto& v = voices[(size_t) voice];
+        if (v.active)
+            v.increment = incrementFor (v.pitch.getCurrent(), voice);
     }
 
     void render (int voice, float* left, float* right, int numSamples) override
@@ -79,7 +87,7 @@ public:
         for (int i = 0; i < numSamples; ++i)
         {
             if (v.pitch.isGliding())
-                v.increment = incrementFor (v.pitch.next());
+                v.increment = incrementFor (v.pitch.next(), voice);
             v.amp += (v.target - v.amp) * glideCoef;
             const float s = (float) std::sin (twoPi * v.phase) * v.amp * outputGain;
             left[i] += s;
@@ -106,9 +114,9 @@ private:
 
     static constexpr float outputGain = 0.25f;   // about -12 dBFS per voice
 
-    double incrementFor (float pitch) const
+    double incrementFor (float pitch, int voice) const
     {
-        return 440.0 * std::exp2 ((pitch - 69.0 + octaveShift * 12 + (double) tune) / 12.0) / sr;
+        return 440.0 * std::exp2 ((pitch - 69.0 + octaveShift * 12 + (double) tune + voiceBend (voice)) / 12.0) / sr;
     }
 
     double sr = 48000.0;

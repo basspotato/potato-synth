@@ -27,6 +27,7 @@ public:
 
     const juce::String getName() const override { return "Potato-Synth"; }
     bool acceptsMidi() const override { return true; }
+    bool supportsMPE() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
@@ -95,6 +96,13 @@ private:
     const juce::MidiBuffer& applyHold (const juce::MidiBuffer& midi);
     std::atomic<float>* holdButton = nullptr;
     std::atomic<float>* cutoffKnob = nullptr, *resoKnob = nullptr;
+    // Expression: pitch bend settings, and the mod wheel and aftertouch as offsets on the lane targets
+    struct ExpressionParams { std::atomic<float>* bendRange, *mpe, *mpeRange, *wheelTarget, *wheelDepth, *touchTarget, *touchDepth; };
+    ExpressionParams expressionParams {};
+    void trackExpression (const juce::MidiBuffer& midi) noexcept;
+    float modWheel = 0.0f;
+    std::array<float, 17> channelPressure {};
+    std::array<float, 128> notePressure {};
     ps::SweepFilter sweep;
     bool realPedal = false, pedalSent = false;
     struct ArpParams { std::atomic<float>* mode, *rate, *direction, *octaves, *gate, *swing, *latch, *length, *trigger; };

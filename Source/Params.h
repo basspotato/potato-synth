@@ -9,7 +9,7 @@ namespace ps::params
     // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots. 7: chain knobs and SUPER.
     // 8: BUILD, DROP, the XY pad, layer anchors, layer filter and drive, reverb and delay sends.
     // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
-    // 10: HOLD and the main page's CUTOFF and RESO.
+    // 10: HOLD, the main page's CUTOFF and RESO, pitch bend / MPE, mod wheel and aftertouch.
     // Parameters missing from an older save load at their defaults.
     inline constexpr int stateVersion = 10;
 
@@ -36,6 +36,14 @@ namespace ps::params
     inline const juce::ParameterID hold { "hold", 10 };              // a latched sustain pedal
     inline const juce::ParameterID cutoff { "cutoff", 10 };          // stack low-pass sweep, percent (100 = open)
     inline const juce::ParameterID resonance { "reso", 10 };         // its resonance, percent
+    // Expression (LayerStack.h): pitch bend, MPE, and where the mod wheel and aftertouch go (lane targets)
+    inline const juce::ParameterID bendRange { "bend_range", 10 };   // semitones
+    inline const juce::ParameterID mpe { "mpe", 10 };
+    inline const juce::ParameterID mpeRange { "mpe_range", 10 };     // per-note bend range, semitones
+    inline const juce::ParameterID modWheelTarget { "mw_target", 10 };
+    inline const juce::ParameterID modWheelDepth { "mw_depth", 10 }; // percent, bipolar
+    inline const juce::ParameterID aftertouchTarget { "at_target", 10 };
+    inline const juce::ParameterID aftertouchDepth { "at_depth", 10 };
     // The stack XY pad (StackMorph.h): 0..1 each way, the centre is the full stack
     inline const juce::ParameterID padX { "xy_x", 8 };
     inline const juce::ParameterID padY { "xy_y", 8 };
@@ -72,7 +80,7 @@ namespace ps::params
     inline juce::ParameterID laneLength (int i) { return laneParam (i, "length"); }   // steps
     inline juce::ParameterID laneSmooth (int i) { return laneParam (i, "smooth"); }   // percent
     inline const juce::StringArray laneTargetNames { "Off", "MASS", "SCALE", "PRESSURE", "GROOVE", "CLARITY", "SHINE", "MORPH", "BLOOM",
-                                                     "SUPER", "XY X", "XY Y" };
+                                                     "SUPER", "XY X", "XY Y", "CUTOFF" };
     inline const juce::StringArray arpModeNames { "Off", "Arp", "Seq" };
     inline const juce::StringArray arpDirectionNames { "Up", "Down", "Up-Down", "Random", "As Played", "Chord" };
     inline const juce::StringArray delayDivisionNames { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/1" };
@@ -197,6 +205,17 @@ namespace ps::params
             juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) {
                 const double hz = 180.0 * std::pow (20000.0 / 180.0, v * 0.01);
                 return v >= 99.95f ? juce::String ("OPEN") : hz < 1000.0 ? juce::String (juce::roundToInt (hz)) + " Hz" : juce::String (hz * 0.001, 2) + " kHz"; })));
+        layout.add (std::make_unique<juce::AudioParameterInt> (bendRange, "Pitch Bend Range", 0, 48, 2));
+        layout.add (std::make_unique<juce::AudioParameterBool> (mpe, "MPE", false));
+        layout.add (std::make_unique<juce::AudioParameterInt> (mpeRange, "MPE Bend Range", 1, 96, 48));
+        {
+            auto pct = juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; });
+            // Mod wheel on MORPH by default: the wheel sweeps the sound's identity
+            layout.add (std::make_unique<juce::AudioParameterChoice> (modWheelTarget, "Mod Wheel Target", laneTargetNames, 7));
+            layout.add (std::make_unique<juce::AudioParameterFloat> (modWheelDepth, "Mod Wheel Depth", juce::NormalisableRange<float> (-100.0f, 100.0f), 100.0f, pct));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (aftertouchTarget, "Aftertouch Target", laneTargetNames, 0));
+            layout.add (std::make_unique<juce::AudioParameterFloat> (aftertouchDepth, "Aftertouch Depth", juce::NormalisableRange<float> (-100.0f, 100.0f), 50.0f, pct));
+        }
         layout.add (std::make_unique<juce::AudioParameterFloat> (resonance, "Resonance", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f,
             juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; })));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padX, "XY X", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));

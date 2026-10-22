@@ -153,6 +153,7 @@ public:
         auto& v = voices[(size_t) index];
         if (! v.active)
             return;
+        v.pitchBend = voiceBend (index);
         const float invTotal = 1.0f / (float) numSamples;
         for (int pos = 0; pos < numSamples; pos += subBlock)
         {
@@ -485,6 +486,7 @@ private:
     // ---- Voices -------------------------------------------------------------------------------------------
     struct Voice
     {
+        float pitchBend = 0.0f;   // semitones, from the layer (pitch bend, MPE)
         bool active = false;
         PitchGlide pitch;
         uint32_t rng = 1;
@@ -579,9 +581,9 @@ private:
         auto incrementFor = [this] (float pitch) { return 440.0f * fastExp2 ((pitch + tune - 69.0f) / 12.0f) / sr; };
         if (v.pitch.isGliding())
             for (int j = 0; j < n; ++j)
-                inc[(size_t) j] = incrementFor (v.pitch.next());
+                inc[(size_t) j] = incrementFor (v.pitch.next() + v.pitchBend);
         else
-            std::fill (inc.begin(), inc.begin() + n, incrementFor (v.pitch.getCurrent()));
+            std::fill (inc.begin(), inc.begin() + n, incrementFor (v.pitch.getCurrent() + v.pitchBend));
 
         float maxRatio = 1.0f;
         for (int k = 0; k < v.layout.count; ++k)
