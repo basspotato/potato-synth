@@ -1,5 +1,5 @@
 // Renders the plugin editor to a PNG without a host, so GUI work can be checked headlessly.
-// Usage: PotatoSynthSnapshot out.png [width] [page]   (page: the start of a tab button's text, e.g. LAYER)
+// Usage: PotatoSynthSnapshot out.png [width] [page] [height]   (page: the start of a tab button's text, e.g. LAYER)
 #include "PluginProcessor.h"
 
 int main (int argc, char** argv)
@@ -12,7 +12,7 @@ int main (int argc, char** argv)
     if (argc > 2)
     {
         const int w = juce::String (argv[2]).getIntValue();
-        editor->setSize (w, w * editor->getHeight() / editor->getWidth());
+        editor->setSize (w, argc > 4 ? juce::String (argv[4]).getIntValue() : w * editor->getHeight() / editor->getWidth());
     }
 
     if (argc > 3)

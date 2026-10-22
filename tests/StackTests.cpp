@@ -2225,6 +2225,84 @@ void testArpThroughTheSynth()
            "the step pattern and arp settings come back with the state");
 }
 
+// ---- Mod step lanes -------------------------------------------------------------------------------------
+
+void testModLanes()
+{
+    namespace p = ps::params;
+    // Lane 1 on MASS at full depth, alternating 1/0 every 1/16 (6000 samples at 120 BPM) while a key is held
+    {
+        Rig rig;
+        rig.set (p::laneTarget (0), 1.0f);
+        rig.set (p::laneDepth (0), 100.0f);
+        rig.set (p::laneLength (0), 2.0f);
+        rig.proc->setLaneValue (0, 0, 1.0f);
+        rig.proc->setLaneValue (0, 1, 0.0f);
+        std::vector<float> at;
+        rig.render (blockSize, { { 0, on (48) } });
+        for (int b = 1; b < 4 * 6000 / blockSize; ++b)
+        {
+            rig.render (blockSize);
+            at.push_back (rig.proc->getEffectiveKnob (0));
+        }
+        auto knobAt = [&] (int sample) { return at[(size_t) (sample / blockSize - 1)]; };
+        CHECK (knobAt (5000) > 0.95f && knobAt (11000) < 0.05f && knobAt (17000) > 0.95f,
+               "lane: MASS follows the steps in time (" + std::to_string (knobAt (5000)) + ", " + std::to_string (knobAt (11000)) + ")");
+        float worst = 0.0f;
+        for (size_t i = 1; i < at.size(); ++i)
+            worst = std::max (worst, std::abs (at[i] - at[i - 1]));
+        CHECK (worst < 0.5f, "lane: steps glide through the knob smoothing (largest block step " + std::to_string (worst) + ")");
+        rig.render (blockSize, { { 0, off (48) } });
+        rig.render (48 * blockSize);
+        CHECK (rig.proc->getEffectiveKnob (0) < 0.01f, "lane: with no key and no transport the lane rests and the knob returns");
+    }
+    // Negative depth from a raised knob, and the XY pad
+    {
+        Rig rig;
+        rig.set (p::chainKnob (6), 1.0f);
+        rig.set (p::laneTarget (1), 7.0f);   // MORPH
+        rig.set (p::laneDepth (1), -60.0f);
+        rig.set (p::laneLength (1), 1.0f);
+        rig.proc->setLaneValue (1, 0, 1.0f);
+        rig.set (p::laneTarget (2), 10.0f);  // XY X
+        rig.set (p::laneDepth (2), 40.0f);
+        rig.set (p::laneLength (2), 1.0f);
+        rig.proc->setLaneValue (2, 0, 1.0f);
+        rig.render (blockSize * 40, { { 0, on (48) } });
+        CHECK (std::abs (rig.proc->getEffectiveKnob (6) - 0.4f) < 0.02f && std::abs (rig.proc->getEffectivePadX() - 0.9f) < 0.02f,
+               "lane: a negative depth pulls a knob down, and a lane moves the XY pad");
+    }
+    // Host transport: the step follows the beat, keys or not
+    {
+        Rig rig;
+        FakeTransport transport;
+        rig.proc->setPlayHead (&transport);
+        rig.set (p::laneTarget (0), 2.0f);   // SCALE
+        rig.set (p::laneDepth (0), 100.0f);
+        rig.set (p::laneLength (0), 4.0f);
+        rig.set (p::laneRate (0), 8.0f);     // 1/4 = 24000 samples
+        for (int s = 0; s < 4; ++s)
+            rig.proc->setLaneValue (0, s, s == 2 ? 1.0f : 0.0f);
+        rig.render (24000 * 2 + 12000);
+        const float third = rig.proc->getEffectiveKnob (1);
+        rig.render (24000);
+        const float fourth = rig.proc->getEffectiveKnob (1);
+        rig.proc->setPlayHead (nullptr);
+        CHECK (third > 0.95f && fourth < 0.05f, "lane: synced to the host's beats with no key held");
+    }
+    // State
+    {
+        Rig rig;
+        rig.proc->setLaneValue (3, 5, 0.25f);
+        juce::MemoryBlock state;
+        rig.proc->getStateInformation (state);
+        Rig other;
+        other.proc->setStateInformation (state.getData(), (int) state.getSize());
+        CHECK (std::abs (other.proc->getLaneValue (3, 5) - 0.25f) < 1.0e-3f && std::abs (other.proc->getLaneValue (0, 15) - 1.0f) < 1.0e-3f,
+               "the lane steps come back with the state");
+    }
+}
+
 // ---- Layer filter and drive ---------------------------------------------------------------------------
 
 float filterTypeValue (ps::params::FilterType t) { return (float) (int) t; }
@@ -2567,6 +2645,7 @@ int main()
         testArpeggiator();
         testStepSequencer();
         testArpThroughTheSynth();
+        testModLanes();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_DIRT_ONLY", {}).isNotEmpty())
@@ -2649,6 +2728,7 @@ int main()
     testArpeggiator();
     testStepSequencer();
     testArpThroughTheSynth();
+    testModLanes();
     testLayerFilter();
     testLayerDrive();
     testSends();

@@ -8,7 +8,7 @@ namespace ps::params
     // 1: master + layer levels. 2: layer pan, tune and amp envelope. 3: voice mode and glide.
     // 4: layer roles, crossovers and mono bass. 5: safe output. 6: engine slots. 7: chain knobs and SUPER.
     // 8: BUILD, DROP, the XY pad, layer anchors, layer filter and drive, reverb and delay sends.
-    // 9: the arpeggiator / step sequencer (and its step pattern, saved as a "Steps" child of the state).
+    // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
     // Parameters missing from an older save load at their defaults.
     inline constexpr int stateVersion = 9;
 
@@ -56,6 +56,19 @@ namespace ps::params
     inline const juce::ParameterID arpLatch { "arp_latch", 9 };
     inline const juce::ParameterID arpLength { "arp_length", 9 };        // steps
     inline const juce::ParameterID seqTrigger { "seq_trigger", 9 };      // Key or Host
+    // Mod step lanes (ModLanes.h): lane{n}_target / _depth / _rate / _length / _smooth; step values in the state
+    inline constexpr int numModLanes = 4;
+    inline juce::ParameterID laneParam (int lane, const char* name)
+    {
+        return { "lane" + juce::String (lane + 1) + "_" + name, 9 };
+    }
+    inline juce::ParameterID laneTarget (int i) { return laneParam (i, "target"); }
+    inline juce::ParameterID laneDepth (int i)  { return laneParam (i, "depth"); }    // percent, bipolar
+    inline juce::ParameterID laneRate (int i)   { return laneParam (i, "rate"); }     // DelayDivision index
+    inline juce::ParameterID laneLength (int i) { return laneParam (i, "length"); }   // steps
+    inline juce::ParameterID laneSmooth (int i) { return laneParam (i, "smooth"); }   // percent
+    inline const juce::StringArray laneTargetNames { "Off", "MASS", "SCALE", "PRESSURE", "GROOVE", "CLARITY", "SHINE", "MORPH", "BLOOM",
+                                                     "SUPER", "XY X", "XY Y" };
     inline const juce::StringArray arpModeNames { "Off", "Arp", "Seq" };
     inline const juce::StringArray arpDirectionNames { "Up", "Down", "Up-Down", "Random", "As Played", "Chord" };
     inline const juce::StringArray delayDivisionNames { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/1" };
@@ -208,6 +221,15 @@ namespace ps::params
             layout.add (std::make_unique<juce::AudioParameterBool> (arpLatch, "Arp Latch", false));
             layout.add (std::make_unique<juce::AudioParameterInt> (arpLength, "Arp Length", 1, 32, 16));
             layout.add (std::make_unique<juce::AudioParameterChoice> (seqTrigger, "Seq Trigger", juce::StringArray { "Key", "Host" }, 0));
+            for (int l = 0; l < numModLanes; ++l)
+            {
+                const juce::String name = "Lane " + juce::String (l + 1);
+                layout.add (std::make_unique<juce::AudioParameterChoice> (laneTarget (l), name + " Target", laneTargetNames, 0));
+                layout.add (std::make_unique<Float> (laneDepth (l), name + " Depth", juce::NormalisableRange<float> (-100.0f, 100.0f), 50.0f, percent));
+                layout.add (std::make_unique<juce::AudioParameterChoice> (laneRate (l), name + " Rate", delayDivisionNames, 2));
+                layout.add (std::make_unique<juce::AudioParameterInt> (laneLength (l), name + " Length", 1, 32, 16));
+                layout.add (std::make_unique<Float> (laneSmooth (l), name + " Smooth", juce::NormalisableRange<float> (0.0f, 100.0f), 0.0f, percent));
+            }
         }
 
         for (int i = 0; i < numLayers; ++i)

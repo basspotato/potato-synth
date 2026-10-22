@@ -25,6 +25,8 @@ PotatoSynthProcessor::PotatoSynthProcessor()
         auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
         arpParams = { raw (p::arpMode), raw (p::arpRate), raw (p::arpDirection), raw (p::arpOctaves), raw (p::arpGate),
                       raw (p::arpSwing), raw (p::arpLatch), raw (p::arpLength), raw (p::seqTrigger) };
+        for (int l = 0; l < ps::ModLanes::numLanes; ++l)
+            laneParams[(size_t) l] = { raw (p::laneTarget (l)), raw (p::laneDepth (l)), raw (p::laneRate (l)), raw (p::laneLength (l)), raw (p::laneSmooth (l)) };
     }
     for (int k = 0; k < ps::params::numChainKnobs; ++k)
         chainKnobs[(size_t) k] = apvts.getRawParameterValue (ps::params::chainKnob (k).getParamID());
@@ -77,6 +79,8 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 {
     stack.prepare (sampleRate, samplesPerBlock);
     noteGenerator.prepare (sampleRate);
+    modLanes.prepare (sampleRate);
+    laneOffsets = {};
     generatedMidi.ensureSize (8192);
     bus.prepare (sampleRate, crossoverLowHz->load(), monoBassOn->load() > 0.5f);
     clipper.prepare (sampleRate, samplesPerBlock);
@@ -96,6 +100,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     performance = {};
     padXSmoothed = padX->load();
     padYSmoothed = padY->load();
+    superSmoothed = superKnob->load();
     driftState = driftSmoothed = 0.0f;
     // Every layer and role starts at its own point of the cycle (golden-angle offsets)
     for (int l = 0; l < ps::params::numLayers; ++l)
@@ -190,6 +195,17 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         }
 
     updatePerformance (n, bpm, ppq, barStart, barLength);
+    {
+        std::array<ps::ModLanes::Settings, ps::ModLanes::numLanes> lanes {};
+        for (int l = 0; l < ps::ModLanes::numLanes; ++l)
+        {
+            const auto& lp = laneParams[(size_t) l];
+            lanes[(size_t) l] = { juce::roundToInt (lp.target->load()), lp.depth->load() * 0.01f,
+                                  ps::params::delayDivisionBeats[juce::jlimit (0, ps::params::delayDivisionNames.size() - 1, juce::roundToInt (lp.rate->load()))],
+                                  juce::roundToInt (lp.length->load()), lp.smooth->load() * 0.01f };
+        }
+        laneOffsets = modLanes.process (midi, n, bpm, ppq, lanes);
+    }
     const auto offsets = updateChainKnobs (n);
     stack.setAlignStrength (juce::jlimit (0.0f, 1.0f, phaseAlign->load() * 0.01f));
     {
@@ -374,12 +390,14 @@ void PotatoSynthProcessor::updatePerformance (int numSamples, double bpm, double
 ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
 {
     const float coef = 1.0f - std::exp (-(float) numSamples / (0.03f * (float) getSampleRate()));
-    const float super = superKnob->load();
+    // The mod lanes move the knobs, SUPER and the pad through the same glide as a hand on the knob
+    superSmoothed += (juce::jlimit (0.0f, 1.0f, superKnob->load() + laneOffsets[ps::ModLanes::superTarget]) - superSmoothed) * coef;
+    const float super = superSmoothed;
     std::array<float, ps::chain::numKnobs> u {};
     for (int k = 0; k < ps::chain::numKnobs; ++k)
     {
         auto& p = knobPosition[(size_t) k];
-        p += (chainKnobs[(size_t) k]->load() - p) * coef;
+        p += (juce::jlimit (0.0f, 1.0f, chainKnobs[(size_t) k]->load() + laneOffsets[(size_t) k]) - p) * coef;
         u[(size_t) k] = p + ps::chain::superContribution ((ps::chain::Knob) k, super);
     }
     // BUILD widens, blooms and opens the top; DROP hits with mass and pressure and snaps GROOVE to full.
@@ -392,15 +410,20 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     u[ps::chain::mass] += 0.4f * d;
     u[ps::chain::pressure] += 0.4f * d;
     u[ps::chain::groove] += d * (1.0f - u[ps::chain::groove]);
-    for (auto& v : u)
-        v = juce::jlimit (0.0f, 1.0f, v);
+    for (size_t k = 0; k < u.size(); ++k)
+    {
+        u[k] = juce::jlimit (0.0f, 1.0f, u[k]);
+        effectiveKnob[k].store (u[k]);
+    }
     std::array<ps::params::Role, ps::params::numLayers> roles {};
     for (int i = 0; i < ps::params::numLayers; ++i)
         roles[(size_t) i] = stack.layer (i).role();
     auto offsets = ps::chain::compute (u, roles);
     // The XY pad: layer emphasis at constant power (StackMorph.h), glided like the knobs
-    padXSmoothed += (padX->load() - padXSmoothed) * coef;
-    padYSmoothed += (padY->load() - padYSmoothed) * coef;
+    padXSmoothed += (juce::jlimit (0.0f, 1.0f, padX->load() + laneOffsets[ps::ModLanes::padXTarget]) - padXSmoothed) * coef;
+    padYSmoothed += (juce::jlimit (0.0f, 1.0f, padY->load() + laneOffsets[ps::ModLanes::padYTarget]) - padYSmoothed) * coef;
+    effectivePad[0].store (padXSmoothed);
+    effectivePad[1].store (padYSmoothed);
     {
         std::array<bool, ps::params::numLayers> free {};
         for (int i = 0; i < ps::params::numLayers; ++i)
@@ -492,6 +515,16 @@ void PotatoSynthProcessor::getStateInformation (juce::MemoryBlock& destData)
     }
     state.removeChild (state.getChildWithName ("Steps"), nullptr);
     state.appendChild (steps, nullptr);
+    juce::ValueTree lanes ("Lanes");
+    for (int l = 0; l < ps::ModLanes::numLanes; ++l)
+    {
+        juce::StringArray values;
+        for (int s = 0; s < ps::ModLanes::maxSteps; ++s)
+            values.add (juce::String (modLanes.getValue (l, s), 4));
+        lanes.appendChild (juce::ValueTree ("LANE", { { "values", values.joinIntoString (",") } }), nullptr);
+    }
+    state.removeChild (state.getChildWithName ("Lanes"), nullptr);
+    state.appendChild (lanes, nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -516,6 +549,16 @@ void PotatoSynthProcessor::setStateInformation (const void* data, int sizeInByte
         noteGenerator.setStep (i, s);
     }
     state.removeChild (steps, nullptr);
+    // The mod lanes' steps (older saves keep the default shapes)
+    const auto lanes = state.getChildWithName ("Lanes");
+    const ps::ModLanes defaultLanes;
+    for (int l = 0; l < ps::ModLanes::numLanes; ++l)
+    {
+        const auto values = juce::StringArray::fromTokens (lanes.getChild (l).getProperty ("values").toString(), ",", {});
+        for (int s = 0; s < ps::ModLanes::maxSteps; ++s)
+            modLanes.setValue (l, s, s < values.size() ? values[s].getFloatValue() : defaultLanes.getValue (l, s));
+    }
+    state.removeChild (lanes, nullptr);
     apvts.replaceState (state);
     applyLayerEnginesFromState();
 }

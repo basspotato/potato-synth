@@ -6,6 +6,15 @@ namespace
     const char* const chainNames[] = { "MASS", "SCALE", "PRESSURE", "GROOVE", "CLARITY", "SHINE", "MORPH", "BLOOM" };
     constexpr int baseWidth = 1180, baseHeight = 720;
 
+    // The layout keeps its proportions inside whatever size the host gives the editor. Cubase can hold a
+    // window at a size a fixed-aspect constrainer rejects, which left an unpainted area beside the editor, so
+    // the editor takes any size and centres its layout in it.
+    juce::Rectangle<int> layoutFrame (juce::Rectangle<int> bounds)
+    {
+        const float s = juce::jmin ((float) bounds.getWidth() / (float) baseWidth, (float) bounds.getHeight() / (float) baseHeight);
+        return bounds.withSizeKeepingCentre (juce::roundToInt ((float) baseWidth * s), juce::roundToInt ((float) baseHeight * s));
+    }
+
     juce::String hzText (float hz)
     {
         return hz >= 1000.0f ? juce::String (hz * 0.001f, 1) + " KHZ" : juce::String (juce::roundToInt (hz)) + " HZ";
@@ -29,7 +38,7 @@ namespace
 }
 
 PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts)
+    : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts), arpPage (p)
 {
     setLookAndFeel (&look);
 
@@ -37,7 +46,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     {
         layers[(size_t) i] = std::make_unique<ps::LayerCard> (roleTitle (i), juce::String(), ps::theme::roleColour (i));
         addAndMakeVisible (*layers[(size_t) i]);
-        layers[(size_t) i]->onSelect = [this, i] { selectLayer (i); showPage (true); };
+        layers[(size_t) i]->onSelect = [this, i] { selectLayer (i); showPage (Page::layer); };
         layers[(size_t) i]->onEngineClick = [this, i] { selectLayer (i); showEngineMenu (i); };
 
         auto& k = layerLevels[(size_t) i];
@@ -51,16 +60,18 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     addAndMakeVisible (xyPad);
     xyPad.attach (*processor.apvts.getParameter (ps::params::padX.getParamID()), *processor.apvts.getParameter (ps::params::padY.getParamID()));
     addChildComponent (layerPage);
+    addChildComponent (arpPage);
     layerPage.onEngineClick = [this] { showEngineMenu (selectedLayer); };
-    for (auto* tab : { &stackTab, &layerTab })
+    for (auto* tab : { &stackTab, &layerTab, &arpTab })
     {
         tab->setClickingTogglesState (false);
         addAndMakeVisible (*tab);
     }
-    stackTab.onClick = [this] { showPage (false); };
-    layerTab.onClick = [this] { showPage (true); };
+    stackTab.onClick = [this] { showPage (Page::stack); };
+    arpTab.onClick = [this] { showPage (Page::arp); };
+    layerTab.onClick = [this] { showPage (Page::layer); };
     selectLayer (selectedLayer);
-    showPage (false);
+    showPage (Page::stack);
 
     for (int i = 0; i < 8; ++i)
     {
@@ -113,9 +124,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     }
 
     setResizable (true, true);
-    setResizeLimits (baseWidth * 3 / 4, baseHeight * 3 / 4, baseWidth * 2, baseHeight * 2);
-    if (auto* c = getConstrainer())
-        c->setFixedAspectRatio ((double) baseWidth / baseHeight);
+    setResizeLimits (baseWidth * 3 / 4, baseHeight * 3 / 4, baseWidth * 3, baseHeight * 3);
     setSize (baseWidth, baseHeight);
     timerCallback();
     startTimerHz (5);
@@ -192,13 +201,16 @@ void PotatoSynthEditor::selectLayer (int layerIndex)
     layerTab.setColour (juce::TextButton::buttonColourId, ps::theme::roleColour (role));
 }
 
-void PotatoSynthEditor::showPage (bool layerPageVisible)
+void PotatoSynthEditor::showPage (Page page)
 {
-    layerPage.setVisible (layerPageVisible);
-    xyPad.setVisible (! layerPageVisible);
-    stackTab.setColour (juce::TextButton::buttonColourId, layerPageVisible ? ps::theme::panel : ps::theme::air);
-    layerTab.setAlpha (layerPageVisible ? 1.0f : 0.6f);
-    stackTab.setAlpha (layerPageVisible ? 0.6f : 1.0f);
+    layerPage.setVisible (page == Page::layer);
+    arpPage.setVisible (page == Page::arp);
+    xyPad.setVisible (page == Page::stack);
+    stackTab.setColour (juce::TextButton::buttonColourId, page == Page::stack ? ps::theme::air : ps::theme::panel);
+    arpTab.setColour (juce::TextButton::buttonColourId, page == Page::arp ? ps::theme::mid : ps::theme::panel);
+    layerTab.setAlpha (page == Page::layer ? 1.0f : 0.6f);
+    stackTab.setAlpha (page == Page::stack ? 1.0f : 0.6f);
+    arpTab.setAlpha (page == Page::arp ? 1.0f : 0.6f);
 }
 
 void PotatoSynthEditor::showEngineMenu (int layerIndex)
@@ -262,26 +274,28 @@ void PotatoSynthEditor::paint (juce::Graphics& g)
         g.fillRect (r);
     }
 
-    const float s = r.getWidth() / (float) baseWidth;
+    const auto f = layoutFrame (getLocalBounds()).toFloat();
+    const float s = f.getWidth() / (float) baseWidth, x0 = f.getX(), y0 = f.getY();
     g.setColour (ps::theme::text);
     g.setFont (juce::FontOptions (30.0f * s, juce::Font::bold));
-    g.drawText ("POTATO-SYNTH", juce::Rectangle<float> (24.0f * s, 14.0f * s, 400.0f * s, 36.0f * s),
+    g.drawText ("POTATO-SYNTH", juce::Rectangle<float> (x0 + 24.0f * s, y0 + 14.0f * s, 400.0f * s, 36.0f * s),
                 juce::Justification::centredLeft);
     g.setColour (ps::theme::textDim);
     g.setFont (juce::FontOptions (13.0f * s));
-    g.drawText (juce::CharPointer_UTF8 ("SUPER STACK  \xc2\xb7  PREVIEW BUILD"), juce::Rectangle<float> (26.0f * s, 48.0f * s, 400.0f * s, 18.0f * s),
+    g.drawText (juce::CharPointer_UTF8 ("SUPER STACK  \xc2\xb7  PREVIEW BUILD"), juce::Rectangle<float> (x0 + 26.0f * s, y0 + 48.0f * s, 400.0f * s, 18.0f * s),
                 juce::Justification::centredLeft);
     g.drawText (juce::CharPointer_UTF8 ("HARMONY ENGINE  \xc2\xb7  ON"),
-                juce::Rectangle<float> (0.0f, r.getBottom() - 26.0f * s, r.getWidth() - 24.0f * s, 18.0f * s),
+                juce::Rectangle<float> (x0, f.getBottom() - 26.0f * s, f.getWidth() - 24.0f * s, 18.0f * s),
                 juce::Justification::centredRight);
 }
 
 void PotatoSynthEditor::resized()
 {
-    const float s = (float) getWidth() / (float) baseWidth;
+    const auto frame = layoutFrame (getLocalBounds());
+    const float s = (float) frame.getWidth() / (float) baseWidth;
     auto scaled = [s] (int v) { return juce::roundToInt ((float) v * s); };
 
-    auto area = getLocalBounds().reduced (scaled (24));
+    auto area = frame.reduced (scaled (24));
     area.removeFromTop (scaled (56));
     area.removeFromBottom (scaled (16));
 
@@ -303,14 +317,16 @@ void PotatoSynthEditor::resized()
     area.removeFromLeft (scaled (20));
     auto right = area.removeFromRight (scaled (220));
     area.removeFromRight (scaled (20));
-    auto tabs = area.withY (scaled (24)).withHeight (scaled (34));
+    auto tabs = area.withY (frame.getY() + scaled (24)).withHeight (scaled (34));
     stackTab.setBounds (tabs.removeFromLeft (scaled (120)));
     tabs.removeFromLeft (scaled (8));
     layerTab.setBounds (tabs.removeFromLeft (scaled (180)));
+    tabs.removeFromLeft (scaled (8));
+    arpTab.setBounds (tabs.removeFromLeft (scaled (110)));
 
     // Stack bus controls, top right
-    auto bus = juce::Rectangle<int> (area.getRight() - scaled (420), scaled (20), scaled (420) + scaled (240), scaled (42));
-    bus = bus.withRight (getWidth() - scaled (24));
+    auto bus = juce::Rectangle<int> (area.getRight() - scaled (420), frame.getY() + scaled (20), scaled (420) + scaled (240), scaled (42));
+    bus = bus.withRight (frame.getRight() - scaled (24));
     for (auto* k : { &crossoverHigh, &crossoverLow })
     {
         auto cell = bus.removeFromRight (scaled (130));
@@ -321,6 +337,7 @@ void PotatoSynthEditor::resized()
     monoBass.setBounds (bus.removeFromRight (scaled (120)).reduced (0, scaled (4)));
     xyPad.setBounds (area);
     layerPage.setBounds (area);
+    arpPage.setBounds (area);
 
     auto superArea = right.removeFromTop (scaled (210));
     super.label.setBounds (superArea.removeFromBottom (scaled (20)));

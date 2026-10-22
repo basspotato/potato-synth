@@ -7,6 +7,7 @@
 #include "Space.h"
 #include "StackMorph.h"
 #include "Arp.h"
+#include "ModLanes.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -44,6 +45,12 @@ public:
     // The arp / sequencer step pattern (message thread; saved with the state)
     void setPatternStep (int index, const ps::NoteGenerator::Step& step) noexcept { noteGenerator.setStep (index, step); }
     ps::NoteGenerator::Step getPatternStep (int index) const noexcept { return noteGenerator.getStep (index); }
+    void setLaneValue (int lane, int step, float value) noexcept { modLanes.setValue (lane, step, value); }
+    float getLaneValue (int lane, int step) const noexcept { return modLanes.getValue (lane, step); }
+    // Where each chain knob (with SUPER, BUILD/DROP and the lanes) and the XY pad actually are, for the GUI
+    float getEffectiveKnob (int k) const noexcept { return effectiveKnob[(size_t) juce::jlimit (0, ps::params::numChainKnobs - 1, k)].load(); }
+    float getEffectivePadX() const noexcept { return effectivePad[0].load(); }
+    float getEffectivePadY() const noexcept { return effectivePad[1].load(); }
 
 private:
     // Each layer's current engine description, read by slot parameters to show engine-specific text.
@@ -86,13 +93,19 @@ private:
     juce::MidiBuffer generatedMidi;
     struct ArpParams { std::atomic<float>* mode, *rate, *direction, *octaves, *gate, *swing, *latch, *length, *trigger; };
     ArpParams arpParams {};
+    ps::ModLanes modLanes;
+    struct LaneParams { std::atomic<float>* target, *depth, *rate, *length, *smooth; };
+    std::array<LaneParams, ps::ModLanes::numLanes> laneParams {};
+    std::array<float, ps::ModLanes::numTargets> laneOffsets {};
+    std::array<std::atomic<float>, ps::params::numChainKnobs> effectiveKnob {};
+    std::array<std::atomic<float>, 2> effectivePad {};
     std::array<std::atomic<float>*, ps::params::numChainKnobs> chainKnobs {};
     std::atomic<float>* superKnob = nullptr;
     std::atomic<float>* buildButton = nullptr;
     std::atomic<float>* padX = nullptr;
     std::atomic<float>* padY = nullptr;
     std::array<std::atomic<float>*, ps::params::numLayers> anchors {};
-    float padXSmoothed = 0.5f, padYSmoothed = 0.5f;
+    float padXSmoothed = 0.5f, padYSmoothed = 0.5f, superSmoothed = 0.0f;
     std::atomic<float>* dropButton = nullptr;
     Performance performance;
     float dropSmoothed = 0.0f;

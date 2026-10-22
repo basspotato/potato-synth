@@ -4,6 +4,7 @@
 #include "gui/XYPad.h"
 #include "gui/LayerCard.h"
 #include "gui/LayerPage.h"
+#include "gui/ArpPage.h"
 
 class PotatoSynthEditor : public juce::AudioProcessorEditor,
                           private juce::Timer
@@ -25,7 +26,8 @@ private:
     void setUpKnob (Knob&, const juce::String& name, juce::Colour accent);
     void showEngineMenu (int layerIndex);
     void selectLayer (int layerIndex);
-    void showPage (bool layerPageVisible);
+    enum class Page { stack, layer, arp };
+    void showPage (Page);
     int layerRole (int layerIndex) const;
     void setUpBusKnob (Knob&, const juce::String& name, const juce::ParameterID&,
                        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>&);
@@ -37,7 +39,8 @@ private:
     std::array<std::unique_ptr<ps::LayerCard>, 4> layers;
     ps::XYPad xyPad;
     ps::LayerPage layerPage;
-    juce::TextButton stackTab { "STACK" }, layerTab { "LAYER" };
+    ps::ArpPage arpPage;
+    juce::TextButton stackTab { "STACK" }, layerTab { "LAYER" }, arpTab { "ARP / SEQ" };
     int selectedLayer = 2;
 
     // Chain knobs, SUPER, and the momentary BUILD and DROP
