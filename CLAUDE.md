@@ -29,8 +29,8 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release --target PotatoSynth_VST3
 
 # Linux (cloud sessions: compile check + headless tests; deps installed by .claude/hooks/session-start.sh)
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target PotatoSynth_VST3
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPOTATO_DEV_TOOLS=ON
+cmake --build build --target PotatoSynth_VST3 PotatoSynthSnapshot
 ```
 
 - Local JUCE checkout: `-DJUCE_DIR=path/to/JUCE` (otherwise FetchContent downloads 8.0.15).
@@ -40,7 +40,8 @@ cmake --build build --target PotatoSynth_VST3
 ## Test
 
 - The gate is the Windows job: VST3 build plus pluginval at strictness 10, on every push and PR. A Linux compile/test job runs headless DSP and preset tests. A macOS job, if added, is non-blocking.
-- Local: `pluginval --strictness-level 10 --validate-in-process --validate build/PotatoSynth_artefacts/Release/VST3/Potato-Synth.vst3`
+- Linux: `xvfb-run -a /tmp/pluginval/pluginval --strictness-level 10 --validate-in-process --validate build/PotatoSynth_artefacts/Release/VST3/Potato-Synth.vst3` (the session hook downloads pluginval to `/tmp/pluginval`).
+- GUI check without a host: `xvfb-run -a build/PotatoSynthSnapshot shot.png [width]` renders the editor to a PNG. Look at it after any GUI change.
 - DSP unit tests (once added): `cmake --build build --target PotatoSynthTests && ctest --test-dir build -C Release`
 
 ## Source layout
@@ -67,7 +68,7 @@ Source/
   gui/                  — Potato-Synth's own early-design look (LookAndFeel, knobs, XY pad, meters); replaceable later
   PluginProcessor.*     — audio thread, parameter handling, state save/load
   PluginEditor.*        — GUI layout (main page + layer detail pages)
-Resources/Fonts/        — Barlow Condensed, Share Tech Mono (juce_add_binary_data)
+tools/Snapshot.cpp      — headless editor-to-PNG renderer (POTATO_DEV_TOOLS)
 ```
 
 ## Architecture rules

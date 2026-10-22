@@ -211,4 +211,5 @@ These need listening tests or primary sources: supersaw HPF order and cutoff, su
 ## Status
 
 - Done: research report; plan and CLAUDE.md revised to the super stack; chain knobs + Harmony Engine designed (potato-synth-CHAIN-KNOBS.md).
-- On hold: no building or pushing until the user says go. See "Before coding".
+- Go given 2026-10-22. Phase 0 (scaffold, Windows + Linux CI, session hook, headless GUI snapshot tool) is in review.
+- Next: Phase 1, step 3 (Engine interface, Layer, LayerStack).
