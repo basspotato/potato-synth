@@ -23,8 +23,16 @@ struct Rig
     juce::AudioBuffer<float> buffer { 2, blockSize };
     juce::MidiBuffer midi;
 
-    Rig()
+    // Voice tests run on a neutral rig: every layer's role is Full and mono bass is off, so band limits
+    // don't colour them. The role and bus tests below switch these on explicitly.
+    explicit Rig (bool neutral = true)
     {
+        if (neutral)
+        {
+            for (int i = 0; i < ps::params::numLayers; ++i)
+                set (ps::params::layerRole (i), (float) ps::params::Role::full);
+            set (ps::params::monoBass, 0.0f);
+        }
         proc->setPlayConfigDetails (0, 2, sampleRate, blockSize);
         proc->prepareToPlay (sampleRate, blockSize);
     }
@@ -393,6 +401,133 @@ void testVoiceModeSwitchWhileSounding()
     CHECK (peak (z, 12000, 24000) < 1.0e-4f, "no voice hangs after switching back");
 }
 
+// Peak level of one note in dB, after it settles, on the given layer and role
+float noteLevelDb (int note, float role, int layer = 2, bool monoBassOn = false)
+{
+    Rig rig;
+    if (layer != 2)
+    {
+        rig.proc->setLayerEngine (2, {});
+        rig.proc->setLayerEngine (layer, "test.sine");
+    }
+    rig.set (ps::params::layerRole (layer), role);
+    rig.set (ps::params::monoBass, monoBassOn ? 1.0f : 0.0f);
+    auto x = rig.render (24000, { { 0, on (note) } });
+    return juce::Decibels::gainToDecibels (peak (x, 12000, 24000), -200.0f);
+}
+
+void testRoleBands()
+{
+    using R = ps::params::Role;
+    const float full110 = noteLevelDb (33, (float) R::full), full880 = noteLevelDb (81, (float) R::full);
+    const float full4k = noteLevelDb (107, (float) R::full);
+    CHECK (std::abs (noteLevelDb (33, (float) R::sub) - full110) < 0.5f, "Sub passes 55 Hz");
+    CHECK (noteLevelDb (81, (float) R::sub) < full880 - 40.0f, "Sub removes 880 Hz (LR4 at 120 Hz)");
+    CHECK (noteLevelDb (33, (float) R::body) < full110 - 20.0f, "Body removes 55 Hz");
+    CHECK (std::abs (noteLevelDb (69, (float) R::body) - noteLevelDb (69, (float) R::full)) < 1.0f, "Body passes 440 Hz");
+    CHECK (noteLevelDb (107, (float) R::body) < full4k - 6.0f, "Body rolls off above the high crossover");
+    CHECK (noteLevelDb (45, (float) R::mid) < noteLevelDb (45, (float) R::full) - 20.0f, "Mid removes 110 Hz");
+    CHECK (std::abs (noteLevelDb (81, (float) R::mid) - full880) < 0.5f, "Mid passes 880 Hz");
+    CHECK (noteLevelDb (69, (float) R::air) < noteLevelDb (69, (float) R::full) - 40.0f, "Air removes 440 Hz");
+    CHECK (std::abs (noteLevelDb (111, (float) R::air) - noteLevelDb (111, (float) R::full)) < 1.0f, "Air passes 5 kHz");
+}
+
+void testSubAndBodySumFlat()
+{
+    // At the crossover the LR4 low-pass (Sub) and high-pass (Body) add back to the full signal, in phase
+    for (int note : { 40, 47, 52 })   // 82, 123, 165 Hz: below, at and above the 120 Hz crossover
+    {
+        Rig split;
+        split.proc->setLayerEngine (2, {});
+        split.proc->setLayerEngine (0, "test.sine");
+        split.proc->setLayerEngine (1, "test.sine");
+        split.set (ps::params::layerRole (0), (float) ps::params::Role::sub);
+        split.set (ps::params::layerRole (1), (float) ps::params::Role::body);
+        auto x = split.render (24000, { { 0, on (note) } });
+        const float full = juce::Decibels::decibelsToGain (noteLevelDb (note, (float) ps::params::Role::full));
+        const float sum = peak (x, 12000, 24000);
+        CHECK (std::abs (juce::Decibels::gainToDecibels (sum / full)) < 0.3f,
+               "Sub + Body sum flat at note " + std::to_string (note) + " (" + std::to_string (juce::Decibels::gainToDecibels (sum / full)) + " dB)");
+    }
+}
+
+void testRoleChangeWhilePlaying()
+{
+    Rig rig;
+    auto x = rig.render (12000, { { 0, on (69) } });
+    rig.set (ps::params::layerRole (2), (float) ps::params::Role::air);
+    auto y = rig.render (12000);
+    rig.set (ps::params::layerRole (2), (float) ps::params::Role::full);
+    rig.set (ps::params::crossoverHigh, 1000.0f);
+    auto z = rig.render (12000);
+    x.insert (x.end(), y.begin(), y.end());
+    x.insert (x.end(), z.begin(), z.end());
+    CHECK (maxStep (x) < 0.05f, "changing role while a note plays is click-free");
+    CHECK (peak (y, 4800, 12000) < peak (x, 4800, 12000) * 0.01f, "the new role's band applies within 100 ms");
+    CHECK (peak (z, 4800, 12000) > peak (x, 4800, 12000) * 0.95f, "and switching back restores it");
+}
+
+void testMonoBass()
+{
+    auto run = [] (int note, bool monoBassOn)
+    {
+        Rig rig;
+        rig.set (ps::params::monoBass, monoBassOn ? 1.0f : 0.0f);
+        rig.set (ps::params::layerPan (2), -1.0f);   // all signal on the left
+        auto x = rig.render (24000, { { 0, on (note) } });
+        return std::pair<float, float> (peak (x, 12000, 24000), peak (rig.right, 12000, 24000));
+    };
+    // Well below the 120 Hz crossover the LR4 low band is the whole signal (at 27.5 Hz the high band is -51 dB);
+    // nearer the crossover a little stays stereo, as with any crossover slope.
+    const auto [l27, r27] = run (21, true);
+    CHECK (std::abs (l27 - r27) < 0.02f * l27, "mono bass puts 27.5 Hz equally in both channels");
+    CHECK (std::abs (run (21, false).first * 0.5f - l27) < 0.02f * l27, "summing to mono halves a hard-panned low (no level jump for centred lows)");
+    const auto [l55, r55] = run (33, true);
+    CHECK (r55 > 0.85f * l55, "55 Hz is mostly mono too");
+    const auto [l2k, r2k] = run (95, true);
+    CHECK (r2k < l2k * 0.001f, "mono bass leaves 1.8 kHz stereo");
+
+    Rig rig (false);
+    auto x = rig.render (12000, { { 0, on (33) } });
+    rig.set (ps::params::monoBass, 0.0f);
+    auto y = rig.render (12000);
+    rig.set (ps::params::crossoverLow, 60.0f);
+    rig.set (ps::params::monoBass, 1.0f);
+    auto z = rig.render (12000);
+    x.insert (x.end(), y.begin(), y.end());
+    x.insert (x.end(), z.begin(), z.end());
+    CHECK (maxStep (x) < 0.05f, "toggling mono bass and moving the crossover are click-free");
+}
+
+void testDefaultStackIsTrueSilentAfterNotes()
+{
+    Rig rig (false);
+    auto x = rig.render (96000, { { 0, on (45) }, { 10, on (69) }, { 9600, off (45) }, { 9600, off (69) } });
+    CHECK (peak (x, 72000, 96000) <= 0.0f, "filters stop once their tails die: the output returns to true zero");
+}
+
+// CPU benchmark (CLAUDE.md target: an 8-note chord on 4 layers at 48 kHz within 20% of one core).
+// Prints the share of one core; only a gross regression fails.
+void benchmarkStack()
+{
+    Rig rig (false);
+    for (int i = 0; i < 4; ++i)
+        rig.proc->setLayerEngine (i, "test.sine");
+    rig.collectRetired();
+    std::vector<std::pair<int, juce::MidiMessage>> chord;
+    for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
+        chord.push_back ({ 0, on (n) });
+    rig.render (blockSize, chord);
+
+    const int seconds = 10;
+    const auto start = juce::Time::getHighResolutionTicks();
+    rig.render ((int) sampleRate * seconds);
+    const double elapsed = juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - start);
+    const double share = 100.0 * elapsed / seconds;
+    std::cout << "info: 8-note chord on 4 layers (test sine) uses " << share << "% of one core\n";
+    CHECK (share < 20.0, "stack CPU is within budget");
+}
+
 void testOddBlockSizes()
 {
     Rig rig;
@@ -426,6 +561,12 @@ int main()
     testGlide();
     testPolyGlide();
     testVoiceModeSwitchWhileSounding();
+    testRoleBands();
+    testSubAndBodySumFlat();
+    testRoleChangeWhilePlaying();
+    testMonoBass();
+    testDefaultStackIsTrueSilentAfterNotes();
+    benchmarkStack();
     testOddBlockSizes();
 
     std::cout << (failures == 0 ? "ALL PASSED" : "FAILURES: " + std::to_string (failures)) << "\n";
