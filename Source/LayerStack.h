@@ -9,7 +9,7 @@ namespace ps
 class LayerStack
 {
 public:
-    static constexpr int numLayers = 4;
+    static constexpr int numLayers = params::numLayers;
     static constexpr int numNoteSlots = 16;
 
     Layer& layer (int index) { return layers[(size_t) index]; }

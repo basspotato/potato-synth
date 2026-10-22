@@ -10,8 +10,9 @@ namespace ps::params
     // 8: BUILD, DROP, the XY pad, layer anchors, layer filter and drive, reverb and delay sends.
     // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
     // 10: HOLD, the main page's CUTOFF and RESO, pitch bend / MPE, mod wheel and aftertouch.
+    // 11: layers 5-8.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 10;
+    inline constexpr int stateVersion = 11;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -86,10 +87,10 @@ namespace ps::params
     inline const juce::StringArray delayDivisionNames { "1/32", "1/16T", "1/16", "1/16D", "1/8T", "1/8", "1/8D", "1/4T", "1/4", "1/4D", "1/2", "1/1" };
     inline constexpr double delayDivisionBeats[] = { 0.125, 1.0 / 6.0, 0.25, 0.375, 1.0 / 3.0, 0.5, 0.75, 2.0 / 3.0, 1.0, 1.5, 2.0, 4.0 };
 
-    // Per-layer parameters follow the pattern L{n}_name with n = 1..4 (expandable to 8)
+    // Per-layer parameters follow the pattern L{n}_name with n = 1..8. Layers 5-8 arrived in version 11.
     inline juce::ParameterID layerParam (int layerIndex, const char* name, int version)
     {
-        return { "L" + juce::String (layerIndex + 1) + "_" + name, version };
+        return { "L" + juce::String (layerIndex + 1) + "_" + name, layerIndex >= 4 ? juce::jmax (version, 11) : version };
     }
     inline juce::ParameterID layerLevel (int i)   { return layerParam (i, "level", 1); }
     inline juce::ParameterID layerPan (int i)     { return layerParam (i, "pan", 2); }
@@ -126,7 +127,7 @@ namespace ps::params
     inline constexpr int numEngineSlots = 24;
     inline juce::ParameterID layerSlot (int i, int slot)
     {
-        return { "L" + juce::String (i + 1) + "_e" + juce::String (slot + 1), 6 };
+        return { "L" + juce::String (i + 1) + "_e" + juce::String (slot + 1), i >= 4 ? 11 : 6 };
     }
 
     // Display text for a slot value, supplied by the processor from the layer's current engine
@@ -143,8 +144,10 @@ namespace ps::params
     enum class VoiceMode { poly, mono, legato };
     inline const juce::StringArray voiceModeNames { "Poly", "Mono", "Legato" };
 
-    inline constexpr int numLayers = 4;
-    inline const char* const layerRoles[numLayers] = { "Sub", "Body", "Mid", "Air" };
+    // All 8 layers exist from the first release, so the parameter list never changes; layers 5-8 start empty
+    // (an empty layer costs no CPU) and get a role tag of Full until the user picks one.
+    inline constexpr int numLayers = 8;
+    inline const char* const layerRoles[numLayers] = { "Sub", "Body", "Mid", "Air", "Layer 5", "Layer 6", "Layer 7", "Layer 8" };
 
     namespace detail
     {
@@ -295,7 +298,7 @@ namespace ps::params
             layout.add (std::make_unique<Float> (layerRelease (i), role + " Release", detail::timeRange (1.0f, 30000.0f, 500.0f), 300.0f,
                 detail::msAttributes()));
             layout.add (std::make_unique<juce::AudioParameterChoice> (layerVoiceMode (i), role + " Voice Mode", voiceModeNames, 0));
-            layout.add (std::make_unique<juce::AudioParameterChoice> (layerRole (i), role + " Role", roleNames, i));
+            layout.add (std::make_unique<juce::AudioParameterChoice> (layerRole (i), role + " Role", roleNames, juce::jmin (i, (int) Role::full)));
             layout.add (std::make_unique<juce::AudioParameterBool> (layerAnchor (i), role + " Anchor", i == 0));   // the Sub holds the floor
             {
                 auto percent = juce::AudioParameterFloatAttributes().withLabel ("%")

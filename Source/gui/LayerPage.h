@@ -139,17 +139,18 @@ public:
             b.onClick = [this, t] { setChoice (params::layerFilterType (layer), t); };
             addChildComponent (b);
         }
-        const char* const sectionNames[] = { "ENGINE", "FILTER / FX" };
-        for (int i = 0; i < 2; ++i)
+        const char* const sectionNames[] = { "ENGINE", "FILTER / FX", "AMP / VOICE" };
+        for (int i = 0; i < (int) sectionButtons.size(); ++i)
         {
             auto& b = sectionButtons[(size_t) i];
             b.setButtonText (sectionNames[i]);
-            b.onClick = [this, i] { showSection (i == 1); };
+            b.onClick = [this, i] { showSection (i); };
             addAndMakeVisible (b);
         }
         noSlots.setJustificationType (juce::Justification::centred);
         noSlots.setColour (juce::Label::textColourId, theme::textDim);
         addChildComponent (noSlots);
+        showSection (0);
         startTimerHz (15);
     }
 
@@ -228,23 +229,24 @@ public:
         engineButton.setBounds (header.removeFromRight (juce::jmin (260, header.getWidth() / 2)));
         r.removeFromTop (8);
         auto roleRow = r.removeFromTop (26);
-        auto sections = roleRow.removeFromRight (roleRow.getWidth() * 2 / 5);
+        auto sections = roleRow.removeFromRight (roleRow.getWidth() / 2);
         roleRow.removeFromRight (12);
-        sectionButtons[0].setBounds (sections.removeFromLeft (sections.getWidth() * 2 / 5).reduced (2, 0));
-        sectionButtons[1].setBounds (sections.reduced (2, 0));
+        const int sw = sections.getWidth() / (int) sectionButtons.size();
+        for (auto& b : sectionButtons)
+            b.setBounds (sections.removeFromLeft (sw).reduced (2, 0));
         const int rw = roleRow.getWidth() / (int) roleButtons.size();
         for (auto& b : roleButtons)
             b.setBounds (roleRow.removeFromLeft (rw).reduced (2, 0));
         r.removeFromTop (8);
 
-        auto rows = r;
-        const int knobRowH = juce::jmin (110, rows.getHeight() / 4);   // the engine's controls get the most room
-        auto bottomRow = rows.removeFromBottom (knobRowH);
-        rows.removeFromBottom (6);
-        auto envRow = rows.removeFromBottom (knobRowH);
-        rows.removeFromBottom (10);
-        slotArea = rows;
+        // Each section gets the whole page below the role row
+        slotArea = r;
         layoutSlots();
+        auto rows = r.reduced (8, 10);
+        const int knobRowH = juce::jmin (130, (rows.getHeight() - 16) / 2);
+        auto envRow = rows.removeFromTop (knobRowH);
+        rows.removeFromTop (16);
+        auto bottomRow = rows.removeFromTop (knobRowH);
         // The envelope drawing sits beside its four knobs
         envelope.setBounds (envRow.removeFromRight (envRow.getWidth() * 2 / 5).reduced (4, 0));
 
@@ -286,8 +288,8 @@ private:
             auto& knob = slotKnobs[(size_t) k];
             knob.attachment.reset();
             const bool visible = k < used;
-            knob.slider.setVisible (visible && ! filterShown);
-            knob.label.setVisible (visible && ! filterShown);
+            knob.slider.setVisible (visible && section == 0);
+            knob.label.setVisible (visible && section == 0);
             if (! visible)
                 continue;
             const auto& slot = info->slots[(size_t) k];
@@ -301,14 +303,23 @@ private:
         }
         noSlots.setText (info == nullptr ? "Pick an engine to play this layer" : "This engine has no controls of its own",
                          juce::dontSendNotification);
-        noSlots.setVisible (used == 0 && ! filterShown);
+        noSlots.setVisible (used == 0 && section == 0);
         usedSlots = used;
         layoutSlots();
     }
 
-    void showSection (bool filter)
+    void showSection (int index)
     {
-        filterShown = filter;
+        section = index;
+        const bool filter = section == 1, voice = section == 2;
+        envelope.setVisible (voice);
+        for (auto& k : knobs)
+        {
+            k.slider.setVisible (voice);
+            k.label.setVisible (voice);
+        }
+        for (auto& b : modeButtons)
+            b.setVisible (voice);
         for (auto& k : fxKnobs)
         {
             k.slider.setVisible (filter);
@@ -318,10 +329,10 @@ private:
             b.setVisible (filter);
         for (int k = 0; k < (int) slotKnobs.size(); ++k)
         {
-            slotKnobs[(size_t) k].slider.setVisible (! filter && k < usedSlots);
-            slotKnobs[(size_t) k].label.setVisible (! filter && k < usedSlots);
+            slotKnobs[(size_t) k].slider.setVisible (section == 0 && k < usedSlots);
+            slotKnobs[(size_t) k].label.setVisible (section == 0 && k < usedSlots);
         }
-        noSlots.setVisible (! filter && usedSlots == 0);
+        noSlots.setVisible (section == 0 && usedSlots == 0);
         timerCallback();
     }
 
@@ -374,8 +385,8 @@ private:
         const int type = juce::roundToInt (value (params::layerFilterType (layer)));
         for (int t = 0; t < (int) filterTypeButtons.size(); ++t)
             highlight (filterTypeButtons[(size_t) t], t == type, accent);
-        highlight (sectionButtons[0], ! filterShown, accent);
-        highlight (sectionButtons[1], filterShown, accent);
+        for (int i = 0; i < (int) sectionButtons.size(); ++i)
+            highlight (sectionButtons[(size_t) i], i == section, accent);
         const int role = juce::roundToInt (value (params::layerRole (layer)));
         for (int r = 0; r < (int) roleButtons.size(); ++r)
             highlight (roleButtons[(size_t) r], r == role, theme::roleColour (r));
@@ -413,7 +424,7 @@ private:
     std::array<juce::TextButton, 5> roleButtons;
     std::array<Knob, 12> fxKnobs;
     std::array<juce::TextButton, 5> filterTypeButtons;
-    std::array<juce::TextButton, 2> sectionButtons;
-    bool filterShown = false;
+    std::array<juce::TextButton, 3> sectionButtons;
+    int section = 0;   // engine, filter / FX, amp / voice
 };
 }

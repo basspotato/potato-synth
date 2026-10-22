@@ -18,9 +18,9 @@ namespace ps::morph
 inline constexpr float emphasis = 0.75f;
 
 // x: 0 left .. 1 right; y: 0 bottom .. 1 top. Returns each layer's gain in dB.
+// Layers 5-8 have no corner: the pad leaves them at unity, like an anchored layer.
 inline std::array<float, params::numLayers> mixGainsDb (float x, float y, const std::array<bool, params::numLayers>& free) noexcept
 {
-    static_assert (params::numLayers == 4, "one corner per layer");
     x = std::fmin (1.0f, std::fmax (0.0f, x));
     y = std::fmin (1.0f, std::fmax (0.0f, y));
     const std::array<float, 4> corner { (1.0f - x) * y, x * y, (1.0f - x) * (1.0f - y), x * (1.0f - y) };

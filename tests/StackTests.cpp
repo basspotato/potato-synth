@@ -1257,7 +1257,7 @@ struct StackRig : Rig
 {
     StackRig() : Rig (false)
     {
-        const char* engines[] = { "sub", "dirt", "jp", "spectral" };
+        const char* engines[ps::params::numLayers] = { "sub", "dirt", "jp", "spectral", "", "", "", "" };
         for (int i = 0; i < ps::params::numLayers; ++i)
             proc->setLayerEngine (i, engines[i]);
         if (const char* m = std::getenv ("POTATO_MASTER")) set (ps::params::master, (float) std::atof (m));
