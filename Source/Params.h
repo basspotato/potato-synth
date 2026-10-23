@@ -11,9 +11,9 @@ namespace ps::params
     // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
     // 10: HOLD, the main page's CUTOFF and RESO, pitch bend / MPE, mod wheel and aftertouch.
     // 11: layers 5-8. 12: the master chain (OTT, glue, width), Sub Duck and the layers' insert slots.
-    // 13: layer mute and solo. 14: XY pad mode (Mix / Snapshot). 15: layer key and velocity zones.
+    // 13: layer mute and solo. 14: XY pad mode (Mix / Snapshot). 15: layer key and velocity zones. 16: layer link (group editing).
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 15;
+    inline constexpr int stateVersion = 16;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -118,6 +118,10 @@ namespace ps::params
     // Monitoring while designing a sound: a muted layer is silent; while any layer is soloed, only soloed ones sound
     inline juce::ParameterID layerMute (int i)    { return layerParam (i, "mute", 13); }
     inline juce::ParameterID layerSolo (int i)    { return layerParam (i, "solo", 13); }
+    // Group/Link editing (LayerLink.h): a control moved on one linked layer moves on the others, to the same value
+    // (linkMode 0, absolute) or by the same amount (1, relative)
+    inline juce::ParameterID layerLink (int i)    { return layerParam (i, "link", 16); }
+    inline const juce::ParameterID linkMode { "link_mode", 16 };
     // Key and velocity zones (Layer.h): the layer plays notes from lo to hi, fading in over `fade` outside them
     inline juce::ParameterID layerKeyLow (int i)  { return layerParam (i, "key_lo", 15); }
     inline juce::ParameterID layerKeyHigh (int i) { return layerParam (i, "key_hi", 15); }
@@ -261,6 +265,7 @@ namespace ps::params
         layout.add (std::make_unique<juce::AudioParameterFloat> (padX, "XY X", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padY, "XY Y", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
         layout.add (std::make_unique<juce::AudioParameterChoice> (padMode, "XY Mode", juce::StringArray { "Mix", "Snapshot" }, 0));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (linkMode, "Link Mode", juce::StringArray { "Absolute", "Relative" }, 0));
         {
             using Float = juce::AudioParameterFloat;
             auto percent = juce::AudioParameterFloatAttributes().withLabel ("%")
@@ -355,6 +360,7 @@ namespace ps::params
             layout.add (std::make_unique<juce::AudioParameterBool> (layerAnchor (i), role + " Anchor", i == 0));   // the Sub holds the floor
             layout.add (std::make_unique<juce::AudioParameterBool> (layerMute (i), role + " Mute", false));
             layout.add (std::make_unique<juce::AudioParameterBool> (layerSolo (i), role + " Solo", false));
+            layout.add (std::make_unique<juce::AudioParameterBool> (layerLink (i), role + " Link", false));
             {
                 auto percent = juce::AudioParameterFloatAttributes().withLabel ("%")
                                    .withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; });

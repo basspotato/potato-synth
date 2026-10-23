@@ -3149,6 +3149,60 @@ void testLayerZones()
     }
 }
 
+// Group/Link editing: while a control is edited on a linked layer, the others follow, to the same value (Absolute)
+// or by the same amount (Relative). Host automation (no gesture), unlinked layers, role/voice mode and engine
+// slots across different engines are left alone.
+void testLayerLink()
+{
+    namespace p = ps::params;
+    auto edit = [] (Rig& rig, const juce::ParameterID& id, float value)
+    {
+        auto* param = rig.proc->apvts.getParameter (id.getParamID());
+        param->beginChangeGesture();
+        param->setValueNotifyingHost (param->convertTo0to1 (value));
+        param->endChangeGesture();
+    };
+    auto value = [] (Rig& rig, const juce::ParameterID& id) { return rig.proc->apvts.getRawParameterValue (id.getParamID())->load(); };
+
+    Rig rig (false);
+    for (int l : { 0, 1, 2 })
+        rig.set (p::layerLink (l), 1.0f);   // layers 1-3 linked; 4 is not
+    edit (rig, p::layerAttack (1), 120.0f);
+    CHECK (std::abs (value (rig, p::layerAttack (0)) - 120.0f) < 0.5f && std::abs (value (rig, p::layerAttack (2)) - 120.0f) < 0.5f,
+           "Absolute: a linked layer's edit sets the same value on the other linked layers");
+    CHECK (std::abs (value (rig, p::layerAttack (3)) - 2.0f) < 0.1f, "an unlinked layer is left alone");
+    rig.set (p::layerAttack (0), 5.0f);   // no gesture: like host automation
+    CHECK (std::abs (value (rig, p::layerAttack (1)) - 120.0f) < 0.5f, "a change without a gesture (automation) does not drag the others");
+
+    edit (rig, p::layerRole (1), 3.0f);
+    CHECK (juce::roundToInt (value (rig, p::layerRole (0))) != 3, "role is never linked");
+    edit (rig, p::layerSolo (1), 1.0f);
+    CHECK (value (rig, p::layerSolo (0)) < 0.5f, "mute and solo are never linked");
+
+    // Relative: the same step in the control's normalised range
+    rig.set (p::linkMode, 1.0f);
+    rig.set (p::layerPan (0), -0.2f);
+    rig.set (p::layerPan (1), 0.0f);
+    rig.set (p::layerPan (2), 0.4f);
+    rig.proc->layerLink.resync();
+    edit (rig, p::layerPan (1), 0.3f);
+    CHECK (std::abs (value (rig, p::layerPan (0)) - 0.1f) < 0.01f && std::abs (value (rig, p::layerPan (2)) - 0.7f) < 0.01f,
+           "Relative: the others move by the same amount (" + std::to_string (value (rig, p::layerPan (0))) + ", "
+           + std::to_string (value (rig, p::layerPan (2))) + ")");
+    edit (rig, p::layerPan (1), 1.0f);
+    CHECK (value (rig, p::layerPan (2)) >= 0.999f, "Relative moves stop at the control's end");
+
+    // Engine slots follow only between layers on the same engine
+    rig.set (p::linkMode, 0.0f);
+    rig.proc->setLayerEngine (0, "test.sine");
+    rig.proc->setLayerEngine (1, "test.sine");
+    rig.proc->setLayerEngine (2, "jp");
+    rig.proc->layerLink.resync();
+    edit (rig, p::layerSlot (0, 3), 0.8f);
+    CHECK (std::abs (value (rig, p::layerSlot (1, 3)) - 0.8f) < 1.0e-3f, "an engine slot follows a layer on the same engine");
+    CHECK (std::abs (value (rig, p::layerSlot (2, 3)) - 0.8f) > 0.05f, "an engine slot does not follow a layer on another engine");
+}
+
 // XY pad Snapshot mode: a captured corner brings back the sound it was captured from, the pad blends in each
 // parameter's normalised range, an empty corner stands for the live settings, anchored layers stay put, and
 // moving the pad or switching modes never clicks. Corners are saved with the state; a preset clears them.
@@ -3216,6 +3270,22 @@ void testSnapshotMorph()
            "the corners come back with the saved state (" + std::to_string (db (back) - liveDb) + " dB)");
     restored.proc->loadPreset (ps::presets::factory()[0]);
     CHECK (! restored.proc->hasSnapshot (0), "loading a preset clears the corners");
+
+    // The main CUTOFF is part of a corner too: a 2 kHz tone comes back dark from a corner captured with it closed
+    {
+        Rig cut;
+        auto tone = [&] { return rms (cut.render (19200, { { 0, on (96) } }), 9600, 19200); };   // C7, about 2.1 kHz
+        cut.set (p::cutoff, 20.0f);
+        cut.render (4800);
+        cut.proc->captureSnapshot (1);   // top right
+        cut.set (p::cutoff, 100.0f);
+        const float open = tone();
+        cut.set (p::padMode, 1.0f);
+        cut.set (p::padX, 1.0f);
+        cut.set (p::padY, 1.0f);
+        const float closed = tone();
+        CHECK (closed < open * 0.25f, "a Snapshot corner brings back the main CUTOFF (" + std::to_string (closed / open) + "x)");
+    }
 
     // The full stack, with every engine slot, filter and drive far apart in two corners, swept corner to corner
     StackRig stack;
@@ -4393,6 +4463,7 @@ int main()
     {
         testSnapshotMorph();
         testLayerZones();
+        testLayerLink();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_PRESETS_ONLY", {}).isNotEmpty())
@@ -4401,6 +4472,7 @@ int main()
         testLayerMuteSolo();
         testSnapshotMorph();
         testLayerZones();
+        testLayerLink();
         testPressureAfterPause();
         testPumpPunchThrough();
         testFactoryPresets();
@@ -4521,6 +4593,7 @@ int main()
     testLayerMuteSolo();
     testSnapshotMorph();
     testLayerZones();
+    testLayerLink();
     testPressureAfterPause();
     testPumpPunchThrough();
     testFactoryPresets();

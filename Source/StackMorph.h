@@ -62,8 +62,8 @@ class SnapshotMorph
 public:
     static constexpr int numCorners = 4, maxEntries = 512;
 
-    // Message thread, before audio starts: routes one layer parameter through the morph. Returns the value the
-    // layer reads from now on.
+    // Message thread, before audio starts: routes one parameter through the morph (layer -1: a global one, never
+    // anchored). Returns the value that is read from now on.
     std::atomic<float>* bind (juce::RangedAudioParameter& param, std::atomic<float>* live, int layer, bool engineSlot)
     {
         jassert (numEntries < maxEntries);
@@ -131,7 +131,7 @@ public:
         {
             auto& e = entries[(size_t) i];
             const float live = e.live->load();
-            if (! e.morphs || anchored[(size_t) e.layer])
+            if (! e.morphs || (e.layer >= 0 && anchored[(size_t) e.layer]))
             {
                 e.effective.store (live);
                 continue;

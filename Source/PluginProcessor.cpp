@@ -34,8 +34,11 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     buildButton = apvts.getRawParameterValue (ps::params::build.getParamID());
     dropButton = apvts.getRawParameterValue (ps::params::drop.getParamID());
     holdButton = apvts.getRawParameterValue (ps::params::hold.getParamID());
-    cutoffKnob = apvts.getRawParameterValue (ps::params::cutoff.getParamID());
-    resoKnob = apvts.getRawParameterValue (ps::params::resonance.getParamID());
+    // The main CUTOFF and RESO are part of the sound a Snapshot corner holds (no layer, so never anchored)
+    cutoffKnob = snapshot.bind (*apvts.getParameter (ps::params::cutoff.getParamID()),
+                                apvts.getRawParameterValue (ps::params::cutoff.getParamID()), -1, false);
+    resoKnob = snapshot.bind (*apvts.getParameter (ps::params::resonance.getParamID()),
+                              apvts.getRawParameterValue (ps::params::resonance.getParamID()), -1, false);
     {
         namespace p = ps::params;
         auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
@@ -228,6 +231,7 @@ void PotatoSynthProcessor::loadPreset (const ps::presets::Preset& preset)
         for (int s = 0; s < ps::ModLanes::maxSteps; ++s)
             modLanes.setValue (l, s, defaultLanes.getValue (l, s));
     snapshot.clearAll();   // the corners belonged to the old sound
+    layerLink.resync();
     apvts.state.setProperty ("presetName", preset.name, nullptr);
 }
 
@@ -816,6 +820,7 @@ void PotatoSynthProcessor::setStateInformation (const void* data, int sizeInByte
     apvts.replaceState (state);
     applyLayerEnginesFromState();
     snapshot.fromState (snapshots, layerEngineIds());
+    layerLink.resync();
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

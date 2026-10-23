@@ -6,6 +6,7 @@
 #include "ChainKnobs.h"
 #include "Space.h"
 #include "StackMorph.h"
+#include "LayerLink.h"
 #include "Arp.h"
 #include "ModLanes.h"
 #include "MixHealth.h"
@@ -62,6 +63,8 @@ private:
 
 public:
     juce::AudioProcessorValueTreeState apvts;
+    // Group/Link editing: controls follow between linked layers while being edited (LayerLink.h)
+    ps::LayerLink layerLink { apvts, [this] (int a, int b) { return stack.layer (a).getEngineId() == stack.layer (b).getEngineId(); } };
 
     // Message thread: put an engine (by registry ID, empty string = none) into a layer
     void setLayerEngine (int layerIndex, const juce::String& engineId);
