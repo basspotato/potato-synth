@@ -64,6 +64,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     addChildComponent (layerPage);
     addChildComponent (arpPage);
     addChildComponent (mixPage);
+    addAndMakeVisible (presetBar);
     layerPage.onEngineClick = [this] { showEngineMenu (selectedLayer); };
     for (auto* tab : { &stackTab, &layerTab, &arpTab, &mixTab })
     {
@@ -160,6 +161,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
 
 void PotatoSynthEditor::timerCallback()
 {
+    presetBar.refresh();
     for (int i = 0; i < 4; ++i)
     {
         juce::String name;
@@ -314,8 +316,6 @@ void PotatoSynthEditor::paint (juce::Graphics& g)
                 juce::Justification::centredLeft);
     g.setColour (ps::theme::textDim);
     g.setFont (juce::FontOptions (13.0f * s));
-    g.drawText (juce::CharPointer_UTF8 ("SUPER STACK  \xc2\xb7  PREVIEW BUILD"), juce::Rectangle<float> (x0 + 26.0f * s, y0 + 48.0f * s, 400.0f * s, 18.0f * s),
-                juce::Justification::centredLeft);
     g.drawText (juce::CharPointer_UTF8 ("HARMONY ENGINE  \xc2\xb7  ON"),
                 juce::Rectangle<float> (x0, f.getBottom() - 26.0f * s, f.getWidth() - 24.0f * s, 18.0f * s),
                 juce::Justification::centredRight);
@@ -327,6 +327,7 @@ void PotatoSynthEditor::resized()
     const float s = (float) frame.getWidth() / (float) baseWidth;
     auto scaled = [s] (int v) { return juce::roundToInt ((float) v * s); };
 
+    presetBar.setBounds (frame.getX() + scaled (24), frame.getY() + scaled (48), scaled (280), scaled (22));
     auto area = frame.reduced (scaled (24));
     area.removeFromTop (scaled (56));
     area.removeFromBottom (scaled (16));
