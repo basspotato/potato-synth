@@ -85,6 +85,17 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
         bankButtons[(size_t) b].onClick = [this, b] { showBank (b); };
         addAndMakeVisible (bankButtons[(size_t) b]);
     }
+    // Link mode: Absolute sets the same value on the linked layers, Relative moves them by the same amount
+    linkModeAttachment = std::make_unique<juce::ParameterAttachment> (*processor.apvts.getParameter (ps::params::linkMode.getParamID()),
+        [this] (float v) { linkModeButton.setButtonText (v > 0.5f ? "LINK: REL" : "LINK: ABS"); });
+    linkModeAttachment->sendInitialUpdate();
+    linkModeButton.onClick = [this]
+    {
+        const bool relative = linkModeButton.getButtonText().endsWith ("ABS");
+        linkModeAttachment->setValueAsCompleteGesture (relative ? 1.0f : 0.0f);
+    };
+    linkModeButton.setTooltip ("Linked layers follow an edit to the same value (ABS) or by the same amount (REL)");
+    addAndMakeVisible (linkModeButton);
     selectLayer (selectedLayer);
     showBank (0);
     showPage (Page::stack);
@@ -367,6 +378,7 @@ void PotatoSynthEditor::resized()
     {
         auto banks = left.removeFromBottom (scaled (22));
         left.removeFromBottom (scaled (8));
+        linkModeButton.setBounds (banks.removeFromRight (scaled (92)).reduced (scaled (2), 0));
         for (auto& b : bankButtons)
             b.setBounds (banks.removeFromLeft (banks.getWidth() / 2).reduced (scaled (2), 0));
     }

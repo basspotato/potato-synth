@@ -49,7 +49,9 @@ private:
     int selectedLayer = 2;
     // The strip shows four layers at a time: bank 0 is layers 1-4, bank 1 is layers 5-8
     int layerBank = 0;
-    std::array<juce::TextButton, 2> bankButtons { juce::TextButton ("LAYERS 1-4"), juce::TextButton ("LAYERS 5-8") };
+    std::array<juce::TextButton, 2> bankButtons { juce::TextButton ("L 1-4"), juce::TextButton ("L 5-8") };
+    juce::TextButton linkModeButton { "LINK: ABS" };
+    std::unique_ptr<juce::ParameterAttachment> linkModeAttachment;
     void showBank (int bank);
 
     // Chain knobs, SUPER, and the momentary BUILD and DROP

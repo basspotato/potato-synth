@@ -4,7 +4,7 @@
 
 namespace ps
 {
-// One slot in the layer strip: role, band, engine, and mute / solo. Clicking the engine name opens the engine
+// One slot in the layer strip: role, band, engine, and link / mute / solo. Clicking the engine name opens the engine
 // menu; clicking anywhere else selects the layer.
 class LayerCard : public juce::Component
 {
@@ -53,7 +53,7 @@ public:
                juce::AudioProcessorValueTreeState& state, int layerIndex)
         : role (std::move (roleName)), band (std::move (bandText)), colour (roleColour), number (layerIndex + 1)
     {
-        for (auto* b : { &mute, &solo })
+        for (auto* b : { &mute, &solo, &link })
         {
             b->setClickingTogglesState (true);
             b->setColour (juce::TextButton::buttonColourId, theme::panel);
@@ -63,6 +63,9 @@ public:
         }
         mute.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffff5a5a));
         solo.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffffd84a));
+        link.setColour (juce::TextButton::buttonOnColourId, theme::mid);
+        link.setTooltip ("Link: edits to a linked layer's controls move the other linked layers too");
+        linkAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (state, params::layerLink (layerIndex).getParamID(), link);
         mute.setTooltip ("Mute this layer");
         solo.setTooltip ("Solo: only soloed layers sound");
         muteAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (state, params::layerMute (layerIndex).getParamID(), mute);
@@ -76,6 +79,8 @@ public:
         solo.setBounds (r.removeFromRight (24));
         r.removeFromRight (4);
         mute.setBounds (r.removeFromRight (24));
+        r.removeFromRight (4);
+        link.setBounds (r.removeFromRight (24));
     }
 
     void paint (juce::Graphics& g) override
@@ -125,7 +130,7 @@ private:
     juce::String role, band, engineName;
     juce::Colour colour;
     int number = 1;
-    juce::TextButton mute { "M" }, solo { "S" };
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> muteAttachment, soloAttachment;
+    juce::TextButton mute { "M" }, solo { "S" }, link { "L" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> muteAttachment, soloAttachment, linkAttachment;
 };
 }
