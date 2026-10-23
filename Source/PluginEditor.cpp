@@ -39,7 +39,7 @@ namespace
 
 PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts), arpPage (p),
-      mixPage (p.apvts, p.getMixHealth(), [this] (int l) { return "Layer " + juce::String (l + 1) + " (" + roleTitle (layerRole (l)) + ")"; })
+      mixPage (p.apvts, p.getMixHealth(), [this] (int l) { return ps::theme::roleColour (layerRole (l)); })
 {
     processor.getMixHealth().setActive (true);
     setLookAndFeel (&look);
@@ -61,6 +61,10 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
 
     addAndMakeVisible (xyPad);
     xyPad.attach (*processor.apvts.getParameter (ps::params::padX.getParamID()), *processor.apvts.getParameter (ps::params::padY.getParamID()));
+    xyPad.attachMode (*processor.apvts.getParameter (ps::params::padMode.getParamID()));
+    xyPad.onStore = [this] (int c) { processor.captureSnapshot (c); };
+    xyPad.onClear = [this] (int c) { processor.clearSnapshot (c); };
+    xyPad.isStored = [this] (int c) { return processor.hasSnapshot (c); };
     addChildComponent (layerPage);
     addChildComponent (arpPage);
     addChildComponent (mixPage);

@@ -12,9 +12,9 @@ class MixPage : public juce::Component,
                 private juce::Timer
 {
 public:
-    // layerName: the name shown for a layer in masking warnings
-    MixPage (juce::AudioProcessorValueTreeState& state, MixHealth& health, std::function<juce::String (int)> layerName)
-        : apvts (state), mixHealth (health), nameOf (std::move (layerName))
+    // layerColour: a layer's role colour, for the dots under a masking light
+    MixPage (juce::AudioProcessorValueTreeState& state, MixHealth& health, std::function<juce::Colour (int)> layerColour)
+        : apvts (state), mixHealth (health), colourOf (std::move (layerColour))
     {
         struct Def { const char* name; juce::ParameterID id; juce::Colour colour; };
         const Def defs[] = { { "OTT", params::ottAmount, theme::mid }, { "OTT TIME", params::ottTime, theme::mid },
@@ -104,32 +104,51 @@ public:
         g.setColour (theme::text.withAlpha (0.5f));
         g.drawVerticalLine ((int) bar.getCentreX(), bar.getY(), bar.getBottom());
 
-        // Masking warnings
-        auto list = maskArea;
+        // Masking: one light per band, darker for the low bands and lighter going up. A light glows while two or
+        // more layers contend in its band, with a dot in each one's role colour, and holds for a second after
+        // (timerCallback), so it reads at a glance instead of flickering.
+        auto area = maskArea;
         g.setColour (theme::textDim);
         g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-        g.drawText ("MASKING", list.removeFromTop (16), juce::Justification::centredLeft);
-        g.setFont (juce::FontOptions (13.0f));
-        bool any = false;
+        g.drawText ("MASKING", area.removeFromTop (16), juce::Justification::centredLeft);
         static const char* const bands[] = { "200 Hz", "400 Hz", "800 Hz", "1.6 kHz", "3.2 kHz" };
+        const int bw = area.getWidth() / MixHealth::numMaskBands;
+        const float d = (float) juce::jlimit (12, 30, juce::jmin (bw / 3, area.getHeight() - 40));
         for (int b = 0; b < MixHealth::numMaskBands; ++b)
         {
-            const uint32_t bits = v.maskedLayers[(size_t) b].load();
-            if (bits == 0)
-                continue;
-            juce::StringArray names;
+            auto cell = area.withX (area.getX() + b * bw).withWidth (bw).toFloat();
+            const auto colour = maskColour (b);
+            const float glow = maskGlow[(size_t) b];
+            const auto centre = juce::Point<float> (cell.getCentreX(), cell.getY() + 6.0f + d * 0.5f);
+            for (int i = 3; i >= 1; --i)
+            {
+                const float rr = d * 0.5f + (float) i * 5.0f;
+                g.setColour (colour.withAlpha (0.12f * glow * (float) (4 - i)));
+                g.fillEllipse (centre.x - rr, centre.y - rr, rr * 2.0f, rr * 2.0f);
+            }
+            g.setColour (colour.withMultipliedBrightness (0.25f).interpolatedWith (colour, glow));
+            g.fillEllipse (centre.x - d * 0.5f, centre.y - d * 0.5f, d, d);
+            g.setColour (colour.withAlpha (0.5f + 0.5f * glow));
+            g.drawEllipse (centre.x - d * 0.5f, centre.y - d * 0.5f, d, d, 1.5f);
+
+            g.setColour (glow > 0.0f ? theme::text : theme::textDim);
+            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            const float labelY = centre.y + d * 0.5f + 6.0f;
+            g.drawText (bands[b], juce::Rectangle<float> (cell.getX(), labelY, cell.getWidth(), 14.0f), juce::Justification::centred);
+
+            // The contending layers
+            const uint32_t bits = maskShown[(size_t) b];
+            int count = 0;
+            for (int l = 0; l < params::numLayers; ++l)
+                count += (int) ((bits >> l) & 1u);
+            float x = cell.getCentreX() - (float) count * 5.0f + 1.0f;
             for (int l = 0; l < params::numLayers; ++l)
                 if ((bits >> l) & 1u)
-                    names.add (nameOf (l));
-            g.setColour (warn);
-            g.drawText (juce::String (bands[b]) + ":  " + names.joinIntoString (", ") + " share this band",
-                        list.removeFromTop (18), juce::Justification::centredLeft);
-            any = true;
-        }
-        if (! any)
-        {
-            g.setColour (good);
-            g.drawText ("Every band has one owner", list.removeFromTop (18), juce::Justification::centredLeft);
+                {
+                    g.setColour (colourOf (l).withAlpha (glow));
+                    g.fillEllipse (x, labelY + 18.0f, 8.0f, 8.0f);
+                    x += 10.0f;
+                }
         }
     }
 
@@ -182,14 +201,40 @@ private:
             listen[(size_t) i].setColour (juce::TextButton::buttonColourId, i == mode ? (i == 0 ? theme::mid : theme::sub) : theme::panel);
             listen[(size_t) i].setAlpha (i == mode ? 1.0f : 0.7f);
         }
+        // Masking lights: on while a band is contended, held 1 s after, then fading over 0.5 s
+        const auto& v = mixHealth.readings();
+        for (int b = 0; b < MixHealth::numMaskBands; ++b)
+        {
+            const uint32_t bits = v.maskedLayers[(size_t) b].load();
+            if (bits != 0)
+            {
+                maskShown[(size_t) b] = bits;
+                maskGlow[(size_t) b] = 1.0f;
+                maskHold[(size_t) b] = 30;
+            }
+            else if (maskHold[(size_t) b] > 0)
+                --maskHold[(size_t) b];
+            else
+                maskGlow[(size_t) b] = std::max (0.0f, maskGlow[(size_t) b] - 1.0f / 15.0f);
+        }
         repaint (healthArea());
+    }
+
+    static juce::Colour maskColour (int band)
+    {
+        static const juce::Colour c[] = { juce::Colour (0xff9a1050), juce::Colour (0xffd8324a), juce::Colour (0xffff9a2e),
+                                          juce::Colour (0xff6fe8ff), juce::Colour (0xfff0eaff) };
+        return c[(size_t) juce::jlimit (0, 4, band)];
     }
 
     juce::Rectangle<int> healthArea() const { return getLocalBounds().withTop (healthTitle.getBottom()); }
 
     juce::AudioProcessorValueTreeState& apvts;
     MixHealth& mixHealth;
-    std::function<juce::String (int)> nameOf;
+    std::function<juce::Colour (int)> colourOf;
+    std::array<float, MixHealth::numMaskBands> maskGlow {};
+    std::array<int, MixHealth::numMaskBands> maskHold {};
+    std::array<uint32_t, MixHealth::numMaskBands> maskShown {};
     std::array<Knob, 7> knobs;
     std::array<juce::TextButton, 3> listen;
     juce::TextButton reset;

@@ -6,6 +6,8 @@ namespace ps
 // Stack XY pad: one layer role per corner. The background blends the four role colours by
 // the same bilinear weights the stack morph uses, so the colour under the puck shows the mix.
 // Bound to the xy_x / xy_y parameters (y is 1 at the top there, 0 at the top on screen).
+// The MIX / SNAPSHOT chip at the top switches xy_mode; in Snapshot mode each corner (A-D) shows STORE, which
+// captures the sound as it is heard into that corner, and CLR once it holds one.
 class XYPad : public juce::Component
 {
 public:
@@ -19,6 +21,16 @@ public:
         yAttachment = std::make_unique<juce::ParameterAttachment> (paramY, [this] (float v) { pos.y = 1.0f - v; repaint(); });
         xAttachment->sendInitialUpdate();
         yAttachment->sendInitialUpdate();
+    }
+
+    // Snapshot corners: 0 top left, 1 top right, 2 bottom left, 3 bottom right
+    std::function<void (int)> onStore, onClear;
+    std::function<bool (int)> isStored;
+
+    void attachMode (juce::RangedAudioParameter& paramMode)
+    {
+        modeAttachment = std::make_unique<juce::ParameterAttachment> (paramMode, [this] (float v) { snapshotMode = v > 0.5f; repaint(); });
+        modeAttachment->sendInitialUpdate();
     }
 
     void paint (juce::Graphics& g) override
@@ -44,13 +56,33 @@ public:
             g.drawHorizontalLine ((int) fy, r.getX() + 8.0f, r.getRight() - 8.0f);
         }
 
-        // Corner labels
+        // Corner labels: the layer roles (Mix) or the snapshot corners with their buttons (Snapshot)
         g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
         const auto inner = r.reduced (12.0f, 8.0f);
-        g.setColour (theme::sub);  g.drawText ("SUB",  inner, juce::Justification::topLeft);
-        g.setColour (theme::body); g.drawText ("BODY", inner, juce::Justification::topRight);
-        g.setColour (theme::mid);  g.drawText ("MID",  inner, juce::Justification::bottomLeft);
-        g.setColour (theme::air);  g.drawText ("AIR",  inner, juce::Justification::bottomRight);
+        if (! snapshotMode)
+        {
+            g.setColour (theme::sub);  g.drawText ("SUB",  inner, juce::Justification::topLeft);
+            g.setColour (theme::body); g.drawText ("BODY", inner, juce::Justification::topRight);
+            g.setColour (theme::mid);  g.drawText ("MID",  inner, juce::Justification::bottomLeft);
+            g.setColour (theme::air);  g.drawText ("AIR",  inner, juce::Justification::bottomRight);
+        }
+        else
+        {
+            static const juce::Justification just[] = { juce::Justification::topLeft, juce::Justification::topRight,
+                                                        juce::Justification::bottomLeft, juce::Justification::bottomRight };
+            for (int c = 0; c < 4; ++c)
+            {
+                const bool stored = isStored != nullptr && isStored (c);
+                g.setColour (stored ? theme::text : theme::textDim);
+                g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+                g.drawText (juce::String::charToString ((juce::juce_wchar) ('A' + c)) + (stored ? juce::String (juce::CharPointer_UTF8 (" \xe2\x97\x8f")) : juce::String()),
+                            inner, just[c]);
+                drawChip (g, storeChip (c), "STORE", stored ? theme::textDim : theme::text);
+                if (stored)
+                    drawChip (g, clearChip (c), "CLR", theme::textDim);
+            }
+        }
+        drawChip (g, modeChip(), snapshotMode ? "SNAPSHOT" : "MIX", theme::text);
 
         // Puck with halo
         const auto p = toScreen (pos);
@@ -70,13 +102,38 @@ public:
     void resized() override { background = {}; }
     void mouseDown (const juce::MouseEvent& e) override
     {
+        dragging = false;
+        if (modeChip().contains (e.position) && modeAttachment != nullptr)
+        {
+            modeAttachment->setValueAsCompleteGesture (snapshotMode ? 0.0f : 1.0f);
+            return;
+        }
+        if (snapshotMode)
+            for (int c = 0; c < 4; ++c)
+            {
+                const bool stored = isStored != nullptr && isStored (c);
+                if (storeChip (c).contains (e.position))
+                {
+                    if (onStore != nullptr) onStore (c);
+                    repaint();
+                    return;
+                }
+                if (stored && clearChip (c).contains (e.position))
+                {
+                    if (onClear != nullptr) onClear (c);
+                    repaint();
+                    return;
+                }
+            }
+        dragging = true;
         if (xAttachment != nullptr) { xAttachment->beginGesture(); yAttachment->beginGesture(); }
         setFromMouse (e);
     }
-    void mouseDrag (const juce::MouseEvent& e) override { setFromMouse (e); }
+    void mouseDrag (const juce::MouseEvent& e) override { if (dragging) setFromMouse (e); }
     void mouseUp (const juce::MouseEvent&) override
     {
-        if (xAttachment != nullptr) { xAttachment->endGesture(); yAttachment->endGesture(); }
+        if (dragging && xAttachment != nullptr) { xAttachment->endGesture(); yAttachment->endGesture(); }
+        dragging = false;
     }
     void mouseDoubleClick (const juce::MouseEvent&) override
     {
@@ -88,7 +145,34 @@ public:
 private:
     juce::Point<float> pos { 0.5f, 0.5f };
     juce::Image background;
-    std::unique_ptr<juce::ParameterAttachment> xAttachment, yAttachment;
+    std::unique_ptr<juce::ParameterAttachment> xAttachment, yAttachment, modeAttachment;
+    bool snapshotMode = false, dragging = false;
+
+    juce::Rectangle<float> modeChip() const { return { getWidth() * 0.5f - 42.0f, 8.0f, 84.0f, 18.0f }; }
+    // Below the corner's label at the top, above it at the bottom
+    juce::Rectangle<float> storeChip (int c) const
+    {
+        const auto inner = getLocalBounds().toFloat().reduced (12.0f, 8.0f);
+        const bool right = (c & 1) != 0, bottom = c >= 2;
+        const float x = right ? inner.getRight() - 46.0f : inner.getX();
+        const float y = bottom ? inner.getBottom() - 40.0f : inner.getY() + 20.0f;
+        return { x, y, 46.0f, 18.0f };
+    }
+    juce::Rectangle<float> clearChip (int c) const
+    {
+        const auto s = storeChip (c);
+        return s.translated ((c & 1) != 0 ? -38.0f : 50.0f, 0.0f).withWidth (34.0f);
+    }
+    static void drawChip (juce::Graphics& g, juce::Rectangle<float> r, const juce::String& text, juce::Colour colour)
+    {
+        g.setColour (theme::panel.withAlpha (0.85f));
+        g.fillRoundedRectangle (r, 6.0f);
+        g.setColour (theme::panelEdge);
+        g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+        g.setColour (colour);
+        g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+        g.drawText (text, r, juce::Justification::centred);
+    }
 
     void send()
     {
