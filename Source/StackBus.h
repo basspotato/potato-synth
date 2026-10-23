@@ -278,6 +278,8 @@ public:
         glueGainDb = 0.0f;
         amount = 0.0f;
         fade = 0.0f;
+        playedPower = 0.0f;
+        masterUpDb = -60.0f;
     }
 
     // GROOVE: lock = 0..1 moves the OTT releases toward a 1/16 note and the glue's toward a 1/8 note, so the
@@ -341,8 +343,9 @@ public:
     float getAmount() const noexcept { return amount; }
 
     // The patch's own master chain (an instance of its own, outside the knob stages; call prepareMaster). OTT at
-    // depth 0..1 with fixed thresholds (it squeezes quiet and loud notes together, as a mastering OTT does), its
-    // times scaled and its upward lift scaled by upward (0..1); then glue at glueDb of reduction with its own
+    // depth 0..1, its downward threshold fixed (it squeezes loud notes down, as a mastering OTT does) and its upward
+    // one 10 dB under the played level (so it brings up decays, tails and quiet detail on any patch), its times
+    // scaled and its upward lift scaled by upward (0..1); then glue at glueDb of reduction with its own
     // release. Each amount glides over 30 ms, and the chain crossfades in and out from the dry signal over 20 ms
     // (its band split changes the phase, so a hard switch would click). Bypassed and reset once out.
     void prepareMaster (double sampleRate, int maxBlock)
@@ -375,6 +378,16 @@ public:
             std::copy_n (l, n, dryL.data());
             std::copy_n (r, n, dryR.data());
             trackLevel (l, r, n);
+            {
+                // The played level: rises over 400 ms, falls over 3 s, so a release tail is lifted against the
+                // level the notes had rather than followed down
+                double sum = 0.0;
+                for (int i = 0; i < n; ++i)
+                    sum += 0.5 * ((double) l[i] * l[i] + (double) r[i] * r[i]);
+                const float power = (float) (sum / n);
+                playedPower += (power - playedPower) * (1.0f - std::exp (-(float) n / ((power > playedPower ? 0.4f : 3.0f) * sr)));
+                masterUpDb = juce::jlimit (-60.0f, -10.0f, 10.0f * std::log10 (playedPower + 1.0e-12f) - 10.0f);
+            }
             const float coef = 1.0f - std::exp (-(float) n / (0.03f * sr));
             masterOtt += (juce::jlimit (0.0f, 1.0f, ottDepth) - masterOtt) * coef;
             masterGlue += (juce::jlimit (0.0f, 12.0f, glueDb) - masterGlue) * coef;
@@ -391,16 +404,18 @@ public:
     }
 
 private:
-    float masterOtt = 0.0f, masterGlue = 0.0f, masterFade = 0.0f, fade = 0.0f;
+    float masterOtt = 0.0f, masterGlue = 0.0f, masterFade = 0.0f, fade = 0.0f, playedPower = 0.0f, masterUpDb = -60.0f;
     bool followLevel = true;
     std::vector<float> dryL, dryR;
     // OTT: 3 bands (LR4 at 88 Hz and 2.5 kHz), each compressed downward above -22 dB (4:1) and upward below
-    // -40 dB (3:1, at most +12 dB, tapering to none at -70 dB, so silence isn't pumped up), all thresholds moved by
-    // levelShiftDb(). depth scales the gain in dB.
+    // -40 dB (3:1, at most +12 dB, tapering to none 30 dB further down, so silence isn't pumped up), all thresholds
+    // moved by levelShiftDb() (the master chain's upward threshold follows the played level instead). depth scales
+    // the gain in dB.
     void ott (float* left, float* right, int n, float depth, float timeScale = 1.0f, float upward = 1.0f) noexcept
     {
         const float shift = levelShiftDb();
-        const float downDb = -22.0f + shift, upDb = -40.0f + shift, gateDb = -70.0f + shift;
+        // The master OTT lifts from 10 dB under the level being played (masterUpDb), so Upward works on any patch
+        const float downDb = -22.0f + shift, upDb = followLevel ? -40.0f + shift : masterUpDb, gateDb = upDb - 30.0f;
         static constexpr float attackMs[3] = { 8.0f, 4.0f, 2.0f }, releaseMs[3] = { 120.0f, 80.0f, 50.0f };
         const float sixteenthMs = 250.0f * beatSeconds;
         float attack[3], release[3];
@@ -433,11 +448,13 @@ private:
                 float gainDb = 0.0f;
                 if (db > downDb)
                     gainDb = (downDb - db) * 0.75f;
-                else if (db < upDb && db > gateDb)
+                // Upward is added on its own: the master chain's threshold follows the played level and can sit
+                // above the fixed downward one on a loud patch
+                if (db < upDb && db > gateDb)
                     // The lift tapers back to 0 dB at the gate (1:2 expansion from 12 dB above it), so a tail
                     // crossing the gate fades into silence: a hard gate would switch 12 dB on and off as a noisy
                     // tail's envelope wanders across it, and crackle
-                    gainDb = upward * std::min ({ 12.0f, (upDb - db) * (2.0f / 3.0f), db - gateDb });
+                    gainDb += upward * std::min ({ 12.0f, (upDb - db) * (2.0f / 3.0f), db - gateDb });
                 const float gain = std::exp2 (gainDb * depth * (1.0f / 6.0206f));
                 outL += band[b][0] * gain;
                 outR += band[b][1] * gain;

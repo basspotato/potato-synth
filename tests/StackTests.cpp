@@ -2227,9 +2227,24 @@ void testMasterChain()
     const float rangeDry = levelDb ({}, 1.0f) - levelDb ({}, 0.15f);
     const float rangeOtt = levelDb ({ { p::ottAmount, 100.0f } }, 1.0f) - levelDb ({ { p::ottAmount, 100.0f } }, 0.15f);
     CHECK (rangeOtt < rangeDry - 3.0f, "OTT squeezes the dynamic range (" + std::to_string (rangeDry) + " -> " + std::to_string (rangeOtt) + " dB)");
-    // Upward lifts only what is well under the thresholds: a very quiet note
-    const float lifted = levelDb ({ { p::ottAmount, 100.0f } }, 0.01f) - levelDb ({ { p::ottAmount, 100.0f }, { p::ottUpward, 0.0f } }, 0.01f);
-    CHECK (lifted > 3.0f, "OTT Upward lifts the quiet parts, and 0 % turns that off (" + std::to_string (lifted) + " dB)");
+    // Upward lifts what sits more than 10 dB under the played level: a long release tail here
+    {
+        auto tailDb = [] (float upward)
+        {
+            StackRig rig;
+            rig.set (p::ottAmount, 100.0f);
+            rig.set (p::ottUpward, upward);
+            for (int l = 0; l < 4; ++l)
+                rig.set (p::layerRelease (l), 2000.0f);
+            auto events = StackRig::chord();
+            for (int n : { 36, 48, 55, 60, 64, 67 })
+                events.push_back ({ 48000, off (n) });
+            const auto x = rig.render (120000, events);
+            return juce::Decibels::gainToDecibels (rms (x, 96000, 120000));
+        };
+        const float lifted = tailDb (100.0f) - tailDb (0.0f);
+        CHECK (lifted > 3.0f, "OTT Upward lifts a release tail, and 0 % turns that off (" + std::to_string (lifted) + " dB)");
+    }
 
     // Glue: about its set reduction on a steady note
     const float glued = levelDb ({ { p::glueAmount, 6.0f } }, 0.8f) - levelDb ({}, 0.8f);
