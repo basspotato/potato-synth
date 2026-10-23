@@ -71,7 +71,7 @@ private:
 };
 
 // Detail page for one layer: engine picker, the engine's own controls (its slots) or the layer's filter, drive and
-// chorus, its two insert slots, voice mode, amp envelope, pan, tune and glide.
+// chorus, its two insert slots, voice mode, amp envelope, pan, tune, glide and key / velocity zones.
 class LayerPage : public juce::Component,
                   private juce::Timer
 {
@@ -101,7 +101,8 @@ public:
             addAndMakeVisible (b);
         }
 
-        const char* const names[] = { "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "PAN", "OCTAVE", "SEMI", "FINE", "GLIDE" };
+        const char* const names[] = { "ATTACK", "DECAY", "SUSTAIN", "RELEASE", "PAN", "OCTAVE", "SEMI", "FINE", "GLIDE",
+                                      "KEY LOW", "KEY HIGH", "KEY FADE", "VEL LOW", "VEL HIGH", "VEL FADE" };
         for (size_t i = 0; i < knobs.size(); ++i)
         {
             auto& k = knobs[i];
@@ -184,7 +185,9 @@ public:
 
         const juce::ParameterID ids[] = { params::layerAttack (index), params::layerDecay (index), params::layerSustain (index),
                                           params::layerRelease (index), params::layerPan (index), params::layerOctave (index),
-                                          params::layerSemi (index), params::layerFine (index), params::layerGlide (index) };
+                                          params::layerSemi (index), params::layerFine (index), params::layerGlide (index),
+                                          params::layerKeyLow (index), params::layerKeyHigh (index), params::layerKeyFade (index),
+                                          params::layerVelLow (index), params::layerVelHigh (index), params::layerVelFade (index) };
         for (size_t i = 0; i < knobs.size(); ++i)
         {
             auto& k = knobs[i];
@@ -288,10 +291,12 @@ public:
         slotArea = r;
         layoutSlots();
         auto rows = r.reduced (8, 10);
-        const int knobRowH = juce::jmin (130, (rows.getHeight() - 16) / 2);
+        const int knobRowH = juce::jmin (120, (rows.getHeight() - 24) / 3);
         auto envRow = rows.removeFromTop (knobRowH);
-        rows.removeFromTop (16);
+        rows.removeFromTop (12);
         auto bottomRow = rows.removeFromTop (knobRowH);
+        rows.removeFromTop (12);
+        auto zoneRow = rows.removeFromTop (knobRowH);
         // The envelope drawing sits beside its four knobs
         envelope.setBounds (envRow.removeFromRight (envRow.getWidth() * 2 / 5).reduced (4, 0));
 
@@ -310,8 +315,12 @@ public:
         modes = modes.withSizeKeepingCentre (modes.getWidth(), mh * 3);
         for (auto& b : modeButtons)
             b.setBounds (modes.removeFromTop (mh).reduced (0, 2));
-        for (size_t i = 4; i < knobs.size(); ++i)
+        for (size_t i = 4; i < 9; ++i)
             place (knobs[i], bottomRow.removeFromLeft (bw).reduced (4, 0));
+        // Zones: which keys and velocities the layer plays
+        const int zw = zoneRow.getWidth() / 6;
+        for (size_t i = 9; i < knobs.size(); ++i)
+            place (knobs[i], zoneRow.removeFromLeft (zw).reduced (4, 0));
     }
 
 private:
@@ -539,7 +548,7 @@ private:
     juce::Colour accent { theme::mid };
     EnvelopeView envelope;
     juce::TextButton engineButton;
-    std::array<Knob, 9> knobs;
+    std::array<Knob, 15> knobs;
     std::array<Knob, Engine::numSlots> slotKnobs;
     juce::Label noSlots;
     juce::Rectangle<int> slotArea;
