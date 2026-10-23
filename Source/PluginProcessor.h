@@ -76,12 +76,18 @@ public:
     juce::String getPresetName() const { return apvts.state.getProperty ("presetName", "Init").toString(); }
     // Mix Health meters and listen modes (the editor turns the meters on while it is open)
     ps::MixHealth& getMixHealth() noexcept { return mixHealth; }
+    // Message thread: the XY pad's Snapshot corners (0 top left, 1 top right, 2 bottom left, 3 bottom right).
+    // Capture takes the sound as it is heard now; an empty corner stands for the live settings.
+    void captureSnapshot (int corner) { snapshot.capture (corner, layerEngineIds()); }
+    void clearSnapshot (int corner) { snapshot.clear (corner); }
+    bool hasSnapshot (int corner) const { return snapshot.isFilled (corner); }
     // Message thread: frees engines the audio thread has finished with (also runs on a timer)
     void collectRetiredEngines() { stack.collectGarbage(); }
 
 private:
     void timerCallback() override { collectRetiredEngines(); }
     void applyLayerEnginesFromState();
+    std::array<juce::String, ps::params::numLayers> layerEngineIds() const;
     juce::String slotText (int layer, int slot, float value) const;
     void migrateState (juce::ValueTree& state) const;
     // BUILD and DROP (momentary): build ramps up over two bars while held; drop engages on the next bar line
@@ -126,6 +132,8 @@ private:
     std::atomic<float>* buildButton = nullptr;
     std::atomic<float>* padX = nullptr;
     std::atomic<float>* padY = nullptr;
+    std::atomic<float>* padMode = nullptr;
+    ps::morph::SnapshotMorph snapshot;   // the layers read their parameters through it
     std::array<std::atomic<float>*, ps::params::numLayers> anchors {};
     std::array<std::atomic<float>*, ps::params::numLayers> mutes {}, solos {};   // monitoring (Params.h)
     float padXSmoothed = 0.5f, padYSmoothed = 0.5f, superSmoothed = 0.0f;

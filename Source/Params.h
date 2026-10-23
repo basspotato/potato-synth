@@ -11,9 +11,9 @@ namespace ps::params
     // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
     // 10: HOLD, the main page's CUTOFF and RESO, pitch bend / MPE, mod wheel and aftertouch.
     // 11: layers 5-8. 12: the master chain (OTT, glue, width), Sub Duck and the layers' insert slots.
-    // 13: layer mute and solo.
+    // 13: layer mute and solo. 14: XY pad mode (Mix / Snapshot).
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 13;
+    inline constexpr int stateVersion = 14;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -49,6 +49,7 @@ namespace ps::params
     // The stack XY pad (StackMorph.h): 0..1 each way, the centre is the full stack
     inline const juce::ParameterID padX { "xy_x", 8 };
     inline const juce::ParameterID padY { "xy_y", 8 };
+    inline const juce::ParameterID padMode { "xy_mode", 14 };   // 0 Mix, 1 Snapshot (StackMorph.h)
     // The two shared sends (Space.h): plate/FDN reverb and tempo-synced delay. BLOOM moves the reverb on top.
     inline const juce::ParameterID reverbAmount { "fx_rev_amount", 8 };
     inline const juce::ParameterID reverbSize { "fx_rev_size", 8 };       // RT60, seconds
@@ -252,6 +253,7 @@ namespace ps::params
             juce::AudioParameterFloatAttributes().withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " %"; })));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padX, "XY X", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
         layout.add (std::make_unique<juce::AudioParameterFloat> (padY, "XY Y", juce::NormalisableRange<float> (0.0f, 1.0f), 0.5f, percentText));
+        layout.add (std::make_unique<juce::AudioParameterChoice> (padMode, "XY Mode", juce::StringArray { "Mix", "Snapshot" }, 0));
         {
             using Float = juce::AudioParameterFloat;
             auto percent = juce::AudioParameterFloatAttributes().withLabel ("%")

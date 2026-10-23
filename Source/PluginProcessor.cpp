@@ -51,6 +51,7 @@ PotatoSynthProcessor::PotatoSynthProcessor()
                        raw (p::delayPingPong), raw (p::delayDuck) };
     }
     padY = apvts.getRawParameterValue (ps::params::padY.getParamID());
+    padMode = apvts.getRawParameterValue (ps::params::padMode.getParamID());
     {
         namespace p = ps::params;
         auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
@@ -66,28 +67,33 @@ PotatoSynthProcessor::PotatoSynthProcessor()
     {
         namespace p = ps::params;
         auto raw = [this] (const juce::ParameterID& id) { return apvts.getRawParameterValue (id.getParamID()); };
-        ps::LayerParams lp { raw (p::layerLevel (i)), raw (p::layerPan (i)), raw (p::layerOctave (i)),
-                                         raw (p::layerSemi (i)), raw (p::layerFine (i)), raw (p::layerAttack (i)),
-                                         raw (p::layerDecay (i)), raw (p::layerSustain (i)), raw (p::layerRelease (i)),
-                                         raw (p::layerVoiceMode (i)), raw (p::layerGlide (i)), raw (p::layerRole (i)),
+        // The layer reads its own parameters through the XY pad's Snapshot morph (the global crossovers directly)
+        auto via = [this, i] (const juce::ParameterID& id, bool engineSlot = false)
+        {
+            return snapshot.bind (*apvts.getParameter (id.getParamID()), apvts.getRawParameterValue (id.getParamID()), i, engineSlot);
+        };
+        ps::LayerParams lp { via (p::layerLevel (i)), via (p::layerPan (i)), via (p::layerOctave (i)),
+                                         via (p::layerSemi (i)), via (p::layerFine (i)), via (p::layerAttack (i)),
+                                         via (p::layerDecay (i)), via (p::layerSustain (i)), via (p::layerRelease (i)),
+                                         via (p::layerVoiceMode (i)), via (p::layerGlide (i)), via (p::layerRole (i)),
                                          raw (p::crossoverLow), raw (p::crossoverHigh), {},
-                                         raw (p::layerFilterType (i)), raw (p::layerCutoff (i)), raw (p::layerResonance (i)),
-                                         raw (p::layerFilterEnv (i)), raw (p::layerKeyTrack (i)), raw (p::layerFilterAttack (i)),
-                                         raw (p::layerFilterDecay (i)), raw (p::layerFilterSustain (i)), raw (p::layerFilterRelease (i)),
-                                         raw (p::layerDrive (i)), raw (p::layerChorus (i)), raw (p::layerChorusRate (i)),
-                                         raw (p::layerChorusDepth (i)) };
+                                         via (p::layerFilterType (i)), via (p::layerCutoff (i)), via (p::layerResonance (i)),
+                                         via (p::layerFilterEnv (i)), via (p::layerKeyTrack (i)), via (p::layerFilterAttack (i)),
+                                         via (p::layerFilterDecay (i)), via (p::layerFilterSustain (i)), via (p::layerFilterRelease (i)),
+                                         via (p::layerDrive (i)), via (p::layerChorus (i)), via (p::layerChorusRate (i)),
+                                         via (p::layerChorusDepth (i)) };
         for (int k = 0; k < p::numInsertSlots; ++k)
         {
             auto& ip = lp.inserts[(size_t) k];
-            ip.type = raw (p::layerInsertType (i, k));
-            ip.amount = raw (p::layerInsertAmount (i, k));
+            ip.type = via (p::layerInsertType (i, k));
+            ip.amount = via (p::layerInsertAmount (i, k));
             for (int c = 0; c < 3; ++c)
-                ip.controls[(size_t) c] = raw (p::layerInsertControl (i, k, c));
+                ip.controls[(size_t) c] = via (p::layerInsertControl (i, k, c));
         }
-        lp.insertSwap = raw (p::layerInsertSwap (i));
+        lp.insertSwap = via (p::layerInsertSwap (i));
         stack.layer (i).setParameters (lp);
         for (int k = 0; k < p::numEngineSlots; ++k)
-            stack.layer (i).setSlotParameter (k, raw (p::layerSlot (i, k)));
+            stack.layer (i).setSlotParameter (k, via (p::layerSlot (i, k), true));
     }
 
     auto layers = apvts.state.getOrCreateChildWithName (layersNode, nullptr);
@@ -105,6 +111,13 @@ PotatoSynthProcessor::PotatoSynthProcessor()
 
 void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
+    {
+        // The layers start from the values they will read (the Snapshot blend at the pad's position)
+        std::array<bool, ps::params::numLayers> anchored {};
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            anchored[(size_t) i] = anchors[(size_t) i]->load() > 0.5f;
+        snapshot.process (padMode->load() > 0.5f, padX->load(), padY->load(), anchored, 1.0f);
+    }
     stack.prepare (sampleRate, samplesPerBlock);
     noteGenerator.prepare (sampleRate);
     modLanes.prepare (sampleRate);
@@ -178,6 +191,7 @@ void PotatoSynthProcessor::setLayerEngine (int layerIndex, const juce::String& e
 
     engineInfos[(size_t) layerIndex] = info;
     stack.layer (layerIndex).requestEngine (std::move (engine), engineId);
+    snapshot.updateEngines (layerEngineIds());
     updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));   // slot value text follows the engine
 }
 
@@ -207,6 +221,7 @@ void PotatoSynthProcessor::loadPreset (const ps::presets::Preset& preset)
     for (int l = 0; l < ps::ModLanes::numLanes; ++l)
         for (int s = 0; s < ps::ModLanes::maxSteps; ++s)
             modLanes.setValue (l, s, defaultLanes.getValue (l, s));
+    snapshot.clearAll();   // the corners belonged to the old sound
     apvts.state.setProperty ("presetName", preset.name, nullptr);
 }
 
@@ -217,6 +232,15 @@ juce::String PotatoSynthProcessor::slotText (int layer, int slot, float value) c
         return "-";
     const auto& s = info->slots[(size_t) slot];
     return s.toText ? s.toText (value) : juce::String (juce::roundToInt (value * 100.0f)) + " %";
+}
+
+std::array<juce::String, ps::params::numLayers> PotatoSynthProcessor::layerEngineIds() const
+{
+    std::array<juce::String, ps::params::numLayers> ids;
+    const auto layers = apvts.state.getChildWithName (layersNode);
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        ids[(size_t) i] = layers.getProperty (engineProperty (i)).toString();
+    return ids;
 }
 
 void PotatoSynthProcessor::applyLayerEnginesFromState()
@@ -232,6 +256,7 @@ void PotatoSynthProcessor::applyLayerEnginesFromState()
             stack.layer (i).requestEngine (std::move (engine), id);
         }
     }
+    snapshot.updateEngines (layerEngineIds());
     updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));
 }
 
@@ -605,12 +630,18 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     effectivePad[0].store (padXSmoothed);
     effectivePad[1].store (padYSmoothed);
     {
-        std::array<bool, ps::params::numLayers> free {};
+        // Mix mode balances the layers; Snapshot mode blends the corners' settings instead. The switch glides.
+        std::array<bool, ps::params::numLayers> anchored {}, free {};
         for (int i = 0; i < ps::params::numLayers; ++i)
-            free[(size_t) i] = stack.layer (i).engine() != nullptr && anchors[(size_t) i]->load() < 0.5f;
+        {
+            anchored[(size_t) i] = anchors[(size_t) i]->load() > 0.5f;
+            free[(size_t) i] = stack.layer (i).engine() != nullptr && ! anchored[(size_t) i];
+        }
+        snapshot.process (padMode->load() > 0.5f, padXSmoothed, padYSmoothed, anchored, coef);
+        const float mixShare = 1.0f - snapshot.getMix();
         const auto padDb = ps::morph::mixGainsDb (padXSmoothed, padYSmoothed, free);
         for (int i = 0; i < ps::params::numLayers; ++i)
-            offsets.levelDb[(size_t) i] += padDb[(size_t) i];
+            offsets.levelDb[(size_t) i] += mixShare * padDb[(size_t) i];
     }
 
     // DROP's -1 octave: the Sub and Body layers bring in their sub-octave
@@ -737,6 +768,8 @@ void PotatoSynthProcessor::getStateInformation (juce::MemoryBlock& destData)
     }
     state.removeChild (state.getChildWithName ("Lanes"), nullptr);
     state.appendChild (lanes, nullptr);
+    state.removeChild (state.getChildWithName ("Snapshots"), nullptr);
+    state.appendChild (snapshot.toState(), nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -771,8 +804,12 @@ void PotatoSynthProcessor::setStateInformation (const void* data, int sizeInByte
             modLanes.setValue (l, s, s < values.size() ? values[s].getFloatValue() : defaultLanes.getValue (l, s));
     }
     state.removeChild (lanes, nullptr);
+    // The XY pad's Snapshot corners (state version 14; older saves have none)
+    const auto snapshots = state.getChildWithName ("Snapshots");
+    state.removeChild (snapshots, nullptr);
     apvts.replaceState (state);
     applyLayerEnginesFromState();
+    snapshot.fromState (snapshots, layerEngineIds());
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

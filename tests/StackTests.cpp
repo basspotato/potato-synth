@@ -3093,6 +3093,107 @@ void testLayerMuteSolo()
     CHECK (maxStep (fade) <= steady * 1.2f, "muting fades without a click (" + std::to_string (maxStep (fade) / steady) + "x the steady step)");
 }
 
+// XY pad Snapshot mode: a captured corner brings back the sound it was captured from, the pad blends in each
+// parameter's normalised range, an empty corner stands for the live settings, anchored layers stay put, and
+// moving the pad or switching modes never clicks. Corners are saved with the state; a preset clears them.
+void testSnapshotMorph()
+{
+    namespace p = ps::params;
+    auto maxBend = [] (const std::vector<float>& x)   // largest second difference: a step in a sine shows up here
+    {
+        float m = 0.0f;
+        for (size_t i = 2; i < x.size(); ++i)
+            m = std::max (m, std::abs (x[i] - 2.0f * x[i - 1] + x[i - 2]));
+        return m;
+    };
+    auto db = [] (const std::vector<float>& x) { return juce::Decibels::gainToDecibels (rms (x, x.size() / 2, x.size())); };
+    auto pad = [] (Rig& rig, float x, float y) { rig.set (p::padX, x); rig.set (p::padY, y); return rig.render (19200); };   // settled over the second half
+
+    Rig rig;
+    const auto live = rig.render (9600, { { 0, on (57) } });
+    const float liveDb = db (live), steadyBend = maxBend (std::vector<float> (live.end() - 4800, live.end()));
+    rig.set (p::layerLevel (2), -12.0f);
+    rig.render (4800);
+    rig.proc->captureSnapshot (0);   // top left
+    rig.set (p::layerLevel (2), 0.0f);
+    rig.render (4800);
+    CHECK (rig.proc->hasSnapshot (0) && ! rig.proc->hasSnapshot (1), "a corner holds a snapshot once captured");
+    CHECK (std::abs (db (pad (rig, 0.0f, 1.0f)) - liveDb) < 0.1f, "in Mix mode the snapshot corners do nothing");
+
+    rig.set (p::padMode, 1.0f);
+    const auto switched = rig.render (19200);
+    CHECK (std::abs (db (switched) - (liveDb - 12.0f)) < 0.3f,
+           "a captured corner brings back its sound (" + std::to_string (db (switched) - liveDb) + " dB, captured -12)");
+    CHECK (maxBend (switched) < steadyBend * 1.05f, "switching to Snapshot mode glides (" + std::to_string (maxBend (switched) / steadyBend) + "x)");
+    CHECK (std::abs (db (pad (rig, 1.0f, 1.0f)) - liveDb) < 0.1f, "an empty corner plays the live settings");
+    {
+        auto* level = rig.proc->apvts.getParameter (p::layerLevel (2).getParamID());
+        const float expected = level->convertFrom0to1 (0.5f * (level->convertTo0to1 (-12.0f) + level->convertTo0to1 (0.0f)));
+        const float half = db (pad (rig, 0.5f, 1.0f)) - liveDb;
+        CHECK (std::abs (half - expected) < 0.3f, "halfway blends the normalised values (" + std::to_string (half) + " dB, expected "
+                                                       + std::to_string (expected) + ")");
+    }
+    {
+        // A slow sweep across the pad, corner to corner
+        std::vector<float> sweep;
+        for (int k = 0; k <= 20; ++k)
+        {
+            rig.set (p::padX, 1.0f - (float) k / 20.0f);
+            const auto x = rig.render (1200);
+            sweep.insert (sweep.end(), x.begin(), x.end());
+        }
+        CHECK (maxBend (sweep) < steadyBend * 1.05f, "moving the pad blends without a click (" + std::to_string (maxBend (sweep) / steadyBend) + "x)");
+    }
+    rig.set (p::layerAnchor (2), 1.0f);
+    CHECK (std::abs (db (rig.render (9600)) - liveDb) < 0.1f, "an anchored layer keeps its live settings");
+    rig.set (p::layerAnchor (2), 0.0f);
+    rig.render (4800);
+
+    // Saved and loaded with the state
+    juce::MemoryBlock saved;
+    rig.proc->getStateInformation (saved);
+    Rig restored;
+    restored.proc->setStateInformation (saved.getData(), (int) saved.getSize());
+    restored.proc->prepareToPlay (sampleRate, blockSize);
+    const auto back = restored.render (9600, { { 0, on (57) } });
+    CHECK (restored.proc->hasSnapshot (0) && std::abs (db (back) - (liveDb - 12.0f)) < 0.3f,
+           "the corners come back with the saved state (" + std::to_string (db (back) - liveDb) + " dB)");
+    restored.proc->loadPreset (ps::presets::factory()[0]);
+    CHECK (! restored.proc->hasSnapshot (0), "loading a preset clears the corners");
+
+    // The full stack, with every engine slot, filter and drive far apart in two corners, swept corner to corner
+    StackRig stack;
+    auto setAll = [&] (float slot, float cutoffHz, float drive)
+    {
+        for (int l = 0; l < 4; ++l)
+        {
+            for (int k = 0; k < p::numEngineSlots; ++k)
+                stack.set (p::layerSlot (l, k), slot);
+            stack.set (p::layerCutoff (l), cutoffHz);
+            stack.set (p::layerDrive (l), drive);
+        }
+    };
+    stack.render (9600, StackRig::chord());
+    setAll (0.9f, 600.0f, 80.0f);
+    stack.render (9600);
+    stack.proc->captureSnapshot (0);
+    setAll (0.1f, 12000.0f, 0.0f);
+    stack.render (9600);
+    stack.proc->captureSnapshot (3);
+    stack.set (p::padMode, 1.0f);
+    const float a = maxBend (pad (stack, 0.0f, 1.0f)), b = maxBend (pad (stack, 1.0f, 0.0f));
+    std::vector<float> sweep;
+    for (int k = 0; k <= 48; ++k)
+    {
+        stack.set (p::padX, (float) k / 48.0f);
+        stack.set (p::padY, 1.0f - (float) k / 48.0f);
+        const auto x = stack.render (1000);
+        sweep.insert (sweep.end(), x.begin(), x.end());
+    }
+    CHECK (allFinite (sweep) && maxBend (sweep) < 1.5f * std::max (a, b),
+           "sweeping the whole stack between far-apart snapshots never clicks (" + std::to_string (maxBend (sweep) / std::max (a, b)) + "x the corners' steepest)");
+}
+
 // Loading a preset puts back every parameter it doesn't set, and Init sounds like a fresh instance
 void testPresetLoading()
 {
@@ -4232,10 +4333,16 @@ int main()
         benchmarkDirt();
         return failures == 0 ? 0 : 1;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_MORPH_ONLY", {}).isNotEmpty())
+    {
+        testSnapshotMorph();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_PRESETS_ONLY", {}).isNotEmpty())
     {
         testPresetLoading();
-    testLayerMuteSolo();
+        testLayerMuteSolo();
+        testSnapshotMorph();
         testPressureAfterPause();
         testPumpPunchThrough();
         testFactoryPresets();
@@ -4354,6 +4461,7 @@ int main()
     testMixHealth();
     testPresetLoading();
     testLayerMuteSolo();
+    testSnapshotMorph();
     testPressureAfterPause();
     testPumpPunchThrough();
     testFactoryPresets();
