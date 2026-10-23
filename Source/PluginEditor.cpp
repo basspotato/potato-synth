@@ -44,7 +44,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     processor.getMixHealth().setActive (true);
     setLookAndFeel (&look);
 
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < ps::params::numLayers; ++i)
     {
         layers[(size_t) i] = std::make_unique<ps::LayerCard> (roleTitle (i), juce::String(), ps::theme::roleColour (i), processor.apvts, i);
         addAndMakeVisible (*layers[(size_t) i]);
@@ -79,7 +79,14 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     arpTab.onClick = [this] { showPage (Page::arp); };
     layerTab.onClick = [this] { showPage (Page::layer); };
     mixTab.onClick = [this] { showPage (Page::mix); };
+    for (int b = 0; b < 2; ++b)
+    {
+        bankButtons[(size_t) b].setClickingTogglesState (false);
+        bankButtons[(size_t) b].onClick = [this, b] { showBank (b); };
+        addAndMakeVisible (bankButtons[(size_t) b]);
+    }
     selectLayer (selectedLayer);
+    showBank (0);
     showPage (Page::stack);
 
     for (int i = 0; i < 8; ++i)
@@ -166,7 +173,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
 void PotatoSynthEditor::timerCallback()
 {
     presetBar.refresh();
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < ps::params::numLayers; ++i)
     {
         juce::String name;
         const auto id = processor.getLayerEngine (i);
@@ -184,7 +191,7 @@ void PotatoSynthEditor::timerCallback()
     const bool crossoversMoved = std::abs (low - shownLow) > 0.05f || std::abs (high - shownHigh) > 0.5f;
     shownLow = low;
     shownHigh = high;
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < ps::params::numLayers; ++i)
     {
         const int role = layerRole (i);
         if (role == shownRoles[(size_t) i] && ! crossoversMoved)
@@ -226,13 +233,30 @@ void PotatoSynthEditor::setUpBusKnob (Knob& k, const juce::String& name, const j
 void PotatoSynthEditor::selectLayer (int layerIndex)
 {
     selectedLayer = layerIndex;
-    for (int i = 0; i < 4; ++i)
+    for (int i = 0; i < ps::params::numLayers; ++i)
         layers[(size_t) i]->setSelected (i == layerIndex);
     const int role = layerRole (layerIndex);
     layerPage.showLayer (layerIndex, roleTitle (role), ps::theme::roleColour (role));
     timerCallback();   // brings the page's engine controls up for this layer
     layerTab.setButtonText ("LAYER " + juce::String (layerIndex + 1) + ": " + roleTitle (role));
     layerTab.setColour (juce::TextButton::buttonColourId, ps::theme::roleColour (role));
+}
+
+void PotatoSynthEditor::showBank (int bank)
+{
+    layerBank = bank;
+    for (int i = 0; i < ps::params::numLayers; ++i)
+    {
+        const bool shown = i / 4 == bank;
+        layers[(size_t) i]->setVisible (shown);
+        layerLevels[(size_t) i].slider.setVisible (shown);
+        layerLevels[(size_t) i].label.setVisible (shown);
+    }
+    for (int b = 0; b < 2; ++b)
+    {
+        bankButtons[(size_t) b].setColour (juce::TextButton::buttonColourId, b == bank ? ps::theme::air : ps::theme::panel);
+        bankButtons[(size_t) b].setAlpha (b == bank ? 1.0f : 0.6f);
+    }
 }
 
 void PotatoSynthEditor::showPage (Page page)
@@ -340,14 +364,26 @@ void PotatoSynthEditor::resized()
     area.removeFromBottom (scaled (16));
 
     auto left = area.removeFromLeft (scaled (280));
+    {
+        auto banks = left.removeFromBottom (scaled (22));
+        left.removeFromBottom (scaled (8));
+        for (auto& b : bankButtons)
+            b.setBounds (banks.removeFromLeft (banks.getWidth() / 2).reduced (scaled (2), 0));
+    }
     const int cardH = (left.getHeight() - scaled (12) * 3) / 4;
-    for (size_t i = 0; i < layers.size(); ++i)
+    // Layers 1-4 and 5-8 share the same four slots; the bank buttons choose which set is shown
+    for (size_t slot = 0; slot < 4; ++slot)
     {
         auto card = left.removeFromTop (cardH);
-        layers[i]->setBounds (card);
         auto knobArea = card.removeFromRight (scaled (78)).reduced (scaled (6));
-        layerLevels[i].label.setBounds (knobArea.removeFromBottom (scaled (14)));
-        layerLevels[i].slider.setBounds (knobArea);
+        card = card.withWidth (card.getWidth() + scaled (78));
+        for (size_t bank = 0; bank < 2; ++bank)
+        {
+            const size_t i = bank * 4 + slot;
+            layers[i]->setBounds (card);
+            layerLevels[i].label.setBounds (knobArea.withTrimmedTop (knobArea.getHeight() - scaled (14)));
+            layerLevels[i].slider.setBounds (knobArea.withTrimmedBottom (scaled (14)));
+        }
         left.removeFromTop (scaled (12));
     }
 

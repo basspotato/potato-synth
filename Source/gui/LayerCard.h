@@ -51,7 +51,7 @@ public:
 
     LayerCard (juce::String roleName, juce::String bandText, juce::Colour roleColour,
                juce::AudioProcessorValueTreeState& state, int layerIndex)
-        : role (std::move (roleName)), band (std::move (bandText)), colour (roleColour)
+        : role (std::move (roleName)), band (std::move (bandText)), colour (roleColour), number (layerIndex + 1)
     {
         for (auto* b : { &mute, &solo })
         {
@@ -100,7 +100,12 @@ public:
         auto text = getLocalBounds().reduced (16, 8);
         g.setColour (theme::text);
         g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
-        g.drawText (role, text.removeFromTop (22), juce::Justification::centredLeft);
+        auto title = text.removeFromTop (22);
+        g.drawText (role, title, juce::Justification::centredLeft);
+        g.setColour (theme::textDim);
+        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.drawText ("L" + juce::String (number), title.withTrimmedLeft (juce::GlyphArrangement::getStringWidthInt (juce::FontOptions (17.0f, juce::Font::bold), role) + 8),
+                    juce::Justification::centredLeft);
         g.setColour (theme::textDim);
         g.setFont (juce::FontOptions (12.0f));
         g.drawText (band, text.removeFromTop (16), juce::Justification::centredLeft);
@@ -119,6 +124,7 @@ private:
     bool selected = false;
     juce::String role, band, engineName;
     juce::Colour colour;
+    int number = 1;
     juce::TextButton mute { "M" }, solo { "S" };
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> muteAttachment, soloAttachment;
 };
