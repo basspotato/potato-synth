@@ -1,5 +1,6 @@
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include "Fonts.h"
 
 // Early-design look: deep, colourful, replaceable later. All colours live here.
 namespace ps::theme

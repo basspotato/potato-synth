@@ -104,26 +104,33 @@ public:
 
         auto text = getLocalBounds().reduced (16, 8);
         g.setColour (theme::text);
-        g.setFont (juce::FontOptions (17.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (17.0f));
         auto title = text.removeFromTop (22);
         g.drawText (role, title, juce::Justification::centredLeft);
         g.setColour (theme::textDim);
-        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
-        g.drawText ("L" + juce::String (number), title.withTrimmedLeft (juce::GlyphArrangement::getStringWidthInt (juce::FontOptions (17.0f, juce::Font::bold), role) + 8),
+        g.setFont (ps::fonts::bold (11.0f));
+        g.drawText ("L" + juce::String (number), title.withTrimmedLeft (juce::GlyphArrangement::getStringWidthInt (ps::fonts::bold (17.0f), role) + 8),
                     juce::Justification::centredLeft);
         g.setColour (theme::textDim);
-        g.setFont (juce::FontOptions (12.0f));
+        g.setFont (ps::fonts::semi (12.0f));
         g.drawText (band, text.removeFromTop (16), juce::Justification::centredLeft);
         g.setColour (engineName.isEmpty() ? theme::textDim : colour.interpolatedWith (theme::text, 0.4f));
-        g.setFont (juce::FontOptions (14.0f, juce::Font::bold));
-        g.drawText (engineName.isEmpty() ? juce::String ("+ ADD ENGINE") : engineName.toUpperCase() + juce::String (juce::CharPointer_UTF8 ("  \xe2\x96\xbe")),
-                    engineArea(), juce::Justification::centredLeft);
+        g.setFont (ps::fonts::bold (14.0f));
+        g.drawText (engineLabel(), engineArea(), juce::Justification::centredLeft);
     }
 
 private:
+    juce::String engineLabel() const
+    {
+        return engineName.isEmpty() ? juce::String ("+ ADD ENGINE")
+                                    : engineName.toUpperCase() + juce::String (juce::CharPointer_UTF8 ("  \xe2\x96\xbe"));
+    }
+
+    // Just the engine name as drawn: the rest of the card is a plain click that selects the layer
     juce::Rectangle<int> engineArea() const
     {
-        return getLocalBounds().reduced (16, 8).withTrimmedTop (22 + 16 + 6).withHeight (18).withTrimmedRight (70);
+        auto row = getLocalBounds().reduced (16, 8).withTrimmedTop (22 + 16 + 6).withHeight (18).withTrimmedRight (70);
+        return row.withWidth (juce::jmin (row.getWidth(), juce::GlyphArrangement::getStringWidthInt (ps::fonts::bold (14.0f), engineLabel()) + 8));
     }
 
     bool selected = false;

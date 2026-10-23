@@ -53,7 +53,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
 
         auto& k = layerLevels[(size_t) i];
         setUpKnob (k, "LEVEL", ps::theme::roleColour (i));
-        k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+        k.label.setFont (ps::fonts::bold (10.0f));
         layerLevelAttachments[(size_t) i] = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
             processor.apvts, ps::params::layerLevel (i).getParamID(), k.slider);
         k.slider.setDoubleClickReturnValue (true, 0.0);
@@ -69,6 +69,13 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     addChildComponent (arpPage);
     addChildComponent (mixPage);
     addAndMakeVisible (presetBar);
+    addAndMakeVisible (badge);
+    presetBar.onBrowse = [this] { presetBrowser.show (presetBar.currentIndex()); };
+    presetBrowser.onPick = [this] (int i)
+    {
+        processor.loadPreset (ps::presets::factory()[(size_t) i]);
+        presetBar.refresh();
+    };
     layerPage.onEngineClick = [this] { showEngineMenu (selectedLayer); };
     for (auto* tab : { &stackTab, &layerTab, &arpTab, &mixTab })
     {
@@ -131,7 +138,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     for (auto* k : { &cutoff, &reso, &master })
     {
         k->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 16);
-        k->label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        k->label.setFont (ps::fonts::bold (11.0f));
     }
     master.slider.updateText();
 
@@ -176,6 +183,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
 
     setResizable (true, true);
     setResizeLimits (baseWidth * 3 / 4, baseHeight * 3 / 4, baseWidth * 3, baseHeight * 3);
+    addChildComponent (presetBrowser);
     setSize (baseWidth, baseHeight);
     timerCallback();
     startTimerHz (5);
@@ -204,6 +212,7 @@ void PotatoSynthEditor::updateGhosts()
 void PotatoSynthEditor::timerCallback()
 {
     presetBar.refresh();
+    badge.setActivity ((processor.getMixHealth().readings().momentaryLufs.load() + 50.0f) / 25.0f);
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         juce::String name;
@@ -248,7 +257,7 @@ void PotatoSynthEditor::setUpBusKnob (Knob& k, const juce::String& name, const j
                                       std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attachment)
 {
     setUpKnob (k, name, ps::theme::full);
-    k.label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    k.label.setFont (ps::fonts::bold (11.0f));
     k.label.setJustificationType (juce::Justification::centredLeft);
     attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (processor.apvts, id.getParamID(), k.slider);
     auto* p = processor.apvts.getParameter (id.getParamID());
@@ -343,7 +352,7 @@ void PotatoSynthEditor::setUpKnob (Knob& k, const juce::String& name, juce::Colo
 
     k.label.setText (name, juce::dontSendNotification);
     k.label.setJustificationType (juce::Justification::centred);
-    k.label.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    k.label.setFont (ps::fonts::bold (13.0f));
     k.label.setColour (juce::Label::textColourId, accent.interpolatedWith (ps::theme::text, 0.35f));
     addAndMakeVisible (k.label);
 }
@@ -369,12 +378,17 @@ void PotatoSynthEditor::paint (juce::Graphics& g)
 
     const auto f = layoutFrame (getLocalBounds()).toFloat();
     const float s = f.getWidth() / (float) baseWidth, x0 = f.getX(), y0 = f.getY();
-    g.setColour (ps::theme::text);
-    g.setFont (juce::FontOptions (30.0f * s, juce::Font::bold));
-    g.drawText ("POTATO MASHER", juce::Rectangle<float> (x0 + 24.0f * s, y0 + 14.0f * s, 400.0f * s, 36.0f * s),
-                juce::Justification::centredLeft);
+    // The title shares the logo's orange-to-yellow ramp, with a soft glow
+    const juce::Rectangle<float> titleArea (x0 + 92.0f * s, y0 + 10.0f * s, 400.0f * s, 38.0f * s);
+    g.setFont (ps::fonts::bold (25.0f * s, 0.12f));
+    g.setColour (ps::PotatoBadge::orange.withAlpha (0.22f));
+    for (auto d : { juce::Point<float> (-1.5f, 0.0f), juce::Point<float> (1.5f, 0.0f), juce::Point<float> (0.0f, -1.5f), juce::Point<float> (0.0f, 1.5f) })
+        g.drawText ("POTATO MASHER", titleArea.translated (d.x * s, d.y * s), juce::Justification::centredLeft, false);
+    g.setGradientFill (juce::ColourGradient (ps::PotatoBadge::orange, titleArea.getX(), 0.0f,
+                                             ps::PotatoBadge::yellow, titleArea.getX() + 250.0f * s, 0.0f, false));
+    g.drawText ("POTATO MASHER", titleArea, juce::Justification::centredLeft, false);
     g.setColour (ps::theme::textDim);
-    g.setFont (juce::FontOptions (13.0f * s));
+    g.setFont (ps::fonts::semi (13.0f * s));
     g.drawText (juce::CharPointer_UTF8 ("HARMONY ENGINE  \xc2\xb7  ON"),
                 juce::Rectangle<float> (x0, f.getBottom() - 26.0f * s, f.getWidth() - 24.0f * s, 18.0f * s),
                 juce::Justification::centredRight);
@@ -386,7 +400,10 @@ void PotatoSynthEditor::resized()
     const float s = (float) frame.getWidth() / (float) baseWidth;
     auto scaled = [s] (int v) { return juce::roundToInt ((float) v * s); };
 
-    presetBar.setBounds (frame.getX() + scaled (24), frame.getY() + scaled (48), scaled (280), scaled (22));
+    badge.setBounds (frame.getX() + scaled (20), frame.getY() + scaled (4), scaled (66), scaled (46));
+    presetBar.setBounds (frame.getX() + scaled (92), frame.getY() + scaled (58), scaled (300), scaled (22));
+    presetBrowser.setBounds (getLocalBounds());
+    presetBrowser.setScale (s);
     auto area = frame.reduced (scaled (24));
     area.removeFromTop (scaled (56));
     area.removeFromBottom (scaled (16));

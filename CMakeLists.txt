@@ -60,6 +60,12 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     target_compile_options(PotatoSynth PRIVATE -mavx2 -mfma)
 endif()
 
+# The GUI fonts (Barlow Condensed, Share Tech Mono; both SIL OFL), embedded
+juce_add_binary_data(PotatoSynthFonts SOURCES
+    Resources/Fonts/BarlowCondensed-SemiBold.ttf
+    Resources/Fonts/BarlowCondensed-Bold.ttf
+    Resources/Fonts/ShareTechMono-Regular.ttf)
+
 target_link_libraries(PotatoSynth
     PRIVATE
         juce::juce_audio_basics
@@ -69,6 +75,7 @@ target_link_libraries(PotatoSynth
         juce::juce_gui_basics
         juce::juce_graphics
     PUBLIC
+        PotatoSynthFonts
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)

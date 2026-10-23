@@ -17,6 +17,20 @@ public:
         setColour (juce::TextButton::textColourOffId, theme::text);
     }
 
+    juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override
+    {
+        return juce::Font (fonts::bold (juce::jmin (17.0f, (float) buttonHeight * 0.62f)));
+    }
+    // The value box under a knob: Barlow, larger than the default, in the text colour
+    juce::Label* createSliderTextBox (juce::Slider& slider) override
+    {
+        auto* l = juce::LookAndFeel_V4::createSliderTextBox (slider);
+        l->setFont (fonts::semi (14.0f));
+        return l;
+    }
+    juce::Font getPopupMenuFont() override { return juce::Font (fonts::semi (18.0f)); }
+    juce::Font getComboBoxFont (juce::ComboBox&) override { return juce::Font (fonts::semi (16.0f)); }
+
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider& s) override
     {

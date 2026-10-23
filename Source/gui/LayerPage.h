@@ -61,7 +61,7 @@ public:
         g.strokePath (p, juce::PathStrokeType (2.0f));
 
         g.setColour (theme::textDim);
-        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (11.0f));
         g.drawText ("AMP ENVELOPE", getLocalBounds().reduced (12, 8), juce::Justification::topRight);
     }
 
@@ -106,18 +106,16 @@ public:
         for (size_t i = 0; i < knobs.size(); ++i)
         {
             auto& k = knobs[i];
-            k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 16);
             addAndMakeVisible (k.slider);
             k.label.setText (names[i], juce::dontSendNotification);
             k.label.setJustificationType (juce::Justification::centred);
-            k.label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            k.label.setFont (ps::fonts::bold (12.0f));
             addAndMakeVisible (k.label);
         }
         for (auto& k : slotKnobs)
         {
-            k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 14);
             k.label.setJustificationType (juce::Justification::centred);
-            k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            k.label.setFont (ps::fonts::bold (12.0f));
             addChildComponent (k.slider);
             addChildComponent (k.label);
         }
@@ -127,10 +125,9 @@ public:
         for (size_t i = 0; i < fxKnobs.size(); ++i)
         {
             auto& k = fxKnobs[i];
-            k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 14);
             k.label.setText (fxNames[i], juce::dontSendNotification);
             k.label.setJustificationType (juce::Justification::centred);
-            k.label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+            k.label.setFont (ps::fonts::bold (12.0f));
             addChildComponent (k.slider);
             addChildComponent (k.label);
         }
@@ -149,9 +146,8 @@ public:
             addChildComponent (slot.type);
             for (auto* knob : { &slot.amount, &slot.controls[0], &slot.controls[1], &slot.controls[2] })
             {
-                knob->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 14);
                 knob->label.setJustificationType (juce::Justification::centred);
-                knob->label.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                knob->label.setFont (ps::fonts::bold (12.0f));
                 addChildComponent (knob->slider);
                 addChildComponent (knob->label);
             }
@@ -281,9 +277,21 @@ public:
         g.fillRoundedRectangle (engineRow, 10.0f);
         g.setColour (accent.withAlpha (0.35f));
         g.drawRoundedRectangle (engineRow.reduced (0.5f), 10.0f, 1.0f);
+        // Each knob sits in its own cell: name above, value below, so a value never runs into the next row's name
+        for (size_t t = 0; t < tiles[(size_t) section].size(); ++t)
+        {
+            // Inserts: four tiles per slot, drawn only while that slot has an effect loaded
+            if (section == 2 && ! insertSlots[t / 4].amount.slider.isVisible())
+                continue;
+            const auto c = tiles[(size_t) section][t].toFloat();
+            g.setColour (theme::panel.withAlpha (0.55f));
+            g.fillRoundedRectangle (c, 8.0f);
+            g.setColour (theme::panelEdge.withAlpha (0.6f));
+            g.drawRoundedRectangle (c.reduced (0.5f), 8.0f, 1.0f);
+        }
 
         g.setColour (theme::text);
-        g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (20.0f));
         g.drawText ("LAYER " + juce::String (layer + 1) + juce::String (juce::CharPointer_UTF8 ("  \xc2\xb7  ")) + roleName,
                     getLocalBounds().reduced (18, 12).removeFromTop (28), juce::Justification::centredLeft);
     }
@@ -309,36 +317,40 @@ public:
         slotArea = r;
         layoutSlots();
         auto rows = r.reduced (8, 10);
-        const int knobRowH = juce::jmin (120, (rows.getHeight() - 24) / 3);
+        const int knobRowH = juce::jmin (130, (rows.getHeight() - 16) / 3);
         auto envRow = rows.removeFromTop (knobRowH);
-        rows.removeFromTop (12);
+        rows.removeFromTop (8);
         auto bottomRow = rows.removeFromTop (knobRowH);
-        rows.removeFromTop (12);
+        rows.removeFromTop (8);
         auto zoneRow = rows.removeFromTop (knobRowH);
         // The envelope drawing sits beside its four knobs
         envelope.setBounds (envRow.removeFromRight (envRow.getWidth() * 2 / 5).reduced (4, 0));
 
-        auto place = [] (Knob& k, juce::Rectangle<int> cell)
+        auto& voiceTiles = tiles[3];
+        voiceTiles.clear();
+        auto place = [&voiceTiles] (Knob& k, juce::Rectangle<int> cell)
         {
-            k.label.setBounds (cell.removeFromTop (14));
-            k.slider.setBounds (cell);
+            voiceTiles.push_back (cell);
+            placeKnob (k, cell);
         };
         const int w = envRow.getWidth() / 4;
         for (size_t i = 0; i < 4; ++i)
-            place (knobs[i], envRow.removeFromLeft (w).reduced (4, 0));
+            place (knobs[i], envRow.removeFromLeft (w).reduced (3, 0));
         // Bottom row: voice mode buttons stacked in the first cell, then pan, tune and glide
         const int bw = bottomRow.getWidth() / 6;
-        auto modes = bottomRow.removeFromLeft (bw).reduced (4, 4);
-        const int mh = juce::jmin (26, modes.getHeight() / 3);
+        auto modeCell = bottomRow.removeFromLeft (bw).reduced (3, 0);
+        voiceTiles.push_back (modeCell);
+        auto modes = modeCell.reduced (6, 4);
+        const int mh = juce::jmin (30, modes.getHeight() / 3);
         modes = modes.withSizeKeepingCentre (modes.getWidth(), mh * 3);
         for (auto& b : modeButtons)
             b.setBounds (modes.removeFromTop (mh).reduced (0, 2));
         for (size_t i = 4; i < 9; ++i)
-            place (knobs[i], bottomRow.removeFromLeft (bw).reduced (4, 0));
+            place (knobs[i], bottomRow.removeFromLeft (bw).reduced (3, 0));
         // Zones: which keys and velocities the layer plays
         const int zw = zoneRow.getWidth() / 6;
         for (size_t i = 9; i < knobs.size(); ++i)
-            place (knobs[i], zoneRow.removeFromLeft (zw).reduced (4, 0));
+            place (knobs[i], zoneRow.removeFromLeft (zw).reduced (3, 0));
     }
 
 private:
@@ -348,6 +360,16 @@ private:
         juce::Label label;
         std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
     };
+
+    // A knob's cell: the name on top, the dial, and the value box below, all inside the cell
+    static void placeKnob (Knob& k, juce::Rectangle<int> cell)
+    {
+        auto inner = cell.reduced (3, 5);
+        k.label.setBounds (inner.removeFromTop (19));
+        k.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, juce::jmax (40, inner.getWidth()), 22);
+        k.slider.setBounds (inner);
+    }
+
 
     // Shows one knob per slot the engine uses, named by the engine; its value text comes from the parameter.
     void attachSlots (const EngineInfo* info)
@@ -438,6 +460,7 @@ private:
 
     void layoutInserts()
     {
+        tiles[2].clear();
         auto area = slotArea.reduced (8, 8);
         insertSwap.setBounds (area.removeFromBottom (26).removeFromRight (160));
         area.removeFromBottom (6);
@@ -450,9 +473,9 @@ private:
             const int w = row.getWidth() / 4;
             for (auto* knob : { &slot.amount, &slot.controls[0], &slot.controls[1], &slot.controls[2] })
             {
-                auto cell = row.removeFromLeft (w).reduced (4, 0);
-                knob->label.setBounds (cell.removeFromTop (12));
-                knob->slider.setBounds (cell);
+                auto cell = row.removeFromLeft (w).reduced (3, 0);
+                tiles[2].push_back (cell);
+                placeKnob (*knob, cell);
             }
         }
     }
@@ -486,21 +509,27 @@ private:
         timerCallback();
     }
 
+    // The filter section as six columns of two: the filter's four controls over its envelope, then drive over
+    // chorus, and the chorus's rate over its depth
     void layoutFx()
     {
+        tiles[1].clear();
         auto area = slotArea.reduced (8, 8);
-        auto types = area.removeFromTop (24);
+        auto types = area.removeFromTop (28);
         const int tw = types.getWidth() / (int) filterTypeButtons.size();
         for (auto& b : filterTypeButtons)
             b.setBounds (types.removeFromLeft (tw).reduced (2, 0));
         area.removeFromTop (6);
-        const int h = area.getHeight() / 2, w = area.getWidth() / 8;
-        for (size_t i = 0; i < fxKnobs.size(); ++i)
+        // Knob indices by position, row by row: cutoff, resonance, env amount, key track, drive, rate /
+        // filter attack, decay, sustain, release, chorus, depth
+        constexpr int order[12] = { 0, 1, 2, 3, 4, 6,
+                                    8, 9, 10, 11, 5, 7 };
+        const int h = area.getHeight() / 2, w = area.getWidth() / 6;
+        for (int pos = 0; pos < 12; ++pos)
         {
-            const int row = i < 8 ? 0 : 1, col = i < 8 ? (int) i : (int) i - 8;
-            auto cell = juce::Rectangle<int> (area.getX() + col * w, area.getY() + row * h, w, h).reduced (4, 0);
-            fxKnobs[i].label.setBounds (cell.removeFromTop (12));
-            fxKnobs[i].slider.setBounds (cell);
+            auto cell = juce::Rectangle<int> (area.getX() + (pos % 6) * w, area.getY() + (pos / 6) * h, w, h).reduced (3, 3);
+            tiles[1].push_back (cell);
+            placeKnob (fxKnobs[(size_t) order[pos]], cell);
         }
     }
 
@@ -508,20 +537,23 @@ private:
     {
         layoutFx();
         layoutInserts();
-        auto area = slotArea.reduced (8, 10);
+        tiles[0].clear();
+        auto area = slotArea.reduced (8, 8);
         noSlots.setBounds (slotArea);
-        constexpr int perRow = 8;
+        // Up to 18 controls go six to a row (bigger dials); engines with more use eight
+        const int perRow = usedSlots <= 18 ? 6 : 8;
         const int rowsNeeded = juce::jmax (1, (usedSlots + perRow - 1) / perRow);
-        const int w = area.getWidth() / perRow, h = area.getHeight() / rowsNeeded;
+        const int w = area.getWidth() / perRow, h = juce::jmin (130, area.getHeight() / rowsNeeded);
         juce::Rectangle<int> row;
         for (int k = 0; k < usedSlots; ++k)
         {
             if (k % perRow == 0)
                 row = area.removeFromTop (h);
-            auto cell = row.removeFromLeft (w).reduced (4, 0);
-            slotKnobs[(size_t) k].label.setBounds (cell.removeFromTop (12));
-            slotKnobs[(size_t) k].slider.setBounds (cell);
+            auto cell = row.removeFromLeft (w).reduced (3, 3);
+            tiles[0].push_back (cell);
+            placeKnob (slotKnobs[(size_t) k], cell);
         }
+        repaint();
     }
 
     void timerCallback() override
@@ -579,6 +611,7 @@ private:
     std::array<juce::TextButton, 5> filterTypeButtons;
     std::array<juce::TextButton, 4> sectionButtons;
     int section = 0;   // engine, filter / FX, inserts, amp / voice
+    std::array<std::vector<juce::Rectangle<int>>, 4> tiles;   // each section's knob cells, for paint()
     struct InsertSlot
     {
         juce::TextButton type;

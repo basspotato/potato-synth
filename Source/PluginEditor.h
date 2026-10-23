@@ -7,6 +7,8 @@
 #include "gui/ArpPage.h"
 #include "gui/MixPage.h"
 #include "gui/PresetBar.h"
+#include "gui/PresetBrowser.h"
+#include "gui/PotatoBadge.h"
 
 class PotatoSynthEditor : public juce::AudioProcessorEditor,
                           private juce::Timer
@@ -47,6 +49,8 @@ private:
     ps::MixPage mixPage;
     ps::PresetBar presetBar { [this] (int i) { processor.loadPreset (ps::presets::factory()[(size_t) i]); },
                               [this] { return processor.getPresetName(); } };
+    ps::PotatoBadge badge;
+    ps::PresetBrowser presetBrowser;
     juce::TextButton stackTab { "STACK" }, layerTab { "LAYER" }, arpTab { "ARP / SEQ" }, mixTab { "MIX" };
     int selectedLayer = 2;
     // The strip shows four layers at a time: bank 0 is layers 1-4, bank 1 is layers 5-8

@@ -29,7 +29,7 @@ public:
             addAndMakeVisible (k.slider);
             k.label.setText (defs[i].name, juce::dontSendNotification);
             k.label.setJustificationType (juce::Justification::centred);
-            k.label.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            k.label.setFont (ps::fonts::bold (11.0f));
             k.label.setColour (juce::Label::textColourId, defs[i].colour.interpolatedWith (theme::text, 0.35f));
             addAndMakeVisible (k.label);
             k.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (apvts, defs[i].id.getParamID(), k.slider);
@@ -60,7 +60,7 @@ public:
         g.drawRoundedRectangle (r.reduced (0.75f), 14.0f, 1.5f);
 
         g.setColour (theme::text);
-        g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (20.0f));
         g.drawText ("MASTER CHAIN", titleArea, juce::Justification::centredLeft);
         g.drawText ("MIX HEALTH", healthTitle, juce::Justification::centredLeft);
 
@@ -72,10 +72,10 @@ public:
             g.setColour (theme::bgBottom.withAlpha (0.6f));
             g.fillRoundedRectangle (cell.toFloat(), 10.0f);
             g.setColour (theme::textDim);
-            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.setFont (ps::fonts::bold (11.0f));
             g.drawText (title, cell.reduced (10, 6), juce::Justification::topLeft);
             g.setColour (c);
-            g.setFont (juce::FontOptions (24.0f, juce::Font::bold));
+            g.setFont (ps::fonts::bold (24.0f));
             g.drawText (value, cell.reduced (10, 6), juce::Justification::bottomLeft);
         };
         auto db = [] (float v, const char* unit) { return v <= -99.0f ? juce::String ("--") : juce::String (v, 1) + " " + unit; };
@@ -92,7 +92,7 @@ public:
         // Correlation: -1 (out of phase) .. +1 (mono)
         auto bar = correlationArea.toFloat();
         g.setColour (theme::textDim);
-        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (11.0f));
         g.drawText ("CORRELATION", bar.removeFromTop (14.0f), juce::Justification::centredLeft);
         g.setColour (theme::bgBottom.withAlpha (0.7f));
         g.fillRoundedRectangle (bar, 6.0f);
@@ -109,7 +109,7 @@ public:
         // (timerCallback), so it reads at a glance instead of flickering.
         auto area = maskArea;
         g.setColour (theme::textDim);
-        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (11.0f));
         g.drawText ("MASKING", area.removeFromTop (16), juce::Justification::centredLeft);
         static const char* const bands[] = { "200 Hz", "400 Hz", "800 Hz", "1.6 kHz", "3.2 kHz" };
         const int bw = area.getWidth() / MixHealth::numMaskBands;
@@ -132,7 +132,7 @@ public:
             g.drawEllipse (centre.x - d * 0.5f, centre.y - d * 0.5f, d, d, 1.5f);
 
             g.setColour (glow > 0.0f ? theme::text : theme::textDim);
-            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.setFont (ps::fonts::bold (11.0f));
             const float labelY = centre.y + d * 0.5f + 6.0f;
             g.drawText (bands[b], juce::Rectangle<float> (cell.getX(), labelY, cell.getWidth(), 14.0f), juce::Justification::centred);
 

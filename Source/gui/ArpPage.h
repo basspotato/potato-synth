@@ -70,7 +70,7 @@ public:
         if (dragStep >= 0 && valueText != nullptr)
         {
             g.setColour (theme::text);
-            g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+            g.setFont (ps::fonts::bold (11.0f));
             g.drawText (valueText (dragStep), barArea().reduced (6.0f, 2.0f), juce::Justification::topRight);
         }
         g.setColour (theme::panelEdge);
@@ -241,13 +241,13 @@ public:
         g.drawRoundedRectangle (r.reduced (0.75f), 14.0f, 1.5f);
 
         g.setColour (theme::text);
-        g.setFont (juce::FontOptions (20.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (20.0f));
         g.drawText ("ARP / SEQ", titleArea, juce::Justification::centredLeft);
         g.setColour (theme::textDim);
-        g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (11.0f));
         g.drawText ("PATTERN", patternTitle, juce::Justification::centredLeft);
         g.drawText ("MOD LANES", laneTitle, juce::Justification::centredLeft);
-        g.setFont (juce::FontOptions (10.0f));
+        g.setFont (ps::fonts::semi (10.0f));
         g.drawText (juce::CharPointer_UTF8 ("top row: on/rest  \xc2\xb7  thin row: tie  \xc2\xb7  drag bars"), patternTitle, juce::Justification::centredRight);
     }
 
@@ -341,7 +341,7 @@ private:
     static void styleLabel (juce::Label& l, juce::Colour accent)
     {
         l.setJustificationType (juce::Justification::centredLeft);
-        l.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+        l.setFont (ps::fonts::bold (10.0f));
         l.setColour (juce::Label::textColourId, accent.interpolatedWith (theme::text, 0.35f));
     }
 

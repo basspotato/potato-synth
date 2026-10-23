@@ -57,7 +57,7 @@ public:
         }
 
         // Corner labels: the layer roles (Mix) or the snapshot corners with their buttons (Snapshot)
-        g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (13.0f));
         const auto inner = r.reduced (12.0f, 8.0f);
         if (! snapshotMode)
         {
@@ -74,7 +74,7 @@ public:
             {
                 const bool stored = isStored != nullptr && isStored (c);
                 g.setColour (stored ? theme::text : theme::textDim);
-                g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+                g.setFont (ps::fonts::bold (13.0f));
                 g.drawText (juce::String::charToString ((juce::juce_wchar) ('A' + c)) + (stored ? juce::String (juce::CharPointer_UTF8 (" \xe2\x97\x8f")) : juce::String()),
                             inner, just[c]);
                 drawChip (g, storeChip (c), "STORE", stored ? theme::textDim : theme::text);
@@ -170,7 +170,7 @@ private:
         g.setColour (theme::panelEdge);
         g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
         g.setColour (colour);
-        g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+        g.setFont (ps::fonts::bold (10.0f));
         g.drawText (text, r, juce::Justification::centred);
     }
 
