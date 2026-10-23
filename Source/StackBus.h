@@ -9,6 +9,28 @@
 
 namespace ps
 {
+// The short-term level (a power) that PRESSURE's thresholds, its clipper drive and the glue hang on. It follows
+// the signal over 400 ms, but holds through a tail or a pause (anything 20 dB under it), catches up over 100 ms
+// when a note lands 6 dB over it, and jumps straight to one 20 dB over it, so the first note after a pause meets
+// the thresholds where the playing left them rather than sunk into the silence. A steady sound never leaves the
+// +-6 dB band, so it reads exactly as a plain 400 ms average.
+struct HeldLevel
+{
+    float power = 0.0f;
+
+    void reset() noexcept { power = 0.0f; }
+
+    void update (float p, float followCoef, float riseCoef) noexcept
+    {
+        if (p > 100.0f * power)
+            power = p;
+        else if (p > 4.0f * power)
+            power += (p - power) * riseCoef;
+        else if (p > 0.01f * power)
+            power += (p - power) * followCoef;
+    }
+};
+
 // The stack bus: processing on the summed layers. So far: the mono-bass stage, an LR4 split at the low
 // crossover whose low band is summed to mono, so the lows hit the same in mono and stereo, and the width
 // floor: the side signal is high-passed (LR4) at twice the crossover (about 250 Hz), so stereo width only
@@ -249,7 +271,8 @@ public:
         for (auto& b : splitHigh) for (auto& f : b) f.reset();
         for (auto& c : lowAllpass) for (auto& f : c) f.reset();
         bandEnvelope.fill (0.0f);
-        glueDetector = glueShortTerm = 0.0f;
+        glueDetector = 0.0f;
+        glueShortTerm.reset();
         glueGainDb = 0.0f;
         amount = 0.0f;
     }
@@ -289,7 +312,7 @@ public:
     {
         if (! followLevel)
             return 0.0f;
-        return juce::jlimit (-30.0f, 6.0f, 10.0f * std::log10 (levelPower + 1.0e-12f) - referenceDb);
+        return juce::jlimit (-30.0f, 6.0f, 10.0f * std::log10 (level.power + 1.0e-12f) - referenceDb);
     }
 
     float getAmount() const noexcept { return amount; }
@@ -405,7 +428,7 @@ private:
         float sum = 0.0f;
         for (int i = 0; i < n; ++i)
             sum += 0.5f * (left[i] * left[i] + right[i] * right[i]);
-        levelPower += (sum / (float) juce::jmax (1, n) - levelPower) * (1.0f - std::exp (-(float) n / (0.4f * sr)));
+        level.update (sum / (float) juce::jmax (1, n), 1.0f - std::exp (-(float) n / (0.4f * sr)), 1.0f - std::exp (-(float) n / (0.1f * sr)));
     }
 
     // Glue: 2:1 with a 6 dB soft knee, 30 ms attack, 200 ms release, linked. Its threshold sits 2x the target
@@ -413,6 +436,7 @@ private:
     void glue (float* left, float* right, int n, float targetDb, float baseReleaseSeconds = 0.2f) noexcept
     {
         const float rmsCoef = 1.0f - std::exp (-1.0f / (0.01f * sr)), shortCoef = 1.0f - std::exp (-1.0f / (0.4f * sr));
+        const float riseCoef = 1.0f - std::exp (-1.0f / (0.1f * sr));
         const float attack = 1.0f - std::exp (-1.0f / (0.03f * sr));
         const float releaseSeconds = baseReleaseSeconds + tempoLock * (0.5f * beatSeconds - baseReleaseSeconds);
         const float release = 1.0f - std::exp (-1.0f / (releaseSeconds * sr));
@@ -420,9 +444,9 @@ private:
         {
             const float p = 0.5f * (left[i] * left[i] + right[i] * right[i]);
             glueDetector += (p - glueDetector) * rmsCoef;
-            glueShortTerm += (p - glueShortTerm) * shortCoef;
+            glueShortTerm.update (glueDetector, shortCoef, riseCoef);
             const float level = 10.0f * std::log10 (glueDetector + 1.0e-12f);
-            const float over = level - (10.0f * std::log10 (glueShortTerm + 1.0e-12f) - 2.0f * targetDb);
+            const float over = level - (10.0f * std::log10 (glueShortTerm.power + 1.0e-12f) - 2.0f * targetDb);
             float wanted = 0.0f;
             if (targetDb > 1.0e-3f && level > -80.0f)
             {
@@ -439,7 +463,8 @@ private:
     }
 
     static constexpr float referenceDb = -12.0f;
-    float sr = 48000.0f, amount = 0.0f, tempoLock = 0.0f, beatSeconds = 0.5f, levelPower = 0.0f;
+    float sr = 48000.0f, amount = 0.0f, tempoLock = 0.0f, beatSeconds = 0.5f;
+    HeldLevel level;
     bool wasActive = false;
     using LR = LinkwitzRiley4;
     using Pair = std::array<LR, 2>;
@@ -447,7 +472,8 @@ private:
     std::array<Pair, 2> splitHigh { Pair { LR (LR::Type::highPass), LR (LR::Type::highPass) }, Pair { LR (LR::Type::highPass), LR (LR::Type::highPass) } };
     std::array<Pair, 2> lowAllpass { Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) }, Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) } };
     std::array<float, 3> bandEnvelope {};
-    float glueDetector = 0.0f, glueShortTerm = 0.0f, glueGainDb = 0.0f;
+    float glueDetector = 0.0f, glueGainDb = 0.0f;
+    HeldLevel glueShortTerm;
 };
 
 // The patch's stereo width on the summed stack: the side signal scaled by 0..2 (glided over 30 ms). The bus has
@@ -838,6 +864,7 @@ public:
         exciterSourceG = tptGain (3000.0f, upRate);
         exciterOutputG = tptGain (6000.0f, upRate);
         exciterEnvCoef = 1.0f - std::exp (-1.0f / (0.005f * upRate));
+        sideCutCoeffs = ZdfSvf::Coeffs::make (tptGain (150.0f, upRate), juce::MathConstants<float>::sqrt2);
     }
 
     void reset()
@@ -848,6 +875,8 @@ public:
         exciters = {};
         sectionIn.reset();
         sectionOut.reset();
+        for (auto& f : sideCut)
+            f.reset();
     }
 
     // P_in / P_out of the knob-driven stages in here (PRESSURE's saturation and clipping, SHINE's exciter),
@@ -876,10 +905,10 @@ public:
             double sum = 0.0;
             for (int i = 0; i < buffer.getNumSamples(); ++i)
                 sum += juce::square (0.5 * (buffer.getSample (0, i) + buffer.getSample (1, i)));
-            midPower = (float) (sum / juce::jmax (1, buffer.getNumSamples()));
+            midLevel.power = (float) (sum / juce::jmax (1, buffer.getNumSamples()));
         }
         wasPressing = pressing;
-        const float shiftDb = juce::jlimit (-30.0f, 12.0f, 10.0f * std::log10 (midPower + 1.0e-12f) - clipReferenceDb);
+        const float shiftDb = juce::jlimit (-30.0f, 12.0f, 10.0f * std::log10 (midLevel.power + 1.0e-12f) - clipReferenceDb);
         const float satDrive = juce::Decibels::decibelsToGain (0.75f * g - shiftDb), satWet = juce::jmin (0.8f, pressure);
         const float clipDrive = juce::Decibels::decibelsToGain (0.375f * g - shiftDb);
         const bool exciting = excite > 1.0e-4f || exciteMix > 1.0e-4f;
@@ -930,7 +959,8 @@ public:
                     l[i] = mid + side;
                     r[i] = mid - side;
                 }
-                midPower += ((float) (sum / upN) - midPower) * (1.0f - std::exp (-(float) upN / (0.4f * upRate)));
+                midLevel.update ((float) (sum / upN), 1.0f - std::exp (-(float) upN / (0.4f * upRate)),
+                                 1.0f - std::exp (-(float) upN / (0.1f * upRate)));
             }
             if (active)
                 sectionOut.process (l, r, upN);
@@ -949,8 +979,16 @@ public:
             {
                 if (gain < gainTarget)      gain = std::min (gainTarget, gain + gainStep);
                 else if (gain > gainTarget) gain = std::max (gainTarget, gain - gainStep);
-                l[i] += gain * (shape (l[i]) - l[i]);
-                r[i] += gain * (shape (r[i]) - r[i]);
+                // Stereo-linked: one gain from the louder channel for both, so the curve never bends L and R
+                // differently. The gain still modulates the side (stereo highs times a gain that moves with the
+                // bass), so the side part of what the curve takes away is high-passed at 150 Hz: the lows stay mono.
+                const float peak = std::max (std::abs (l[i]), std::abs (r[i]));
+                const float cut = gain * (linkedGain (peak) - 1.0f);
+                const float midDelta = cut * 0.5f * (l[i] + r[i]);
+                const float sideDelta = sideCut[1].process (sideCut[0].process (cut * 0.5f * (l[i] - r[i]), sideCutCoeffs).high,
+                                                            sideCutCoeffs).high;
+                l[i] += midDelta + sideDelta;
+                r[i] += midDelta - sideDelta;
             }
             oversampler->processSamplesDown (block);
             if (active)
@@ -970,6 +1008,13 @@ public:
         if (a <= knee)
             return x;
         return std::copysign (knee + span * std::tanh ((a - knee) / span), x);
+    }
+
+    // shape (peak) / peak: the gain that puts the louder channel on the curve
+    static float linkedGain (float peak) noexcept
+    {
+        static const float knee = juce::Decibels::decibelsToGain (kneeDb);
+        return peak <= knee ? 1.0f : shape (peak) / peak;
     }
 
 private:
@@ -1011,11 +1056,14 @@ private:
     std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
     PressureState pressureState {};
     std::array<Exciter, 2> exciters {};
+    std::array<ZdfSvf, 2> sideCut {};
+    ZdfSvf::Coeffs sideCutCoeffs = ZdfSvf::Coeffs::make (0.01f, 1.4142f);
     float exciterSourceG = 0.1f, exciterOutputG = 0.2f, exciterEnvCoef = 0.01f, exciteMix = 0.0f;
     harmony::KPowerMeter sectionIn, sectionOut;   // at the oversampled rate
     bool wasActive = false, wasPressing = false;
     static constexpr float clipReferenceDb = -11.0f;   // the mid's power the in-loop stages are tuned at
-    float midPower = 0.0f, trimGain = 1.0f, upRate = 192000.0f;
+    HeldLevel midLevel;
+    float trimGain = 1.0f, upRate = 192000.0f;
     int maxBlock = 512;
     float gain = 1.0f, gainTarget = 1.0f, gainStep = 1.0f;
 };

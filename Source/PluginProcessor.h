@@ -9,6 +9,7 @@
 #include "Arp.h"
 #include "ModLanes.h"
 #include "MixHealth.h"
+#include "Presets.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
                              private juce::Timer
@@ -70,6 +71,9 @@ public:
     // The Harmony Engine's current loudness trim (linear gain), for meters and tests
     float getLoudnessTrim() const { return loudnessTrim.getGain(); }
     const ps::LayerStack& getStack() const { return stack; }
+    // Message thread: loads a factory preset (everything else returns to its default first)
+    void loadPreset (const ps::presets::Preset& preset);
+    juce::String getPresetName() const { return apvts.state.getProperty ("presetName", "Init").toString(); }
     // Mix Health meters and listen modes (the editor turns the meters on while it is open)
     ps::MixHealth& getMixHealth() noexcept { return mixHealth; }
     // Message thread: frees engines the audio thread has finished with (also runs on a timer)
@@ -155,6 +159,7 @@ private:
     ps::harmony::KPowerMeter knobStagesIn, knobStagesOut;   // around the bus stages the knobs drive
     bool knobStagesActive = false;
     ps::harmony::LoudnessTrim loudnessTrim;
+    ps::HeldLevel trimLevel;   // the stack's held level, for the trim's playing gate
     ps::TruePeakClipper clipper;
     ps::TruePeakLimiter limiter;
     ps::MixHealth mixHealth;

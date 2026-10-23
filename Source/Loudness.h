@@ -87,6 +87,26 @@ inline double integratedLufs (const float* left, const float* right, size_t numS
     return relative > 0.0 ? lufs (relative) : -std::numeric_limits<double>::infinity();
 }
 
+// The loudest short-term loudness (LUFS, 3 s window, 100 ms hop) of a stereo signal: how loud it sounds at its
+// loudest, which matches a one-shot hit and a held chord fairly. A signal under 3 s is one window. -inf for silence.
+inline double maxShortTermLufs (const float* left, const float* right, size_t numSamples, double sampleRate)
+{
+    auto fl = kWeighting (sampleRate), fr = kWeighting (sampleRate);
+    std::vector<double> sum (numSamples + 1, 0.0);
+    for (size_t i = 0; i < numSamples; ++i)
+    {
+        const double l = fl[1].process (fl[0].process (left[i]));
+        const double r = fr[1].process (fr[0].process (right[i]));
+        sum[i + 1] = sum[i] + l * l + r * r;
+    }
+    const size_t window = std::min (numSamples, (size_t) std::lround (3.0 * sampleRate));
+    const size_t hop = std::max ((size_t) 1, (size_t) std::lround (0.1 * sampleRate));
+    double best = 0.0;
+    for (size_t start = 0; window > 0 && start + window <= numSamples; start += hop)
+        best = std::max (best, (sum[start + window] - sum[start]) / (double) window);
+    return best > 0.0 ? -0.691 + 10.0 * std::log10 (best) : -std::numeric_limits<double>::infinity();
+}
+
 // 4x interpolation kernel for true-peak estimation: 48-tap Blackman-windowed sinc, 12 taps per phase.
 // Phase p of input history x[n], x[n-1], ... is sum_k x[n-k] * kernel[k * 4 + p]; it estimates the
 // signal at about n - 5.875 + p / 4.

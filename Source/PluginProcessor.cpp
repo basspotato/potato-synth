@@ -145,6 +145,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     knobStagesOut.prepare (sampleRate);
     knobStagesActive = false;
     loudnessTrim.prepare (sampleRate, samplesPerBlock);
+    trimLevel.reset();
     for (int k = 0; k < ps::params::numChainKnobs; ++k)
         knobPosition[(size_t) k] = chainKnobs[(size_t) k]->load();
     setLatencySamples (juce::roundToInt (stack.layer (0).driveLatencySamples())
@@ -173,6 +174,35 @@ void PotatoSynthProcessor::setLayerEngine (int layerIndex, const juce::String& e
     engineInfos[(size_t) layerIndex] = info;
     stack.layer (layerIndex).requestEngine (std::move (engine), engineId);
     updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));   // slot value text follows the engine
+}
+
+void PotatoSynthProcessor::loadPreset (const ps::presets::Preset& preset)
+{
+    auto setParam = [] (juce::RangedAudioParameter& p, float normalised)
+    {
+        p.beginChangeGesture();
+        p.setValueNotifyingHost (normalised);
+        p.endChangeGesture();
+    };
+    for (auto* param : getParameters())
+        if (auto* p = dynamic_cast<juce::RangedAudioParameter*> (param))
+            setParam (*p, p->getDefaultValue());
+    for (int i = 0; i < ps::params::numLayers; ++i)
+        setLayerEngine (i, preset.engines[(size_t) i]);
+    for (const auto& [id, value] : preset.values)
+        if (auto* p = apvts.getParameter (id))
+            setParam (*p, p->convertTo0to1 (value));
+        else
+            jassertfalse;   // a preset names a parameter that doesn't exist
+
+    const ps::NoteGenerator defaultGenerator;
+    for (int i = 0; i < ps::NoteGenerator::maxSteps; ++i)
+        noteGenerator.setStep (i, i < (int) preset.steps.size() ? preset.steps[(size_t) i] : defaultGenerator.getStep (i));
+    const ps::ModLanes defaultLanes;
+    for (int l = 0; l < ps::ModLanes::numLanes; ++l)
+        for (int s = 0; s < ps::ModLanes::maxSteps; ++s)
+            modLanes.setValue (l, s, defaultLanes.getValue (l, s));
+    apvts.state.setProperty ("presetName", preset.name, nullptr);
 }
 
 juce::String PotatoSynthProcessor::slotText (int layer, int slot, float value) const
@@ -402,8 +432,16 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         patchGain[(size_t) i] = layer.patchGain();
         knobGain[(size_t) i] = layer.knobGain() * std::sqrt (layer.carvePowerRatio() * layer.drivePowerRatio());
     }
+    // Playing: this block within 10 dB of the held level (the loudness meter's relative gate); an onset: 6 dB
+    // over the 400 ms average
+    const float blockPower = knobStagesIn.getBlockPower();
+    trimLevel.update (blockPower, 1.0f - std::exp (-(float) n / (0.4f * (float) getSampleRate())),
+                      1.0f - std::exp (-(float) n / (0.1f * (float) getSampleRate())));
+    const bool playing = blockPower > 0.1f * trimLevel.power && blockPower > 1.0e-10f;
+    const bool onset = blockPower > 4.0f * knobStagesIn.getPower();
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
-                         (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n);
+                         (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n,
+                         playing, onset);
     // The pump's makeup is exact and immediate (no meter to wait for), so it rides on top of the smoothed trim.
     // Both go in inside the clipper, after its knob stages.
     const float trim = juce::jlimit (0.25f, 4.0f, loudnessTrim.getGain() / std::sqrt (pump.powerRatio())

@@ -43,7 +43,8 @@ juce_add_plugin(PotatoSynth
 
 target_sources(PotatoSynth PRIVATE
     Source/PluginProcessor.cpp
-    Source/PluginEditor.cpp)
+    Source/PluginEditor.cpp
+    Source/Presets.cpp)
 
 target_include_directories(PotatoSynth PRIVATE Source)
 

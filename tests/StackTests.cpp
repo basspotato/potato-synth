@@ -6,7 +6,9 @@
 #include "ChainKnobs.h"
 #include <cmath>
 #include <iostream>
+#include <map>
 #include <set>
+#include <thread>
 
 namespace
 {
@@ -2467,6 +2469,425 @@ void testMixHealth()
     }
 }
 
+// ---- Potato Ready: every factory preset, rendered and checked (brief, "Mix/master-ready standard") --------------
+
+namespace potatoReady
+{
+    using Category = ps::presets::Category;
+
+    // Integrated loudness of the held chord each category sits at (presets match each other within +-1 LU)
+    // Plucks, arps and keys sit lower: their transients peak 13-18 dB over their loudness, so a louder target would
+    // only be reached by the safe clipper squashing the attack. Init is a category of one: the fresh-instance patch.
+    float targetLufs (Category c)
+    {
+        switch (c)
+        {
+            case Category::init:  return -9.0f;
+            case Category::lead:  return -11.0f;
+            case Category::bass:  return -11.0f;
+            case Category::pad:   return -14.0f;
+            case Category::pluck: return -19.0f;
+            case Category::keys:  return -15.0f;
+            case Category::arp:   return -16.0f;
+            case Category::fx:    return -16.0f;
+            case Category::count: break;
+        }
+        return -12.0f;
+    }
+
+    // How long a held chord needs before it is at its sustained level (slow pads and risers take longer)
+    int settleSamples (Category c) { return (int) sampleRate * (c == Category::pad || c == Category::fx ? 3 : 1); }
+
+    struct PresetRig : Rig
+    {
+        explicit PresetRig (const ps::presets::Preset& preset) : Rig (false)
+        {
+            proc->loadPreset (preset);
+            render (blockSize);
+            collectRetired();
+            render (blockSize * 8);
+        }
+    };
+
+    // The held chord at full velocity; basses (mono) play one low note
+    std::vector<int> chordNotes (Category c) { return c == Category::bass ? std::vector<int> { 36 } : std::vector<int> { 36, 48, 55, 60, 64, 67 }; }
+    std::vector<std::pair<int, juce::MidiMessage>> chordOn (Category c)
+    {
+        std::vector<std::pair<int, juce::MidiMessage>> events;
+        for (int n : chordNotes (c))
+            events.push_back ({ 0, on (n, 1.0f) });
+        return events;
+    }
+
+    double lufs (const std::vector<float>& l, const std::vector<float>& r, size_t from, size_t to)
+    {
+        return ps::loudness::integratedLufs (l.data() + from, r.data() + from, to - from, sampleRate);
+    }
+
+    double truePeak (const std::vector<float>& l, const std::vector<float>& r)
+    {
+        return std::max (ps::loudness::truePeakDb (l.data(), l.size()), ps::loudness::truePeakDb (r.data(), r.size()));
+    }
+
+    // Peak above 8 kHz in [from, to), for the click checks
+    std::vector<float> highBand (const std::vector<float>& x)
+    {
+        ps::LinkwitzRiley4 hp (ps::LinkwitzRiley4::Type::highPass);
+        hp.setCutoff (8000.0, sampleRate);
+        std::vector<float> y (x.size());
+        for (size_t i = 0; i < x.size(); ++i)
+            y[i] = (float) hp.process (x[i]);
+        return y;
+    }
+
+    // Octave-band levels (dB), 63 Hz .. 16 kHz
+    std::array<float, 9> octaves (const std::vector<float>& x, size_t from)
+    {
+        std::array<float, 9> b {};
+        for (int k = 0; k < 9; ++k)
+        {
+            const double centre = 62.5 * std::pow (2.0, k);
+            b[(size_t) k] = (float) (10.0 * std::log10 (std::max (1.0e-20f, bandEnergy (x, from, centre / std::sqrt (2.0), centre * std::sqrt (2.0)))));
+        }
+        return b;
+    }
+
+    struct Result
+    {
+        std::string name, category;
+        double lufs = 0.0, peak = 0.0, sideLow = 0.0, correlation = 0.0, dc = 0.0;
+        double worstSweepPeak = -100.0, worstSweepLu = 0.0;
+        std::string worstSweepKnob;
+        int roleLayers = 0;
+        std::vector<std::string> failures;
+    };
+
+    Result check (const ps::presets::Preset& preset)
+    {
+        Result res;
+        res.name = preset.name.toStdString();
+        res.category = ps::presets::categoryNames[(int) preset.category];
+        auto fail = [&res] (const std::string& what) { res.failures.push_back (what); };
+
+        // Layers: at least three role-tagged layers (Sub/Body/Mid/Air) with an engine
+        {
+            PresetRig rig (preset);
+            for (int i = 0; i < ps::params::numLayers; ++i)
+                if (rig.proc->getLayerEngine (i).isNotEmpty() && rig.get (ps::params::layerRole (i)) < (float) ps::params::Role::full)
+                    ++res.roleLayers;
+        }
+        if (res.roleLayers < 3 && ! preset.solo)
+            fail ("fewer than 3 role layers");
+
+        // Held chord at full velocity
+        const int settle = settleSamples (preset.category), hold = 96000;
+        std::vector<float> l, r;
+        {
+            PresetRig rig (preset);
+            auto events = chordOn (preset.category);
+            for (int n : chordNotes (preset.category))
+                events.push_back ({ settle + hold, juce::MidiMessage::noteOff (1, n) });
+            l = rig.render (settle + hold + 48000, events);
+            r = rig.right;
+        }
+        if (! allFinite (l) || ! allFinite (r))
+        {
+            fail ("NaN or Inf");
+            return res;
+        }
+        // Measured from the first note-on to the note-off: integrated (the gates leave out what has decayed away),
+        // except FX at their loudest 3 s (short-term), since a riser or a hit is heard at its peak, not on average
+        const size_t a = 0, b = (size_t) (settle + hold);
+        res.lufs = preset.category == Category::fx ? ps::loudness::maxShortTermLufs (l.data(), r.data(), b, sampleRate)
+                                                   : lufs (l, r, a, b);
+        res.peak = truePeak (l, r);
+        if (res.peak > -1.0 + 0.05)
+            fail ("true peak " + std::to_string (res.peak) + " dBTP");
+        if (std::abs (res.lufs - targetLufs (preset.category)) > 1.0)
+            fail ("loudness " + std::to_string (res.lufs) + " LUFS (target " + std::to_string (targetLufs (preset.category)) + ")");
+        {
+            // The lows through an 8th-order low-pass at 100 Hz, so the mono-bass crossover's own skirt (stereo is
+            // allowed from 120 Hz up) doesn't count
+            std::array<ps::LinkwitzRiley4, 4> low;
+            for (auto& f : low)
+                f.setCutoff (100.0, sampleRate);
+            double midP = 0.0, sideP = 0.0, lr = 0.0, ll = 0.0, rr = 0.0, sumL = 0.0, sumR = 0.0;
+            for (size_t i = a; i < b; ++i)
+            {
+                const double xl = low[1].process (low[0].process (l[i])), xr = low[3].process (low[2].process (r[i]));
+                midP += juce::square (0.5 * (xl + xr));
+                sideP += juce::square (0.5 * (xl - xr));
+                lr += (double) l[i] * r[i];
+                ll += (double) l[i] * l[i];
+                rr += (double) r[i] * r[i];
+                sumL += l[i];
+                sumR += r[i];
+            }
+            res.sideLow = 10.0 * std::log10 (std::max (sideP, 1.0e-20) / std::max (midP, 1.0e-20));
+            res.correlation = lr / std::sqrt (std::max (ll * rr, 1.0e-30));
+            res.dc = std::max (std::abs (sumL), std::abs (sumR)) / (double) (b - a);
+        }
+        if (res.sideLow > -40.0)
+            fail ("side below 100 Hz at " + std::to_string (res.sideLow) + " dB");
+        if (res.correlation < 0.2)
+            fail ("correlation " + std::to_string (res.correlation));
+        if (res.dc > 2.0e-3)
+            fail ("DC offset " + std::to_string (res.dc));
+        // Note-off: what the release adds above 8 kHz in its first 10 ms stays within what the held sound had
+        {
+            const auto hl = highBand (l);
+            const float held = peak (hl, b - 4800, b), released = peak (hl, b, b + 480);
+            if (released > 2.0f * held + 1.0e-3f)
+                fail ("click at note-off (" + std::to_string (released / std::max (held, 1.0e-6f)) + "x)");
+        }
+        // Note-on: a single note's first 5 ms above 8 kHz stays within what its next 200 ms have
+        {
+            PresetRig rig (preset);
+            const auto x = rig.render (24000, { { 0, on (preset.category == Category::bass ? 36 : 60, 1.0f) } });
+            const auto hx = highBand (x);
+            const float onset = peak (hx, 0, 240), after = peak (hx, 240, 9840);
+            if (onset > 2.0f * after + 1.0e-3f)
+                fail ("click at note-on (" + std::to_string (onset / std::max (after, 1.0e-6f)) + "x)");
+        }
+
+        return res;
+    }
+
+    // Macros: every chain knob and SUPER in turn, on the held chord (struck again for each knob), swept 0 -> 1 over
+    // 2 s, held, then back to 0 over 0.5 s. The whole run stays under the true-peak ceiling. 0.5 s after each sweep
+    // the chord is struck again at the knob's new position, and over the next 2 s its loudness is within 1 LU of an
+    // untouched copy of the preset at the same moment (so a sound that evolves by itself, like a riser, isn't counted
+    // against the knob, and a pluck is measured on its notes rather than its tail). The rigs are built here, on the calling
+    // thread; run() only renders, so several presets can run at once.
+    struct SweepRun
+    {
+        explicit SweepRun (const ps::presets::Preset& p) : preset (p), swept (p), control (p) {}
+
+        void run()
+        {
+            const auto chord = chordOn (preset.category);
+            swept.render (settleSamples (preset.category), chord);
+            control.render (settleSamples (preset.category), chord);
+            std::vector<juce::ParameterID> knobs;
+            for (int k = 0; k < ps::params::numChainKnobs; ++k)
+                knobs.push_back (ps::params::chainKnob (k));
+            knobs.push_back (ps::params::super);
+            for (size_t k = 0; k < knobs.size(); ++k)
+            {
+                const std::string name = k < (size_t) ps::params::numChainKnobs ? ps::params::chainKnobNames[k] : "SUPER";
+                std::vector<float> l, r;
+                auto keep = [&] (const std::vector<float>& x)
+                {
+                    l.insert (l.end(), x.begin(), x.end());
+                    r.insert (r.end(), swept.right.begin(), swept.right.end());
+                };
+                auto move = [&] (float from, float to, int length, std::vector<std::pair<int, juce::MidiMessage>> events = {})
+                {
+                    for (int pos = 0; pos < length; pos += blockSize)
+                    {
+                        swept.set (knobs[k], from + (to - from) * (float) (pos + blockSize) / (float) length);
+                        keep (swept.render (blockSize, pos == 0 ? events : std::vector<std::pair<int, juce::MidiMessage>> {}));
+                        control.render (blockSize, pos == 0 ? events : std::vector<std::pair<int, juce::MidiMessage>> {});
+                    }
+                };
+                move (0.0f, 1.0f, 96000, chord);
+                keep (swept.render (24000));
+                control.render (24000);
+                const auto a = swept.render (96000, chord);
+                const auto ar = swept.right;
+                const auto c = control.render (96000, chord);
+                const double change = lufs (a, ar, 0, a.size()) - lufs (c, control.right, 0, c.size());
+                keep (a);
+                move (1.0f, 0.0f, 24000);
+                keep (swept.render (24000));
+                control.render (24000);
+
+                const double tp = truePeak (l, r);
+                if (tp > res.worstPeak)
+                    res.worstPeak = tp;
+                if (std::isfinite (change) && std::abs (change) > std::abs (res.worstLu))
+                {
+                    res.worstLu = change;
+                    res.worstKnob = name;
+                }
+                if (tp > -1.0 + 0.05)
+                    res.failures.push_back (name + " sweep true peak " + std::to_string (tp));
+                if (std::isfinite (change) && std::abs (change) > 1.0)
+                    res.failures.push_back (name + " sweep moves loudness " + std::to_string (change) + " LU");
+            }
+        }
+
+        const ps::presets::Preset& preset;
+        PresetRig swept, control;
+        struct { double worstPeak = -100.0, worstLu = 0.0; std::string worstKnob; std::vector<std::string> failures; } res;
+    };
+}
+
+void testFactoryPresets()
+{
+    using namespace potatoReady;
+    const auto& bank = ps::presets::factory();
+    CHECK (bank.size() == 201 && bank[0].name == "Init", "the factory bank is Init plus 200 presets");
+    std::map<std::string, int> names;
+    for (const auto& x : bank)
+        ++names[x.name.toStdString()];
+    CHECK (std::all_of (names.begin(), names.end(), [] (auto& n) { return n.second == 1; }), "preset names are unique");
+
+    const auto calibrate = juce::SystemStats::getEnvironmentVariable ("POTATO_PRESET_CALIBRATE", {});
+    const bool sweeps = calibrate.isEmpty() && juce::SystemStats::getEnvironmentVariable ("POTATO_PRESET_NO_SWEEPS", {}).isEmpty();
+    const auto only = juce::SystemStats::getEnvironmentVariable ("POTATO_PRESET_ONLY", {});
+    juce::String trims = "// Generated by the Potato Ready calibration (PotatoSynthTests with POTATO_PRESET_CALIBRATE): { \"preset name\", master dB },\n";
+    int passed = 0, checked = 0;
+    std::vector<potatoReady::Result> results;
+    std::vector<const ps::presets::Preset*> tested;
+    for (const auto& preset : bank)
+    {
+        // POTATO_PRESET_ONLY: a comma-separated list of name fragments; calibrating keeps the others' trims
+        bool wanted = only.isEmpty();
+        for (const auto& part : juce::StringArray::fromTokens (only, ",", {}))
+            wanted = wanted || preset.name.containsIgnoreCase (part.trim());
+        if (! wanted)
+        {
+            if (calibrate.isNotEmpty() && ps::presets::trimDb (preset.name) != 0.0f)
+                trims << "{ \"" << preset.name << "\", " << juce::String (ps::presets::trimDb (preset.name), 2) << "f },\n";
+            continue;
+        }
+        ++checked;
+        results.push_back (check (preset));
+        tested.push_back (&preset);
+    }
+    if (sweeps)
+    {
+        // A batch of presets per round, one thread each
+        const size_t threads = std::max (1u, std::thread::hardware_concurrency());
+        for (size_t start = 0; start < tested.size(); start += threads)
+        {
+            std::vector<std::unique_ptr<potatoReady::SweepRun>> runs;
+            for (size_t i = start; i < std::min (tested.size(), start + threads); ++i)
+                runs.push_back (std::make_unique<potatoReady::SweepRun> (*tested[i]));
+            std::vector<std::thread> workers;
+            for (auto& run : runs)
+                workers.emplace_back ([&run] { run->run(); });
+            for (auto& w : workers)
+                w.join();
+            for (size_t i = 0; i < runs.size(); ++i)
+            {
+                auto& res = results[start + i];
+                res.worstSweepPeak = runs[i]->res.worstPeak;
+                res.worstSweepLu = runs[i]->res.worstLu;
+                res.worstSweepKnob = runs[i]->res.worstKnob;
+                res.failures.insert (res.failures.end(), runs[i]->res.failures.begin(), runs[i]->res.failures.end());
+            }
+        }
+    }
+    for (size_t i = 0; i < results.size(); ++i)
+    {
+        const auto& preset = *tested[i];
+        const auto& res = results[i];
+        std::cout << "preset: " << res.name << " | " << res.category << " | " << res.lufs << " LUFS | " << res.peak << " dBTP | side lows "
+                  << res.sideLow << " dB | corr " << res.correlation << " | sweeps " << res.worstSweepPeak << " dBTP, "
+                  << res.worstSweepLu << " LU (" << res.worstSweepKnob << ")\n";
+        if (calibrate.isNotEmpty())
+        {
+            // Capped where the layers can't go higher, so a preset that can't get louder doesn't keep climbing
+            const float trim = juce::jmin (18.0f, ps::presets::trimDb (preset.name) + (float) (targetLufs (preset.category) - res.lufs));
+            trims << "{ \"" << preset.name << "\", " << juce::String (trim, 2) << "f },\n";
+            continue;
+        }
+        if (res.failures.empty())
+            ++passed;
+        for (const auto& f : res.failures)
+            CHECK (false, res.name + ": " + f);
+    }
+    if (calibrate.isNotEmpty())
+        juce::File (calibrate).replaceWithText (trims);
+    else
+        std::cout << "info: " << passed << " of " << checked << " presets are Potato Ready\n";
+}
+
+// PRESSURE (its OTT, glue and clipper thresholds follow the playing's level, and the loudness trim compensates
+// them) does the same to a chord struck after 3 s of silence as to the first one: no squash, no swell. (Both used
+// to drift in the silence: the second chord came out 2.5 LU off and the first one swelled in from -9 dB.) Each strike
+// is compared with PRESSURE off, since the stack itself plays the second strike a little differently (phase
+// alignment fixes a note from its second play).
+void testPressureAfterPause()
+{
+    const auto& bank = ps::presets::factory();
+    std::array<std::array<double, 2>, 2> loudness {};   // [pressure off / on][first / second strike]
+    std::array<std::array<double, 2>, 2> onsetDip {};   // the first 50 ms against the rest, same indices
+    for (int on1 = 0; on1 < 2; ++on1)
+    {
+        potatoReady::PresetRig rig (bank[0]);
+        rig.set (ps::params::chainKnob (2), (float) on1);
+        rig.render (48000);
+        std::vector<std::pair<int, juce::MidiMessage>> strike, release;
+        for (int n : { 48, 55, 60, 64 })
+        {
+            strike.push_back ({ 0, on (n, 1.0f) });
+            release.push_back ({ 0, off (n) });
+        }
+        for (int k = 0; k < 2; ++k)
+        {
+            const auto l = rig.render (24000, strike);
+            loudness[(size_t) on1][(size_t) k] = potatoReady::lufs (l, rig.right, 0, l.size());
+            double head = 0.0, rest = 0.0;
+            for (size_t i = 0; i < l.size(); ++i)
+                (i < 2400 ? head : rest) += (double) l[i] * l[i];
+            onsetDip[(size_t) on1][(size_t) k] = 10.0 * std::log10 ((head / 2400.0) / (rest / (double) (l.size() - 2400)));
+            rig.render (144000, release);
+        }
+    }
+    const double first = loudness[1][0] - loudness[0][0], second = loudness[1][1] - loudness[0][1];
+    // At full PRESSURE the trim makes up about 11 dB, so these allow what the knob sweeps allow
+    CHECK (std::abs (second - first) < 1.0, "PRESSURE does the same to a chord after a 3 s pause as to the first ("
+                                                + std::to_string (first) + " vs " + std::to_string (second) + " LU)");
+    for (size_t k = 0; k < 2; ++k)
+    {
+        const double dip = onsetDip[1][k] - onsetDip[0][k];
+        CHECK (dip > -3.0, "PRESSURE doesn't swell a chord in (strike " + std::to_string (k + 1) + ": first 50 ms "
+                               + std::to_string (dip) + " dB against PRESSURE off)");
+    }
+}
+
+// Loading a preset puts back every parameter it doesn't set, and Init sounds like a fresh instance
+void testPresetLoading()
+{
+    const auto& bank = ps::presets::factory();
+    Rig fresh (false), loaded (false);
+    for (int i = 0; i < ps::params::numLayers; ++i)
+    {
+        const char* engines[] = { "sub", "dirt", "jp", "spectral", "", "", "", "" };
+        fresh.proc->setLayerEngine (i, engines[i]);
+    }
+    loaded.proc->loadPreset (bank[5]);
+    loaded.render (blockSize);
+    loaded.proc->loadPreset (bank[0]);
+    for (auto* rig : { &fresh, &loaded })
+    {
+        rig->render (blockSize);
+        rig->collectRetired();
+        rig->render (48000);   // outgoing engines fade out
+    }
+    bool same = true;
+    for (auto* param : fresh.proc->getParameters())
+    {
+        auto* p = dynamic_cast<juce::RangedAudioParameter*> (param);
+        auto* q = loaded.proc->apvts.getParameter (p->getParameterID());
+        same = same && std::abs (p->getValue() - q->getValue()) < 1.0e-6f;
+    }
+    CHECK (same, "loading Init after another preset puts every parameter back to a fresh instance's");
+    CHECK (loaded.proc->getPresetName() == "Init", "the loaded preset's name is kept");
+    const auto a = fresh.render (24000, { { 0, on (60) } }), b = loaded.render (24000, { { 0, on (60) } });
+    float diff = 0.0f, peak = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        diff = std::max (diff, std::abs (a[i] - b[i]));
+        peak = std::max (peak, std::abs (a[i]));
+    }
+    std::cout << "info: Init vs fresh instance differ by " << juce::Decibels::gainToDecibels (diff / peak, -200.0f) << " dB\n";
+    CHECK (diff <= peak * 1.0e-6f, "Init sounds like a fresh instance (within -120 dB)");
+}
+
 // BLOOM's pitch motion is a fixed wobble, never random: the same playing renders the same samples
 void testBloomIsRepeatable()
 {
@@ -3566,6 +3987,13 @@ int main()
         benchmarkDirt();
         return failures == 0 ? 0 : 1;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_PRESETS_ONLY", {}).isNotEmpty())
+    {
+        testPresetLoading();
+        testPressureAfterPause();
+        testFactoryPresets();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_MASTER_ONLY", {}).isNotEmpty())
     {
         testMasterChain();
@@ -3671,6 +4099,8 @@ int main()
     testSubDuck();
     testInserts();
     testMixHealth();
+    testPresetLoading();
+    testFactoryPresets();
     testArpeggiator();
     testStepSequencer();
     testArpThroughTheSynth();

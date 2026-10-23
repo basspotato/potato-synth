@@ -41,7 +41,7 @@ public:
     void reset()
     {
         state = {};
-        power = 0.0f;
+        power = lastMean = 0.0f;
         blockSum = 0.0;
         blockCount = 0;
     }
@@ -64,6 +64,7 @@ public:
         if (blockCount == 0)
             return;
         const auto mean = (float) (blockSum / blockCount);
+        lastMean = mean;
         const auto coef = (float) (1.0 - std::exp (-(double) blockCount / (0.4 * sr)));
         power += (mean - power) * coef;
         flushDenormals();
@@ -75,6 +76,8 @@ public:
     void addSilence (int numSamples) noexcept { blockCount += numSamples; }
 
     float getPower() const noexcept { return power; }
+    // The mean power of the samples folded in by the last update()
+    float getBlockPower() const noexcept { return lastMean; }
 
     // Starts the average at a known power (a meter switched in beside a running one), not at silence
     void seed (float p) noexcept { power = p; }
@@ -112,7 +115,7 @@ private:
     int stages = numStages;
     std::array<Coeffs, numStages> c {};
     std::array<std::array<State, numStages>, 2> state {};
-    float power = 0.0f;
+    float power = 0.0f, lastMean = 0.0f;
     double blockSum = 0.0;
     int blockCount = 0;
 };
@@ -132,7 +135,10 @@ inline double stageRatio (const KPowerMeter& in, const KPowerMeter& out) noexcep
 //   bus stages:   a stage the knobs drive (MASS's low focus EQ, PRESSURE's dynamics and clipping) is measured
 //                 in and out: ratio_stage = P_in / P_out, which is 1 when the knob is at rest
 //
-// The trim is sqrt of their product, smoothed over 300 ms. Engine slot moves are kept loudness-neutral by the
+// The trim is sqrt of their product, smoothed over 300 ms. It only learns while the stack is playing: through a
+// tail or a pause it holds (a dynamics stage treats a dying tail unlike the notes, and the notes are what it
+// compensates), and when a note lands well over the recent level it goes straight to its target (the clipper ramps
+// it across the block), so a note after a pause starts at the right level instead of swelling in. Engine slot moves are kept loudness-neutral by the
 // engines themselves (power-normalised unison, translate, frames); the knob-sweep tests hold everything to
 // +-0.5 LU.
 class LoudnessTrim
@@ -150,10 +156,13 @@ public:
     void reset() { smoothed = 1.0f; }
 
     // Once per block. Powers are K-weighted (KPowerMeter). stageRatio is the product of P_in / P_out over the bus
-    // stages the knobs drive (1 when none is working).
+    // stages the knobs drive (1 when none is working). playing: the stack is sounding, not in a tail or a pause;
+    // onset: a note just landed well over the recent level.
     void update (const float* layerPower, const float* patchGain, const float* knobGain, int numLayers,
-                 double stageRatio, int numSamples) noexcept
+                 double stageRatio, int numSamples, bool playing = true, bool onset = false) noexcept
     {
+        if (! playing)
+            return;
         double withoutKnobs = 0.0, withKnobs = 0.0;
         for (int l = 0; l < numLayers; ++l)
         {
@@ -178,7 +187,7 @@ public:
         {
             const float limit = juce::Decibels::decibelsToGain (maxTrimDb);
             const float target = juce::jlimit (1.0f / limit, limit, (float) std::sqrt (ratio));
-            const auto coef = (float) (1.0 - std::exp (-numSamples / (0.3 * sr)));
+            const auto coef = onset ? 1.0f : (float) (1.0 - std::exp (-numSamples / (0.3 * sr)));
             smoothed += (target - smoothed) * coef;
         }
     }
