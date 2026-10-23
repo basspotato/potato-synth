@@ -179,6 +179,26 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     setSize (baseWidth, baseHeight);
     timerCallback();
     startTimerHz (5);
+    ghostTimer.startTimerHz (15);
+}
+
+void PotatoSynthEditor::updateGhosts()
+{
+    for (int i = 0; i < ps::params::numLayers; ++i)
+    {
+        auto& s = layerLevels[(size_t) i].slider;
+        const float db = processor.getChainLevelDb (i);
+        const double ghost = std::abs (db) > 0.02f ? juce::jlimit (0.0, 1.0, s.valueToProportionOfLength (s.getValue() + (double) db)) : -1.0;
+        if ((double) s.getProperties().getWithDefault ("ghost", -1.0) != ghost)
+        {
+            s.getProperties().set ("ghost", ghost);
+            s.repaint();
+        }
+    }
+    std::array<float, ps::numSlotRoles> offsets {};
+    for (int r = 0; r < ps::numSlotRoles; ++r)
+        offsets[(size_t) r] = processor.getChainSlotOffset (selectedLayer, r);
+    layerPage.setSlotGhosts (offsets);
 }
 
 void PotatoSynthEditor::timerCallback()

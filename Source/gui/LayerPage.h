@@ -242,6 +242,24 @@ public:
         repaint();
     }
 
+    // Chain-knob map: draws where each role-tagged slot knob really sits once the chain knobs' offsets are added
+    void setSlotGhosts (const std::array<float, numSlotRoles>& offsets)
+    {
+        for (size_t k = 0; k < slotKnobs.size(); ++k)
+        {
+            auto& s = slotKnobs[k].slider;
+            double ghost = -1.0;
+            if (shownInfo != nullptr && k < shownInfo->slots.size() && shownInfo->slots[k].role != SlotRole::none
+                && std::abs (offsets[(size_t) shownInfo->slots[k].role]) > 1.0e-4f)
+                ghost = juce::jlimit (0.0, 1.0, s.valueToProportionOfLength (s.getValue()) + (double) offsets[(size_t) shownInfo->slots[k].role]);
+            if ((double) s.getProperties().getWithDefault ("ghost", -1.0) != ghost)
+            {
+                s.getProperties().set ("ghost", ghost);
+                s.repaint();
+            }
+        }
+    }
+
     void setEngine (const juce::String& name, const EngineInfo* info)
     {
         engineButton.setButtonText (juce::String ("ENGINE:  ") + (name.isEmpty() ? juce::String ("EMPTY") : name.toUpperCase())

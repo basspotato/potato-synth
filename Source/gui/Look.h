@@ -45,6 +45,19 @@ public:
         g.setColour (accent.withAlpha (0.22f).overlaidWith (theme::panelEdge.withAlpha (0.5f)));
         g.strokePath (track, juce::PathStrokeType (ringW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
+        // Chain-knob map: where the chain knobs actually put this control, as a bridge from the dialled value to a dot
+        if (const auto ghost = s.getProperties().getWithDefault ("ghost", -1.0); (double) ghost >= 0.0 && std::abs ((float) (double) ghost - pos) > 0.004f)
+        {
+            const float gp = juce::jlimit (0.0f, 1.0f, (float) (double) ghost);
+            const float ga = startAngle + gp * (endAngle - startAngle);
+            juce::Path bridge;
+            bridge.addCentredArc (centre.x, centre.y, arcR, arcR, 0.0f, angle, ga, true);
+            g.setColour (juce::Colours::white.withAlpha (0.55f));
+            g.strokePath (bridge, juce::PathStrokeType (ringW * 0.45f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+            g.setColour (juce::Colours::white);
+            g.fillEllipse (juce::Rectangle<float> (ringW * 1.3f, ringW * 1.3f).withCentre (centre.getPointOnCircumference (arcR, ga)));
+        }
+
         // Value arc, brighter with value
         g.setColour (accent.interpolatedWith (juce::Colours::white, 0.25f * pos));
         g.strokePath (valueArc, juce::PathStrokeType (ringW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));

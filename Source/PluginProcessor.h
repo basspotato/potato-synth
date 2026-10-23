@@ -52,6 +52,9 @@ public:
     void setLaneValue (int lane, int step, float value) noexcept { modLanes.setValue (lane, step, value); }
     float getLaneValue (int lane, int step) const noexcept { return modLanes.getValue (lane, step); }
     // Where each chain knob (with SUPER, BUILD/DROP and the lanes) and the XY pad actually are, for the GUI
+    // What the chain knobs add to one layer's LEVEL (dB) and engine slot roles (normalised), for the GUI's map rings
+    float getChainLevelDb (int layer) const noexcept { return ghostLevelDb[(size_t) layer].load(); }
+    float getChainSlotOffset (int layer, int role) const noexcept { return ghostSlot[(size_t) layer][(size_t) role].load(); }
     float getEffectiveKnob (int k) const noexcept { return effectiveKnob[(size_t) juce::jlimit (0, ps::params::numChainKnobs - 1, k)].load(); }
     float getEffectivePadX() const noexcept { return effectivePad[0].load(); }
     float getEffectivePadY() const noexcept { return effectivePad[1].load(); }
@@ -129,6 +132,8 @@ private:
     std::array<LaneParams, ps::ModLanes::numLanes> laneParams {};
     std::array<float, ps::ModLanes::numTargets> laneOffsets {};
     std::array<std::atomic<float>, ps::params::numChainKnobs> effectiveKnob {};
+    std::array<std::atomic<float>, ps::params::numLayers> ghostLevelDb {};
+    std::array<std::array<std::atomic<float>, ps::numSlotRoles>, ps::params::numLayers> ghostSlot {};
     std::array<std::atomic<float>, 2> effectivePad {};
     std::array<std::atomic<float>*, ps::params::numChainKnobs> chainKnobs {};
     std::atomic<float>* superKnob = nullptr;

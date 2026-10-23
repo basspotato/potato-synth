@@ -728,6 +728,9 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
+        ghostLevelDb[(size_t) i].store (offsets.levelDb[(size_t) i], std::memory_order_relaxed);
+        for (int r = 0; r < ps::numSlotRoles; ++r)
+            ghostSlot[(size_t) i][(size_t) r].store (offsets.slot[(size_t) i][(size_t) r], std::memory_order_relaxed);
         stack.layer (i).setBeatCeiling (offsets.beatCeiling);
         stack.layer (i).setOnsetDuck (onsetDb[(size_t) i], offsets.onsetDuckMs);
         stack.layer (i).setCarveGains (carve[(size_t) i], analyse);
