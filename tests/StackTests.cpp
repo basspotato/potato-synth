@@ -39,9 +39,11 @@ struct Rig
                 set (ps::params::layerRole (i), (float) ps::params::Role::full);
             set (ps::params::monoBass, 0.0f);
         }
-        // The plain reference voice on layer 3 only, whatever the plugin's default stack is
+        // The plain reference voice on layer 3 only, whatever the plugin's default stack is, at unity master (the
+        // plugin starts at -15 dB of headroom; the voice and bus tests measure levels from unity)
         for (int i = 0; i < ps::params::numLayers; ++i)
             proc->setLayerEngine (i, i == 2 ? "test.sine" : "");
+        set (ps::params::master, 0.0f);
         proc->setPlayConfigDetails (0, 2, sampleRate, blockSize);
         proc->prepareToPlay (sampleRate, blockSize);
     }
@@ -1262,6 +1264,7 @@ struct StackRig : Rig
         const char* engines[ps::params::numLayers] = { "sub", "dirt", "jp", "spectral", "", "", "", "" };
         for (int i = 0; i < ps::params::numLayers; ++i)
             proc->setLayerEngine (i, engines[i]);
+        set (ps::params::master, ps::params::masterDefaultDb);   // as a fresh instance
         if (const char* m = std::getenv ("POTATO_MASTER")) set (ps::params::master, (float) std::atof (m));
         render (blockSize);
         collectRetired();
@@ -2138,6 +2141,77 @@ void benchmarkDirt()
 }
 
 // The patch's master chain: OTT, glue, width
+// A tail fading through the OTT's upward range comes down smoothly: the lift tapers to 0 dB at the gate. A hard
+// gate switched 12 dB of lift on and off there, which crackled on quiet tails (heard at low volumes)
+void testOttUpwardTaper()
+{
+    ps::Pressure ott;
+    const int n = 48000 * 3;
+    ott.prepareMaster (48000.0, 512);
+    std::vector<float> l ((size_t) n), r ((size_t) n);
+    for (int i = 0; i < n; ++i)
+    {
+        // 1 kHz falling from -30 to -100 dBFS
+        const float g = juce::Decibels::decibelsToGain (-30.0f - 70.0f * (float) i / (float) n);
+        l[(size_t) i] = r[(size_t) i] = g * std::sin (juce::MathConstants<float>::twoPi * 1000.0f * (float) i / 48000.0f);
+    }
+    const auto in = l;
+    for (int pos = 0; pos < n; pos += 512)
+        ott.processMaster (l.data() + pos, r.data() + pos, std::min (512, n - pos), 1.0f, 1.0f, 1.0f, 0.0f, 0.2f);
+    float worst = 0.0f, previous = 0.0f;
+    const int frame = 480;
+    for (int f = 10; f < n / frame; ++f)
+    {
+        const int a = f * frame;
+        const float gainDb = juce::Decibels::gainToDecibels (rms (l, a, a + frame) / rms (in, a, a + frame));
+        if (f > 10)
+            worst = std::max (worst, std::abs (gainDb - previous));
+        previous = gainDb;
+    }
+    CHECK (worst < 1.0f, "the OTT lift fades smoothly as a tail drops through the gate (worst " + std::to_string (worst) + " dB per 10 ms)");
+}
+
+// PRESSURE turned back to 0 leaves the stage without a click: its band split shifts the phase, so dropping
+// straight to the dry signal stepped the waveform (heard on release tails about 250 ms after the knob reached 0)
+void testPressureBypassFade()
+{
+    ps::Pressure pressure;
+    pressure.prepare (48000.0, blockSize);
+    const int n = 48000 * 2;
+    std::vector<float> l ((size_t) n), r ((size_t) n);
+    for (int i = 0; i < n; ++i)
+        l[(size_t) i] = r[(size_t) i] = 0.1f * std::sin (juce::MathConstants<float>::twoPi * 330.0f * (float) i / 48000.0f)
+                                      + 0.05f * std::sin (juce::MathConstants<float>::twoPi * 3100.0f * (float) i / 48000.0f);
+    const float dry = maxStep (l);   // the stage only compresses, so out of it nothing may step harder than the input
+    bool out = false;
+    for (int pos = 0; pos < n; pos += blockSize)
+        out = ! pressure.process (l.data() + pos, r.data() + pos, std::min (blockSize, n - pos), pos < n / 4 ? 0.5f : 0.0f);
+    const float bypass = maxStep (std::vector<float> (l.begin() + n / 4, l.end()));
+    CHECK (out && bypass < dry * 1.05f, "PRESSURE fades out of its stage without a click (" + std::to_string (bypass / dry) + "x the input's steepest step)");
+}
+
+// BUILD ending leaves its stage without a click: the riser's high-pass sits at 20 Hz at the bottom of its sweep,
+// still shifting a bass note's phase, so it fades out instead of switching off
+void testBuildStageExit()
+{
+    ps::BuildStage build;
+    build.prepare (48000.0);
+    const int n = 48000 * 2;
+    std::vector<float> l ((size_t) n), r ((size_t) n);
+    for (int i = 0; i < n; ++i)
+        l[(size_t) i] = r[(size_t) i] = 0.3f * std::sin (juce::MathConstants<float>::twoPi * 45.0f * (float) i / 48000.0f)
+                                      + 0.02f * std::sin (juce::MathConstants<float>::twoPi * 3100.0f * (float) i / 48000.0f);
+    const float dry = maxStep (l);
+    float b = 0.3f;
+    for (int pos = 0; pos < n; pos += blockSize)
+    {
+        b = std::max (0.0f, b - 0.002f);   // falling about a beat, as when BUILD is let go
+        build.process (l.data() + pos, r.data() + pos, std::min (blockSize, n - pos), b, 0.0f, 120.0);
+    }
+    const float after = maxStep (l);
+    CHECK (after < dry * 1.05f, "BUILD fades its high-pass out without a click (" + std::to_string (after / dry) + "x the input's steepest step)");
+}
+
 void testMasterChain()
 {
     namespace p = ps::params;
@@ -2478,18 +2552,20 @@ namespace potatoReady
     // Integrated loudness of the held chord each category sits at (presets match each other within +-1 LU)
     // Plucks, arps and keys sit lower: their transients peak 13-18 dB over their loudness, so a louder target would
     // only be reached by the safe clipper squashing the attack. Init is a category of one: the fresh-instance patch.
+    // All sit 10 dB under where they were first tuned, with the master at -10 dB (params::masterDefaultDb): headroom
+    // for the chain knobs, so the output limiter only works at their extremes.
     float targetLufs (Category c)
     {
         switch (c)
         {
-            case Category::init:  return -9.0f;
-            case Category::lead:  return -11.0f;
-            case Category::bass:  return -11.0f;
-            case Category::pad:   return -14.0f;
-            case Category::pluck: return -19.0f;
-            case Category::keys:  return -15.0f;
-            case Category::arp:   return -16.0f;
-            case Category::fx:    return -16.0f;
+            case Category::init:  return -19.0f;
+            case Category::lead:  return -21.0f;
+            case Category::bass:  return -21.0f;
+            case Category::pad:   return -24.0f;
+            case Category::pluck: return -29.0f;
+            case Category::keys:  return -25.0f;
+            case Category::arp:   return -26.0f;
+            case Category::fx:    return -26.0f;
             case Category::count: break;
         }
         return -12.0f;
@@ -2540,6 +2616,31 @@ namespace potatoReady
         return y;
     }
 
+    // Octave-band energies (63 Hz .. 16 kHz) of both channels, summed over 8192-sample Hann windows
+    constexpr int numOctaves = 9;
+    std::array<double, numOctaves> octaveEnergy (const std::vector<float>& left, const std::vector<float>& right)
+    {
+        constexpr int order = 13, size = 1 << order;
+        juce::dsp::FFT fft (order);
+        std::vector<float> data (2 * size);
+        std::array<double, numOctaves> e {};
+        for (size_t from = 0; from + size <= left.size(); from += size)
+            for (const auto* x : { &left, &right })
+            {
+                std::fill (data.begin(), data.end(), 0.0f);
+                for (int i = 0; i < size; ++i)
+                    data[(size_t) i] = (*x)[from + (size_t) i] * (float) (0.5 - 0.5 * std::cos (juce::MathConstants<double>::twoPi * i / size));
+                fft.performFrequencyOnlyForwardTransform (data.data());
+                for (int bin = 1; bin < size / 2; ++bin)
+                {
+                    const double k = std::floor (std::log2 (bin * sampleRate / size / 62.5) + 0.5);
+                    if (k >= 0 && k < numOctaves)
+                        e[(size_t) k] += (double) data[(size_t) bin] * data[(size_t) bin];
+                }
+            }
+        return e;
+    }
+
     // Octave-band levels (dB), 63 Hz .. 16 kHz
     std::array<float, 9> octaves (const std::vector<float>& x, size_t from)
     {
@@ -2560,6 +2661,8 @@ namespace potatoReady
         std::string worstSweepKnob;
         int roleLayers = 0;
         std::vector<std::string> failures;
+        bool swept = false;
+        std::array<std::array<float, numOctaves>, ps::params::numChainKnobs + 1> balance {}, levelDb {};
     };
 
     Result check (const ps::presets::Preset& preset)
@@ -2707,6 +2810,13 @@ namespace potatoReady
                 // lifting a pluck's decay) as quieter, since more of the quiet tail gets past the gate
                 const double change = ps::loudness::ungatedLufs (a.data(), ar.data(), a.size(), sampleRate)
                                     - ps::loudness::ungatedLufs (c.data(), control.right.data(), c.size(), sampleRate);
+                // Invariant 6: the knob's change to the octave balance, for the check against Init's (testFactoryPresets)
+                const auto ea = octaveEnergy (a, ar), ec = octaveEnergy (c, control.right);
+                for (int b = 0; b < numOctaves; ++b)
+                {
+                    res.balance[k][(size_t) b] = (float) (10.0 * std::log10 ((ea[(size_t) b] + 1.0e-20) / (ec[(size_t) b] + 1.0e-20)));
+                    res.levelDb[k][(size_t) b] = (float) (10.0 * std::log10 (ec[(size_t) b] + 1.0e-20));
+                }
                 keep (a);
                 move (1.0f, 0.0f, 24000, offs);
                 keep (swept.render (24000));
@@ -2729,7 +2839,15 @@ namespace potatoReady
 
         const ps::presets::Preset& preset;
         PresetRig swept, control;
-        struct { double worstPeak = -100.0, worstLu = 0.0; std::string worstKnob; std::vector<std::string> failures; } res;
+        static constexpr int numKnobs = ps::params::numChainKnobs + 1;   // and SUPER
+        struct
+        {
+            double worstPeak = -100.0, worstLu = 0.0;
+            std::string worstKnob;
+            std::vector<std::string> failures;
+            // Per knob: the octave bands' change at 1 against 0 (dB), and their level at 0 (dB)
+            std::array<std::array<float, numOctaves>, numKnobs> balance {}, levelDb {};
+        } res;
     };
 }
 
@@ -2737,7 +2855,7 @@ void testFactoryPresets()
 {
     using namespace potatoReady;
     const auto& bank = ps::presets::factory();
-    CHECK (bank.size() == 201 && bank[0].name == "Init", "the factory bank is Init plus 200 presets");
+    CHECK (bank.size() == 221 && bank[0].name == "Init", "the factory bank is Init plus 220 presets");
     std::map<std::string, int> names;
     for (const auto& x : bank)
         ++names[x.name.toStdString()];
@@ -2787,6 +2905,68 @@ void testFactoryPresets()
                 res.worstSweepLu = runs[i]->res.worstLu;
                 res.worstSweepKnob = runs[i]->res.worstKnob;
                 res.failures.insert (res.failures.end(), runs[i]->res.failures.begin(), runs[i]->res.failures.end());
+                res.swept = true;
+                res.balance = runs[i]->res.balance;
+                res.levelDb = runs[i]->res.levelDb;
+            }
+        }
+        // Invariant 6, spectral balance: the octave balance is held to a target tilt (-4.5 dB/oct; SHINE tilts it
+        // up to -3 dB/oct and MASS raises the 63 Hz octave up to 6 dB, the moves they are designed to make). A
+        // knob may move a band freely toward the target, but never more than 3 dB further from it than the preset
+        // already sits: a preset's own colour is kept, and no knob pushes it out of balance. Each spectrum is
+        // fitted to the target by its mean offset. Bands more than 30 dB under the preset's loudest are left out,
+        // where a dB of change is no audible tone move. So is the 125 Hz octave: it straddles the 120 Hz sub
+        // crossover, where the sub and the upper roles' fundamentals overlap and beat, and a 2 s window reads up
+        // to 8 dB there from the beat's phase alone (on Init, each layer alone moves under 1 dB in it with any
+        // knob). The lows have their own checks: loudness and mono lows.
+        for (auto& res : results)
+        {
+            if (! res.swept)
+                continue;
+            for (size_t k = 0; k < res.balance.size(); ++k)
+            {
+                const bool super = k == (size_t) ps::params::numChainKnobs;
+                const float shine = super ? ps::chain::superContribution (ps::chain::shine, 1.0f) : (k == (size_t) ps::chain::shine ? 1.0f : 0.0f);
+                const float mass = super ? ps::chain::superContribution (ps::chain::mass, 1.0f) : (k == (size_t) ps::chain::mass ? 1.0f : 0.0f);
+                const float top = *std::max_element (res.levelDb[k].begin(), res.levelDb[k].end());
+                std::vector<int> bands;
+                for (int b = 0; b < numOctaves; ++b)
+                    if (b != 1 && res.levelDb[k][(size_t) b] > top - 30.0f)
+                        bands.push_back (b);
+                if (bands.size() < 3)
+                    continue;
+                // Distance from the target per band, after removing the mean offset
+                auto distance = [&] (bool moved)
+                {
+                    std::array<double, numOctaves> d {};
+                    double mean = 0.0;
+                    for (int b : bands)
+                    {
+                        const double target = (-4.5 + (moved ? 1.5 * shine : 0.0)) * b + (moved && b == 0 ? 6.0 * mass : 0.0);
+                        d[(size_t) b] = res.levelDb[k][(size_t) b] + (moved ? res.balance[k][(size_t) b] : 0.0f) - target;
+                        mean += d[(size_t) b];
+                    }
+                    mean /= (double) bands.size();
+                    for (int b : bands)
+                        d[(size_t) b] = std::abs (d[(size_t) b] - mean);
+                    return d;
+                };
+                const auto before = distance (false), after = distance (true);
+                double worst = 0.0;
+                int worstBand = 0;
+                for (int b : bands)
+                    if (after[(size_t) b] - before[(size_t) b] > worst)
+                    {
+                        worst = after[(size_t) b] - before[(size_t) b];
+                        worstBand = b;
+                    }
+                if (worst > 3.0)
+                {
+                    const std::string name = super ? "SUPER" : ps::params::chainKnobNames[k];
+                    res.failures.push_back (name + " pushes the " + std::to_string ((int) (62.5 * std::pow (2.0, worstBand))) + " Hz octave "
+                                            + std::to_string (worst) + " dB further from the target tilt (" + std::to_string (before[(size_t) worstBand])
+                                            + " -> " + std::to_string (after[(size_t) worstBand]) + " dB off)");
+                }
             }
         }
     }
@@ -2800,7 +2980,7 @@ void testFactoryPresets()
         if (calibrate.isNotEmpty())
         {
             // Capped where the layers can't go higher, so a preset that can't get louder doesn't keep climbing
-            const float trim = juce::jmin (18.0f, ps::presets::trimDb (preset.name) + (float) (targetLufs (preset.category) - res.lufs));
+            const float trim = juce::jmin (ps::params::masterDefaultDb + 22.0f, ps::presets::trimDb (preset.name) + (float) (targetLufs (preset.category) - res.lufs));
             trims << "{ \"" << preset.name << "\", " << juce::String (trim, 2) << "f },\n";
             continue;
         }
@@ -2882,11 +3062,43 @@ void testPumpPunchThrough()
                                                      + std::to_string (level[1] - level[0]) + " LU at full GROOVE)");
 }
 
+// Mute and solo: a muted layer is silent, a solo leaves only the soloed layers, and both fade over the layer's
+// 20 ms level ramp without a click
+void testLayerMuteSolo()
+{
+    std::vector<float> reference;
+    {
+        StackRig rig;
+        for (int l = 0; l < 4; ++l)
+            if (l != 2)
+                rig.set (ps::params::layerLevel (l), -60.0f);
+        reference = rig.render (24000, StackRig::chord());
+    }
+    StackRig rig;
+    rig.set (ps::params::layerSolo (2), 1.0f);
+    const auto soloed = rig.render (24000, StackRig::chord());
+    float diff = 0.0f;
+    for (size_t i = 0; i < soloed.size(); ++i)
+        diff = std::max (diff, std::abs (soloed[i] - reference[i]));
+    CHECK (diff < 1.0e-4f, "solo on the Mid plays the Mid alone (" + std::to_string (diff) + ")");
+
+    rig.set (ps::params::layerSolo (2), 0.0f);
+    const auto all = rig.render (24000);
+    for (int l = 0; l < 4; ++l)
+        rig.set (ps::params::layerMute (l), 1.0f);
+    const auto fade = rig.render (4800);
+    const auto silent = rig.render (4800);
+    const float steady = maxStep (std::vector<float> (all.end() - 4800, all.end()));
+    CHECK (rms (silent, 0, silent.size()) < 1.0e-5f, "muting every layer silences the stack");
+    CHECK (maxStep (fade) <= steady * 1.2f, "muting fades without a click (" + std::to_string (maxStep (fade) / steady) + "x the steady step)");
+}
+
 // Loading a preset puts back every parameter it doesn't set, and Init sounds like a fresh instance
 void testPresetLoading()
 {
     const auto& bank = ps::presets::factory();
     Rig fresh (false), loaded (false);
+    fresh.set (ps::params::master, ps::params::masterDefaultDb);   // Rig starts at unity master
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         const char* engines[] = { "sub", "dirt", "jp", "spectral", "", "", "", "" };
@@ -4023,6 +4235,7 @@ int main()
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_PRESETS_ONLY", {}).isNotEmpty())
     {
         testPresetLoading();
+    testLayerMuteSolo();
         testPressureAfterPause();
         testPumpPunchThrough();
         testFactoryPresets();
@@ -4031,6 +4244,9 @@ int main()
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_MASTER_ONLY", {}).isNotEmpty())
     {
         testMasterChain();
+        testOttUpwardTaper();
+        testPressureBypassFade();
+        testBuildStageExit();
         testSubDuck();
         testInserts();
         benchmarkInserts();
@@ -4130,10 +4346,14 @@ int main()
     testBeatCeiling();
     testBloomIsRepeatable();
     testMasterChain();
+    testOttUpwardTaper();
+    testPressureBypassFade();
+    testBuildStageExit();
     testSubDuck();
     testInserts();
     testMixHealth();
     testPresetLoading();
+    testLayerMuteSolo();
     testPressureAfterPause();
     testPumpPunchThrough();
     testFactoryPresets();

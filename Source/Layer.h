@@ -205,6 +205,9 @@ public:
 
     // The patch's own level and the chain knobs' extra gain, for the Harmony Engine's loudness model
     float patchGain() const noexcept { return targetPatchGain(); }
+    // Mute / solo (Params.h), resolved across the stack by the processor once per block. The layer fades out over
+    // its 20 ms level ramp, like a level move.
+    void setMonitorMuted (bool muted) noexcept { monitorMuted = muted; }
     float knobGain() const noexcept  { return juce::Decibels::decibelsToGain (chainLevelDb); }
     // K-weighted power of this layer at unity gain (after its band limit), averaged over 400 ms
     float measuredPower() const noexcept { return meter.getPower(); }
@@ -913,7 +916,7 @@ private:
     float targetPatchGain() const
     {
         const float db = load (params.levelDb, 0.0f);
-        return db <= -59.9f ? 0.0f : juce::Decibels::decibelsToGain (db);
+        return db <= -59.9f || monitorMuted ? 0.0f : juce::Decibels::decibelsToGain (db);
     }
 
     // A muted layer stays muted whatever the knobs do
@@ -1083,6 +1086,7 @@ private:
     bool slotsSent = false;
     bool voicesClearedWhileMuted = false;
     juce::SmoothedValue<float> level { 1.0f }, panL { 1.0f }, panR { 1.0f };
+    bool monitorMuted = false;
     std::atomic<float> tune { 0.0f };   // semitones; written by the audio thread, read when a new engine is prepared
     AdsrSettings adsr, filterAdsr;
     RoleBandLimit band;

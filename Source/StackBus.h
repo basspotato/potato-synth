@@ -249,9 +249,11 @@ public:
 
     static float totalReductionDb (float u) noexcept { return 12.0f * std::pow (u, 1.3f); }
 
-    void prepare (double sampleRate)
+    void prepare (double sampleRate, int maxBlock)
     {
         sr = (float) sampleRate;
+        dryL.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
+        dryR.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
         for (int ch = 0; ch < 2; ++ch)
         {
             for (int b = 0; b < 2; ++b)
@@ -275,6 +277,7 @@ public:
         glueShortTerm.reset();
         glueGainDb = 0.0f;
         amount = 0.0f;
+        fade = 0.0f;
     }
 
     // GROOVE: lock = 0..1 moves the OTT releases toward a 1/16 note and the glue's toward a 1/8 note, so the
@@ -286,22 +289,42 @@ public:
     }
 
     // u: the PRESSURE knob 0..1, glided over 30 ms. Returns false when the stage is fully out and settled.
+    // The stage crossfades in and out from the dry signal over 20 ms: its band split shifts the phase, so even at
+    // no compression a hard switch steps the waveform.
     bool process (float* left, float* right, int numSamples, float u) noexcept
     {
         const float target = juce::jlimit (0.0f, 1.0f, u);
-        trackLevel (left, right, numSamples);
-        amount += (target - amount) * (1.0f - std::exp (-(float) numSamples / (0.03f * sr)));
-        if (target < 1.0e-4f && amount < 1.0e-4f)
+        const bool wanted = target >= 1.0e-4f || amount >= 1.0e-4f;
+        if (! wanted && fade <= 0.0f)
         {
             if (wasActive)
                 reset();
             wasActive = false;
+            trackLevel (left, right, numSamples);
+            amount += (target - amount) * (1.0f - std::exp (-(float) numSamples / (0.03f * sr)));
             return false;
         }
         wasActive = true;
-        const float g = totalReductionDb (amount);
-        ott (left, right, numSamples, 0.55f * g / 12.0f);
-        glue (left, right, numSamples, 0.2f * g);
+        const float fadeStep = 1.0f / (0.02f * sr);
+        for (int pos = 0; pos < numSamples; pos += (int) dryL.size())
+        {
+            const int n = juce::jmin ((int) dryL.size(), numSamples - pos);
+            float* l = left + pos;
+            float* r = right + pos;
+            std::copy_n (l, n, dryL.data());
+            std::copy_n (r, n, dryR.data());
+            trackLevel (l, r, n);
+            amount += (target - amount) * (1.0f - std::exp (-(float) n / (0.03f * sr)));
+            const float g = totalReductionDb (amount);
+            ott (l, r, n, 0.55f * g / 12.0f);
+            glue (l, r, n, 0.2f * g);
+            for (int i = 0; i < n; ++i)
+            {
+                fade = juce::jlimit (0.0f, 1.0f, fade + (wanted ? fadeStep : -fadeStep));
+                l[i] = dryL[(size_t) i] + (l[i] - dryL[(size_t) i]) * fade;
+                r[i] = dryR[(size_t) i] + (r[i] - dryR[(size_t) i]) * fade;
+            }
+        }
         return true;
     }
 
@@ -324,10 +347,8 @@ public:
     // (its band split changes the phase, so a hard switch would click). Bypassed and reset once out.
     void prepareMaster (double sampleRate, int maxBlock)
     {
-        prepare (sampleRate);
+        prepare (sampleRate, maxBlock);
         followLevel = false;
-        dryL.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
-        dryR.assign ((size_t) juce::jmax (1, maxBlock), 0.0f);
     }
 
     bool processMaster (float* left, float* right, int numSamples, float ottDepth, float timeScale, float upward,
@@ -370,11 +391,11 @@ public:
     }
 
 private:
-    float masterOtt = 0.0f, masterGlue = 0.0f, masterFade = 0.0f;
+    float masterOtt = 0.0f, masterGlue = 0.0f, masterFade = 0.0f, fade = 0.0f;
     bool followLevel = true;
     std::vector<float> dryL, dryR;
     // OTT: 3 bands (LR4 at 88 Hz and 2.5 kHz), each compressed downward above -22 dB (4:1) and upward below
-    // -40 dB (3:1, at most +12 dB, never below -70 dB, so silence isn't pumped up), all thresholds moved by
+    // -40 dB (3:1, at most +12 dB, tapering to none at -70 dB, so silence isn't pumped up), all thresholds moved by
     // levelShiftDb(). depth scales the gain in dB.
     void ott (float* left, float* right, int n, float depth, float timeScale = 1.0f, float upward = 1.0f) noexcept
     {
@@ -413,7 +434,10 @@ private:
                 if (db > downDb)
                     gainDb = (downDb - db) * 0.75f;
                 else if (db < upDb && db > gateDb)
-                    gainDb = upward * std::min (12.0f, (upDb - db) * (2.0f / 3.0f));
+                    // The lift tapers back to 0 dB at the gate (1:2 expansion from 12 dB above it), so a tail
+                    // crossing the gate fades into silence: a hard gate would switch 12 dB on and off as a noisy
+                    // tail's envelope wanders across it, and crackle
+                    gainDb = upward * std::min ({ 12.0f, (upDb - db) * (2.0f / 3.0f), db - gateDb });
                 const float gain = std::exp2 (gainDb * depth * (1.0f / 6.0206f));
                 outL += band[b][0] * gain;
                 outR += band[b][1] * gain;
@@ -678,7 +702,7 @@ public:
             f.reset();
         glide = 0.0;
         phases.fill (0.0);
-        amount = 0.0f;
+        amount = hpMix = 0.0f;
         cutoffG = tptGain (lowestHz, sr);
     }
 
@@ -712,8 +736,12 @@ public:
                 inc[(size_t) k] = f / sr;
             }
             const float riserGain = 0.25f * a * a * levelAmp;
+            // The high-pass blends in over the first 5 % of the build and out over the last: even at 20 Hz it
+            // shifts a bass note's phase, so switching it in or out would step the waveform
+            const float hpTo = std::min (1.0f, 20.0f * a), hpStep = (hpTo - hpMix) / (float) (end - start);
             for (int i = start; i < end; ++i)
             {
+                hpMix += hpStep;
                 float riser = 0.0f;
                 for (int k = 0; k < numPartials; ++k)
                 {
@@ -727,7 +755,7 @@ public:
                 for (int ch = 0; ch < 2; ++ch)
                 {
                     const float x = highPass[(size_t) ch].process (io[ch][i], cutoffG, juce::MathConstants<float>::sqrt2).high;
-                    io[ch][i] = x + riserGain * riser;
+                    io[ch][i] += hpMix * (x - io[ch][i]) + riserGain * riser;
                 }
             }
             glide += octavesPerSample * (end - start);
@@ -746,7 +774,7 @@ private:
     std::array<ZdfSvf, 2> highPass {};
     std::array<double, numPartials> phases {};
     double glide = 0.0;
-    float sr = 48000.0f, amount = 0.0f, cutoffG = 0.001f;
+    float sr = 48000.0f, amount = 0.0f, cutoffG = 0.001f, hpMix = 0.0f;
 };
 
 // GROOVE's tempo pump, the sidechain duck of a four-on-the-floor kick: on every beat the gain falls over 4 ms

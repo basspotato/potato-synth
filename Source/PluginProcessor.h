@@ -127,6 +127,7 @@ private:
     std::atomic<float>* padX = nullptr;
     std::atomic<float>* padY = nullptr;
     std::array<std::atomic<float>*, ps::params::numLayers> anchors {};
+    std::array<std::atomic<float>*, ps::params::numLayers> mutes {}, solos {};   // monitoring (Params.h)
     float padXSmoothed = 0.5f, padYSmoothed = 0.5f, superSmoothed = 0.0f;
     std::atomic<float>* dropButton = nullptr;
     Performance performance;

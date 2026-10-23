@@ -57,7 +57,11 @@ PotatoSynthProcessor::PotatoSynthProcessor()
         masterParams = { raw (p::ottAmount), raw (p::ottTime), raw (p::ottUpward), raw (p::glueAmount), raw (p::glueRelease), raw (p::stackWidth), raw (p::subDuck) };
     }
     for (int i = 0; i < ps::params::numLayers; ++i)
+    {
         anchors[(size_t) i] = apvts.getRawParameterValue (ps::params::layerAnchor (i).getParamID());
+        mutes[(size_t) i] = apvts.getRawParameterValue (ps::params::layerMute (i).getParamID());
+        solos[(size_t) i] = apvts.getRawParameterValue (ps::params::layerSolo (i).getParamID());
+    }
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         namespace p = ps::params;
@@ -118,7 +122,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
     mixHealth.prepare (sampleRate);
     lowFocus.prepare (sampleRate);
     bassHarmonics.prepare (sampleRate);
-    pressure.prepare (sampleRate);
+    pressure.prepare (sampleRate, samplesPerBlock);
     masterDynamics.prepareMaster (sampleRate, samplesPerBlock);
     busWidth.prepare (sampleRate);
     tilt.prepare (sampleRate);
@@ -364,6 +368,13 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         noteGenerator.process (played, generatedMidi, n, bpm, ppq, s);
     }
     stack.setLowDuck (masterParams.subDuck->load() * 0.01f);
+    {
+        bool anySolo = false;
+        for (auto* solo : solos)
+            anySolo = anySolo || solo->load() > 0.5f;
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            stack.layer (i).setMonitorMuted (mutes[(size_t) i]->load() > 0.5f || (anySolo && solos[(size_t) i]->load() < 0.5f));
+    }
     stack.process (buffer, generatedMidi);
 
     // Stack sum with sqrt-weights: the layers are scaled by 1 / sqrt(n), n the number of layers counted by

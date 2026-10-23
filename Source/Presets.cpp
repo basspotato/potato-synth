@@ -529,7 +529,37 @@ namespace
         float gate, swing;
         int sound;             // 0 pluck saw, 1 genome body, 2 FM, 3 dirt bass, 4 supersaw
         float delay;
+        NoteGenerator::Mode mode = NoteGenerator::Mode::arp;
+        // The step pattern, one token per step (empty keeps the default 16 even steps): a note offset in
+        // semitones (the arp ignores it), "-" a rest, "_" a tie. Suffixes: "!" accent, "?" plays half the
+        // time, "x2".."x4" ratchet. With accents in the pattern the other steps play softer.
+        const char* pattern = "";
     };
+
+    std::vector<NoteGenerator::Step> parseSteps (const char* pattern)
+    {
+        const auto tokens = juce::StringArray::fromTokens (pattern, " ", {});
+        const bool accents = juce::String (pattern).containsChar ('!');
+        std::vector<NoteGenerator::Step> steps;
+        for (auto t : tokens)
+        {
+            NoteGenerator::Step st;
+            st.velocity = accents && ! t.containsChar ('!') ? 0.75f : 1.0f;
+            if (t.containsChar ('?'))
+                st.probability = 0.5f;
+            if (const int x = t.indexOfChar ('x'); x > 0)
+                st.ratchet = t.substring (x + 1).getIntValue();
+            t = t.removeCharacters ("!?").upToFirstOccurrenceOf ("x", false, false);
+            if (t == "-")
+                st.on = false;
+            else if (t == "_")
+                st.tie = true;
+            else
+                st.offset = t.getIntValue();
+            steps.push_back (st);
+        }
+        return steps;
+    }
 
     Preset arp (const ArpRow& r)
     {
@@ -550,12 +580,18 @@ namespace
         specLayer (x, air, Role::air, { 8, 0, 0.2f, 2.0f });
         level (x, air, -12.0f);
         ampAll (x, 1.0f, 350.0f, 20.0f, 250.0f);
-        x.set (p::arpMode, 1.0f).set (p::arpRate, (float) r.rate).set (p::arpDirection, (float) r.direction)
+        x.set (p::arpMode, (float) (int) r.mode).set (p::arpRate, (float) r.rate).set (p::arpDirection, (float) r.direction)
          .set (p::arpOctaves, (float) r.octaves).set (p::arpGate, r.gate).set (p::arpSwing, r.swing);
+        if (*r.pattern != 0)
+        {
+            x.steps = parseSteps (r.pattern);
+            x.set (p::arpLength, (float) x.steps.size());
+        }
         space (x, 20.0f, 2.0f, r.delay, 6, 40.0f);
         return x;
     }
 
+    constexpr auto seqMode = NoteGenerator::Mode::seq, arpMode = NoteGenerator::Mode::arp;
     const ArpRow arpRows[] = {
         { "Mash Arp",          2, 0, 2, 60.0f, 0.0f,  0, 25.0f },
         { "Trance Runner",     2, 2, 3, 50.0f, 0.0f,  0, 30.0f },
@@ -577,6 +613,28 @@ namespace
         { "Hyper Arp",         1, 2, 4, 40.0f, 0.0f,  0, 25.0f },
         { "Garage Skip",       2, 0, 2, 55.0f, 45.0f, 2, 20.0f },
         { "Anthem Arp",        2, 2, 2, 60.0f, 0.0f,  4, 25.0f },
+        // Arps on a step pattern: accents, ghost notes, ties, rests and ratchets
+        { "Accent Arp",        2, 0, 2, 55.0f, 0.0f,  0, 25.0f, arpMode, "0! 0 0 0! 0 0 0! 0" },
+        { "Ratchet Run",       2, 2, 2, 50.0f, 0.0f,  4, 20.0f, arpMode, "0 0 0x2 0 0 0x3 0 0x2" },
+        { "Ghost Note Arp",    2, 0, 3, 45.0f, 15.0f, 1, 30.0f, arpMode, "0! 0? 0 0? 0! 0? 0 0?" },
+        { "Tied Pulse",        5, 0, 1, 90.0f, 0.0f,  4, 20.0f, arpMode, "0 _ 0 _ 0 0 _ 0" },
+        { "Broken Chords",     2, 4, 2, 60.0f, 0.0f,  2, 25.0f, arpMode, "0 - 0 0 - 0 0 -" },
+        { "Gallop Arp",        1, 0, 2, 50.0f, 0.0f,  0, 20.0f, arpMode, "0! 0 0" },
+        { "Stutter Chords",    2, 5, 1, 40.0f, 0.0f,  4, 15.0f, arpMode, "0! - 0 - 0x2 - 0 0" },
+        { "Probability Rain",  2, 3, 4, 40.0f, 0.0f,  1, 35.0f, arpMode, "0? 0? 0? 0! 0? 0? 0? 0?" },
+        // Step sequences, played from the last held key
+        { "Acid Line",         2, 0, 1, 50.0f, 0.0f,  3, 10.0f, seqMode, "0! 0 12 0 0! 3 0 15 0! 0 10 0 0! 7 _ 12" },
+        { "Offbeat House Bass",2, 0, 1, 60.0f, 0.0f,  3, 10.0f, seqMode, "- 0 - 0! - 0 - 12" },
+        { "Trance Gate Seq",   2, 0, 1, 55.0f, 0.0f,  4, 25.0f, seqMode, "0 0 12 0 0 7 0 12 0 0 12 0 5 7 0 12" },
+        { "Minor Melody Seq",  2, 0, 1, 70.0f, 0.0f,  0, 30.0f, seqMode, "0 3 7 10 12 10 7 3" },
+        { "Rolling Bass Seq",  2, 0, 1, 45.0f, 0.0f,  3, 10.0f, seqMode, "0! 0 0 0 0! 0 7 0" },
+        { "Octave Bounce",     2, 0, 1, 50.0f, 0.0f,  0, 20.0f, seqMode, "0! 12 0 12 0! 12 0 12x2" },
+        { "Pentatonic Run",    1, 0, 1, 50.0f, 0.0f,  1, 30.0f, seqMode, "0 3 5 7 10 12 15 17 19 17 15 12" },
+        { "Dub Echo Seq",      5, 0, 1, 40.0f, 0.0f,  2, 45.0f, seqMode, "0! - - 0 - - 7 -" },
+        { "Funk Slap Seq",     2, 0, 1, 45.0f, 30.0f, 3, 10.0f, seqMode, "0! - 12 0 - 10 - 0! 7 - 0 - 12 10 7 5" },
+        { "Arcade Seq",        1, 0, 1, 50.0f, 0.0f,  2, 20.0f, seqMode, "0 12 7 12 0 12 7 19" },
+        { "Dark Techno Seq",   2, 0, 1, 50.0f, 0.0f,  3, 15.0f, seqMode, "0! 0 1 0 0! 0 -2 0" },
+        { "Euphoric Climb",    2, 0, 1, 60.0f, 0.0f,  4, 25.0f, seqMode, "0 2 3 5 7 8 10 12 14 15 17 19 20 22 24 _" },
     };
 
     // ==== FX / Riser / Impact ================================================================================
@@ -662,9 +720,11 @@ namespace
     // Master takes the trim up to its +6 dB top; the rest raises every layer the preset uses
     void applyTrim (Preset& x)
     {
+        // The master stays at unity or under (10 dB over its default); a preset that needs more gets it in its layers
+        constexpr float ceiling = p::masterDefaultDb + 10.0f;
         const float db = trimDb (x.name);
-        x.set (p::master, juce::jmin (6.0f, db));
-        if (db <= 6.0f)
+        x.set (p::master, juce::jmin (ceiling, db));
+        if (db <= ceiling)
             return;
         for (int l = 0; l < p::numLayers; ++l)
         {
@@ -674,7 +734,7 @@ namespace
             for (const auto& [id, v] : x.values)
                 if (id == p::layerLevel (l).getParamID())
                     current = v;
-            level (x, l, juce::jmin (6.0f, current + db - 6.0f));
+            level (x, l, juce::jmin (6.0f, current + db - ceiling));
         }
     }
 }
