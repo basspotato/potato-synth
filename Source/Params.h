@@ -11,9 +11,9 @@ namespace ps::params
     // 9: the arpeggiator / step sequencer and the mod step lanes (their steps saved as "Steps" and "Lanes" children).
     // 10: HOLD, the main page's CUTOFF and RESO, pitch bend / MPE, mod wheel and aftertouch.
     // 11: layers 5-8. 12: the master chain (OTT, glue, width), Sub Duck and the layers' insert slots.
-    // 13: layer mute and solo. 14: XY pad mode (Mix / Snapshot).
+    // 13: layer mute and solo. 14: XY pad mode (Mix / Snapshot). 15: layer key and velocity zones.
     // Parameters missing from an older save load at their defaults.
-    inline constexpr int stateVersion = 14;
+    inline constexpr int stateVersion = 15;
 
     inline const juce::ParameterID master { "master", 1 };
     inline const juce::ParameterID crossoverLow { "xover_low", 4 };
@@ -118,6 +118,13 @@ namespace ps::params
     // Monitoring while designing a sound: a muted layer is silent; while any layer is soloed, only soloed ones sound
     inline juce::ParameterID layerMute (int i)    { return layerParam (i, "mute", 13); }
     inline juce::ParameterID layerSolo (int i)    { return layerParam (i, "solo", 13); }
+    // Key and velocity zones (Layer.h): the layer plays notes from lo to hi, fading in over `fade` outside them
+    inline juce::ParameterID layerKeyLow (int i)  { return layerParam (i, "key_lo", 15); }
+    inline juce::ParameterID layerKeyHigh (int i) { return layerParam (i, "key_hi", 15); }
+    inline juce::ParameterID layerKeyFade (int i) { return layerParam (i, "key_fade", 15); }
+    inline juce::ParameterID layerVelLow (int i)  { return layerParam (i, "vel_lo", 15); }
+    inline juce::ParameterID layerVelHigh (int i) { return layerParam (i, "vel_hi", 15); }
+    inline juce::ParameterID layerVelFade (int i) { return layerParam (i, "vel_fade", 15); }
     // Per-layer filter (per voice, its own envelope) and drive (Layer.h)
     inline juce::ParameterID layerFilterType (int i)    { return layerParam (i, "flt_type", 8); }
     inline juce::ParameterID layerCutoff (int i)        { return layerParam (i, "flt_cutoff", 8); }
@@ -391,6 +398,15 @@ namespace ps::params
             layout.add (std::make_unique<Float> (layerGlide (i), role + " Glide", detail::timeRange (0.0f, 5000.0f, 250.0f), 0.0f,
                 detail::msAttributes().withStringFromValueFunction ([] (float v, int) {
                     return v < 0.05f ? juce::String ("OFF") : detail::formatMs (v); })));
+            {
+                auto noteName = [] (int v, int) { return juce::MidiMessage::getMidiNoteName (v, true, true, 3); };
+                layout.add (std::make_unique<Int> (layerKeyLow (i), role + " Key Low", 0, 127, 0, juce::AudioParameterIntAttributes().withStringFromValueFunction (noteName)));
+                layout.add (std::make_unique<Int> (layerKeyHigh (i), role + " Key High", 0, 127, 127, juce::AudioParameterIntAttributes().withStringFromValueFunction (noteName)));
+                layout.add (std::make_unique<Int> (layerKeyFade (i), role + " Key Fade", 0, 24, 0, juce::AudioParameterIntAttributes().withLabel ("st")));
+                layout.add (std::make_unique<Int> (layerVelLow (i), role + " Velocity Low", 1, 127, 1));
+                layout.add (std::make_unique<Int> (layerVelHigh (i), role + " Velocity High", 1, 127, 127));
+                layout.add (std::make_unique<Int> (layerVelFade (i), role + " Velocity Fade", 0, 64, 0));
+            }
         }
 
         return layout;

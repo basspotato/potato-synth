@@ -91,6 +91,12 @@ PotatoSynthProcessor::PotatoSynthProcessor()
                 ip.controls[(size_t) c] = via (p::layerInsertControl (i, k, c));
         }
         lp.insertSwap = via (p::layerInsertSwap (i));
+        lp.keyLow = raw (p::layerKeyLow (i));
+        lp.keyHigh = raw (p::layerKeyHigh (i));
+        lp.keyFade = raw (p::layerKeyFade (i));
+        lp.velLow = raw (p::layerVelLow (i));
+        lp.velHigh = raw (p::layerVelHigh (i));
+        lp.velFade = raw (p::layerVelFade (i));
         stack.layer (i).setParameters (lp);
         for (int k = 0; k < p::numEngineSlots; ++k)
             stack.layer (i).setSlotParameter (k, via (p::layerSlot (i, k), true));

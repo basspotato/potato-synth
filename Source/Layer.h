@@ -50,6 +50,9 @@ struct LayerParams
     struct InsertParams { std::atomic<float>* type = nullptr; std::atomic<float>* amount = nullptr; std::array<std::atomic<float>*, 3> controls {}; };
     std::array<InsertParams, 2> inserts {};
     std::atomic<float>* insertSwap = nullptr;
+    // Key and velocity zones: MIDI note / velocity (1-127) ranges and their fades
+    std::atomic<float>* keyLow = nullptr, *keyHigh = nullptr, *keyFade = nullptr;
+    std::atomic<float>* velLow = nullptr, *velHigh = nullptr, *velFade = nullptr;
 };
 
 // One slot of the stack: an engine plus its per-layer controls.
@@ -113,6 +116,9 @@ public:
         startOrder.assign ((size_t) voices, 0);
         envelopes.assign ((size_t) voices, {});
         outgoingEnvelopes.assign ((size_t) voices, {});
+        zones.assign ((size_t) voices, {});
+        outgoingZones.assign ((size_t) voices, {});
+        zoneCoef = 1.0f - std::exp (-1.0f / (0.005f * (float) sr));
         voiceFilters.assign ((size_t) voices, {});
         outgoingFilters.assign ((size_t) voices, {});
         filterType = currentFilterType();
@@ -347,6 +353,7 @@ public:
                     {
                         outgoingEnvelopes[(size_t) v] = envelopes[(size_t) v];
                         outgoingEnvelopes[(size_t) v].steal();
+                        outgoingZones[(size_t) v] = zones[(size_t) v];
                         envelopes[(size_t) v].reset();
                         outgoingFilters[(size_t) v] = voiceFilters[(size_t) v];
                         voiceFilters[(size_t) v].reset();
@@ -393,6 +400,10 @@ public:
     {
         if (! canPlay())
             return;
+        // Outside the layer's zones the note doesn't reach it at all
+        const float zone = zoneGain (note, velocity);
+        if (zone <= 0.0f)
+            return;
 
         duck.trigger();
         if (! anyVoiceSounding())
@@ -402,6 +413,7 @@ public:
             enforceVoiceCap (slot);
             startOrder[(size_t) slot] = order;
             pushExpression (*active, slot, slot);
+            setZone (zones[(size_t) slot], zone, envelopes[(size_t) slot].isActive());
             active->noteOn (slot, { note, velocity, glideSeconds(), lastNote, false, fixedPhaseRole() });
             voiceFilters[(size_t) slot].start (note, envelopes[(size_t) slot].isActive());
             envelopes[(size_t) slot].trigger();
@@ -412,7 +424,7 @@ public:
             const bool keyAlreadyHeld = numMonoNotes > 0;
             if (numMonoNotes == (int) monoNotes.size())
                 removeMonoNote (monoNotes[0].slot);   // more held keys than slots: forget the oldest
-            monoNotes[(size_t) numMonoNotes++] = { slot, note, velocity };
+            monoNotes[(size_t) numMonoNotes++] = { slot, note, velocity, zone };
             playMono (monoNotes[(size_t) numMonoNotes - 1], keyAlreadyHeld);
         }
         lastNote = (float) note;
@@ -479,9 +491,9 @@ public:
                 pushAllExpression (*e);
 
         if (active != nullptr && ! isMuted())
-            renderVoices (*active, envelopes, voiceFilters, numSamples);
+            renderVoices (*active, envelopes, voiceFilters, zones, numSamples);
 
-        if (outgoing != nullptr && ! renderVoices (*outgoing, outgoingEnvelopes, outgoingFilters, numSamples))
+        if (outgoing != nullptr && ! renderVoices (*outgoing, outgoingEnvelopes, outgoingFilters, outgoingZones, numSamples))
             retireNow (std::exchange (outgoing, nullptr));
         if (filterFade > 0)
             filterFade = std::max (0, filterFade - numSamples);
@@ -790,7 +802,11 @@ private:
     }
 
     // Renders every sounding voice through its filter and envelope into the scratch sum. Returns false once all are silent.
-    bool renderVoices (Engine& e, std::vector<AmpEnvelope>& envs, std::vector<VoiceFilter>& filters, int numSamples)
+    // A voice's zone gain glides (5 ms) when a legato or retriggered note moves it; a fresh voice starts on it
+    struct VoiceZone { float gain = 1.0f, target = 1.0f; };
+
+    bool renderVoices (Engine& e, std::vector<AmpEnvelope>& envs, std::vector<VoiceFilter>& filters, std::vector<VoiceZone>& voiceZones,
+                       int numSamples)
     {
         e.beginBlock (numSamples);
         bool anySounding = false;
@@ -804,9 +820,11 @@ private:
             std::fill_n (voiceR.data(), numSamples, 0.0f);
             e.render (v, voiceL.data(), voiceR.data(), numSamples);
             filterVoice (filters[(size_t) v], numSamples);
+            auto& zone = voiceZones[(size_t) v];
             for (int i = 0; i < numSamples; ++i)
             {
-                const float g = env.next (adsr);
+                zone.gain += (zone.target - zone.gain) * zoneCoef;
+                const float g = env.next (adsr) * zone.gain;
                 scratchL[(size_t) i] += voiceL[(size_t) i] * g;
                 scratchR[(size_t) i] += voiceR[(size_t) i] * g;
             }
@@ -843,7 +861,33 @@ private:
         }
     }
 
-    struct MonoNote { int slot = -1, note = 60; float velocity = 1.0f; };
+    struct MonoNote { int slot = -1, note = 60; float velocity = 1.0f, zone = 1.0f; };
+
+    static void setZone (VoiceZone& z, float gain, bool sounding) noexcept
+    {
+        z.target = gain;
+        if (! sounding)
+            z.gain = gain;
+    }
+
+    // 1 inside the key and velocity ranges, falling along a quarter sine to 0 over `fade` steps outside them
+    float zoneGain (int note, float velocity) const noexcept
+    {
+        auto edge = [] (int x, int lo, int hi, int fade)
+        {
+            if (lo > hi)
+                std::swap (lo, hi);
+            const int d = x < lo ? lo - x : (x > hi ? x - hi : 0);
+            if (d == 0)
+                return 1.0f;
+            const float t = 1.0f - (float) d / (float) (fade + 1);
+            return t <= 0.0f ? 0.0f : std::sin (t * juce::MathConstants<float>::halfPi);
+        };
+        auto read = [] (const std::atomic<float>* p, float fallback) { return juce::roundToInt (load (p, fallback)); };
+        const int vel = juce::jlimit (1, 127, juce::roundToInt (velocity * 127.0f));
+        return edge (note, read (params.keyLow, 0.0f), read (params.keyHigh, 127.0f), read (params.keyFade, 0.0f))
+             * edge (vel, read (params.velLow, 1.0f), read (params.velHigh, 127.0f), read (params.velFade, 0.0f));
+    }
 
     void playMono (const MonoNote& n, bool keyAlreadyHeld)
     {
@@ -853,6 +897,7 @@ private:
         const bool glide = mode == params::VoiceMode::mono || legatoMove;
 
         pushExpression (*active, 0, n.slot);
+        setZone (zones[0], n.zone, sounding);
         active->noteOn (0, { n.note, n.velocity, glide ? glideSeconds() : 0.0, lastNote, legatoMove, fixedPhaseRole() });
         if (! legatoMove)
         {
@@ -1091,6 +1136,8 @@ private:
     AdsrSettings adsr, filterAdsr;
     RoleBandLimit band;
     std::vector<AmpEnvelope> envelopes, outgoingEnvelopes;
+    std::vector<VoiceZone> zones, outgoingZones;
+    float zoneCoef = 0.004f;
     std::vector<VoiceFilter> voiceFilters, outgoingFilters;
     params::FilterType filterType = params::FilterType::off, previousFilterType = params::FilterType::off;
     int filterFade = 0;

@@ -3108,6 +3108,47 @@ void testLayerMuteSolo()
     CHECK (maxStep (fade) <= steady * 1.2f, "muting fades without a click (" + std::to_string (maxStep (fade) / steady) + "x the steady step)");
 }
 
+// Key and velocity zones: a layer plays only the notes and velocities in its ranges, fading in along a quarter sine
+// over the fade steps outside them; out-of-zone notes never reach it, so a mono layer keeps its own note
+void testLayerZones()
+{
+    namespace p = ps::params;
+    auto levelOf = [] (std::initializer_list<std::pair<juce::ParameterID, float>> settings, int note, float velocity)
+    {
+        Rig rig;
+        for (auto& [id, v] : settings)
+            rig.set (id, v);
+        const auto x = rig.render (24000, { { 0, on (note, velocity) } });
+        return rms (x, 12000, 24000);
+    };
+    const float inside = levelOf ({ { p::layerKeyLow (2), 60.0f }, { p::layerKeyHigh (2), 72.0f } }, 64, 0.8f);
+    const float plain = levelOf ({}, 64, 0.8f);
+    CHECK (std::abs (inside / plain - 1.0f) < 1.0e-3f, "a note inside the key zone plays at full level");
+    CHECK (levelOf ({ { p::layerKeyLow (2), 60.0f }, { p::layerKeyHigh (2), 72.0f } }, 57, 0.8f) < 1.0e-6f, "a note below the key zone is silent");
+    CHECK (levelOf ({ { p::layerKeyLow (2), 60.0f }, { p::layerKeyHigh (2), 72.0f } }, 76, 0.8f) < 1.0e-6f, "a note above the key zone is silent");
+    {
+        // Two semitones into a 4-semitone fade: sin ((1 - 2/5) pi/2)
+        const float faded = levelOf ({ { p::layerKeyLow (2), 60.0f }, { p::layerKeyFade (2), 4.0f } }, 58, 0.8f)
+                          / levelOf ({}, 58, 0.8f);
+        const float expected = std::sin (0.6f * juce::MathConstants<float>::halfPi);
+        CHECK (std::abs (faded - expected) < 0.01f, "the key fade follows a quarter sine (" + std::to_string (faded) + ", expected " + std::to_string (expected) + ")");
+    }
+    CHECK (levelOf ({ { p::layerVelLow (2), 64.0f } }, 64, 0.3f) < 1.0e-6f, "a soft note under the velocity zone is silent");
+    CHECK (std::abs (levelOf ({ { p::layerVelLow (2), 64.0f } }, 64, 0.8f) / plain - 1.0f) < 1.0e-3f, "a hard note inside the velocity zone plays");
+    {
+        // A legato layer zoned to 60-72 keeps its note while a key outside the zone is pressed and let go
+        Rig rig;
+        rig.set (p::layerVoiceMode (2), (float) p::VoiceMode::legato);
+        rig.set (p::layerKeyLow (2), 60.0f);
+        rig.set (p::layerKeyHigh (2), 72.0f);
+        const auto held = rig.render (24000, { { 0, on (69, 0.8f) } });
+        const auto across = rig.render (24000, { { 0, on (45, 0.8f) }, { 12000, off (45) } });
+        const float steady = maxStep (std::vector<float> (held.begin() + 12000, held.end()));
+        CHECK (std::abs (rms (across, 0, 24000) / rms (held, 12000, 24000) - 1.0f) < 0.01f && maxStep (across) < steady * 1.05f,
+               "an out-of-zone key leaves a legato layer's note alone");
+    }
+}
+
 // XY pad Snapshot mode: a captured corner brings back the sound it was captured from, the pad blends in each
 // parameter's normalised range, an empty corner stands for the live settings, anchored layers stay put, and
 // moving the pad or switching modes never clicks. Corners are saved with the state; a preset clears them.
@@ -4351,6 +4392,7 @@ int main()
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_MORPH_ONLY", {}).isNotEmpty())
     {
         testSnapshotMorph();
+        testLayerZones();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_PRESETS_ONLY", {}).isNotEmpty())
@@ -4358,6 +4400,7 @@ int main()
         testPresetLoading();
         testLayerMuteSolo();
         testSnapshotMorph();
+        testLayerZones();
         testPressureAfterPause();
         testPumpPunchThrough();
         testFactoryPresets();
@@ -4477,6 +4520,7 @@ int main()
     testPresetLoading();
     testLayerMuteSolo();
     testSnapshotMorph();
+    testLayerZones();
     testPressureAfterPause();
     testPumpPunchThrough();
     testFactoryPresets();
