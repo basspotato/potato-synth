@@ -141,13 +141,13 @@ public:
             int count = 0;
             for (int l = 0; l < params::numLayers; ++l)
                 count += (int) ((bits >> l) & 1u);
-            float x = cell.getCentreX() - (float) count * 5.0f + 1.0f;
+            float dotX = cell.getCentreX() - (float) count * 5.0f + 1.0f;
             for (int l = 0; l < params::numLayers; ++l)
                 if ((bits >> l) & 1u)
                 {
                     g.setColour (colourOf (l).withAlpha (glow));
-                    g.fillEllipse (x, labelY + 18.0f, 8.0f, 8.0f);
-                    x += 10.0f;
+                    g.fillEllipse (dotX, labelY + 18.0f, 8.0f, 8.0f);
+                    dotX += 10.0f;
                 }
         }
     }

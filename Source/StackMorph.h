@@ -110,10 +110,11 @@ public:
     {
         float m = mix.load();
         m += ((snapshotMode ? 1.0f : 0.0f) - m) * coef;
-        if (! snapshotMode && m < 1.0e-5f)
+        const bool out = ! snapshotMode && m < 1.0e-5f;
+        if (out)
             m = 0.0f;
         mix.store (m);
-        if (m == 0.0f)
+        if (out)
         {
             for (int i = 0; i < numEntries; ++i)
                 entries[(size_t) i].effective.store (entries[(size_t) i].live->load());
