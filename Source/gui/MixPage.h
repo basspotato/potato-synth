@@ -201,20 +201,27 @@ private:
             listen[(size_t) i].setColour (juce::TextButton::buttonColourId, i == mode ? (i == 0 ? theme::mid : theme::sub) : theme::panel);
             listen[(size_t) i].setAlpha (i == mode ? 1.0f : 0.7f);
         }
-        // Masking lights: on while a band is contended, held 1 s after, then fading over 0.5 s
+        // Masking lights: on while a band is contended, held 1 s after, then fading over 0.5 s. A layer's dot stays
+        // 1 s after it last contended, so the dots settle instead of hopping with every block
         const auto& v = mixHealth.readings();
         for (int b = 0; b < MixHealth::numMaskBands; ++b)
         {
             const uint32_t bits = v.maskedLayers[(size_t) b].load();
-            if (bits != 0)
+            uint32_t shown = 0;
+            for (int l = 0; l < params::numLayers; ++l)
             {
-                maskShown[(size_t) b] = bits;
-                maskGlow[(size_t) b] = 1.0f;
-                maskHold[(size_t) b] = 30;
+                auto& hold = layerHold[(size_t) b][(size_t) l];
+                if ((bits >> l) & 1u)
+                    hold = 30;
+                else if (hold > 0)
+                    --hold;
+                if (hold > 0)
+                    shown |= 1u << l;
             }
-            else if (maskHold[(size_t) b] > 0)
-                --maskHold[(size_t) b];
-            else
+            maskShown[(size_t) b] = shown;
+            if (bits != 0)
+                maskGlow[(size_t) b] = 1.0f;
+            else if (shown == 0)
                 maskGlow[(size_t) b] = std::max (0.0f, maskGlow[(size_t) b] - 1.0f / 15.0f);
         }
         repaint (healthArea());
@@ -233,7 +240,7 @@ private:
     MixHealth& mixHealth;
     std::function<juce::Colour (int)> colourOf;
     std::array<float, MixHealth::numMaskBands> maskGlow {};
-    std::array<int, MixHealth::numMaskBands> maskHold {};
+    std::array<std::array<int, params::numLayers>, MixHealth::numMaskBands> layerHold {};
     std::array<uint32_t, MixHealth::numMaskBands> maskShown {};
     std::array<Knob, 7> knobs;
     std::array<juce::TextButton, 3> listen;
