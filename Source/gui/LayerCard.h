@@ -1,10 +1,11 @@
 #pragma once
 #include "Theme.h"
+#include "../Params.h"
 
 namespace ps
 {
-// One slot in the layer strip: role, band and engine. Clicking the engine name opens the engine menu;
-// clicking anywhere else selects the layer.
+// One slot in the layer strip: role, band, engine, and mute / solo. Clicking the engine name opens the engine
+// menu; clicking anywhere else selects the layer.
 class LayerCard : public juce::Component
 {
 public:
@@ -48,8 +49,34 @@ public:
             callback();
     }
 
-    LayerCard (juce::String roleName, juce::String bandText, juce::Colour roleColour)
-        : role (std::move (roleName)), band (std::move (bandText)), colour (roleColour) {}
+    LayerCard (juce::String roleName, juce::String bandText, juce::Colour roleColour,
+               juce::AudioProcessorValueTreeState& state, int layerIndex)
+        : role (std::move (roleName)), band (std::move (bandText)), colour (roleColour)
+    {
+        for (auto* b : { &mute, &solo })
+        {
+            b->setClickingTogglesState (true);
+            b->setColour (juce::TextButton::buttonColourId, theme::panel);
+            b->setColour (juce::TextButton::textColourOffId, theme::textDim);
+            b->setColour (juce::TextButton::textColourOnId, juce::Colours::black);
+            addAndMakeVisible (*b);
+        }
+        mute.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffff5a5a));
+        solo.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffffd84a));
+        mute.setTooltip ("Mute this layer");
+        solo.setTooltip ("Solo: only soloed layers sound");
+        muteAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (state, params::layerMute (layerIndex).getParamID(), mute);
+        soloAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (state, params::layerSolo (layerIndex).getParamID(), solo);
+    }
+
+    void resized() override
+    {
+        // Left of the LEVEL knob the editor places over the card's right end
+        auto r = getLocalBounds().reduced (10, 8).removeFromTop (20).withTrimmedRight (80);
+        solo.setBounds (r.removeFromRight (24));
+        r.removeFromRight (4);
+        mute.setBounds (r.removeFromRight (24));
+    }
 
     void paint (juce::Graphics& g) override
     {
@@ -92,5 +119,7 @@ private:
     bool selected = false;
     juce::String role, band, engineName;
     juce::Colour colour;
+    juce::TextButton mute { "M" }, solo { "S" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> muteAttachment, soloAttachment;
 };
 }

@@ -46,7 +46,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
 
     for (int i = 0; i < 4; ++i)
     {
-        layers[(size_t) i] = std::make_unique<ps::LayerCard> (roleTitle (i), juce::String(), ps::theme::roleColour (i));
+        layers[(size_t) i] = std::make_unique<ps::LayerCard> (roleTitle (i), juce::String(), ps::theme::roleColour (i), processor.apvts, i);
         addAndMakeVisible (*layers[(size_t) i]);
         layers[(size_t) i]->onSelect = [this, i] { selectLayer (i); showPage (Page::layer); };
         layers[(size_t) i]->onEngineClick = [this, i] { selectLayer (i); showEngineMenu (i); };
