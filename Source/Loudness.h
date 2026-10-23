@@ -47,6 +47,22 @@ inline std::array<Biquad, 2> kWeighting (double sampleRate)
     return f;
 }
 
+// K-weighted energy average (LUFS, no gates) of a stereo signal: what a span adds up to, tails included. Unlike
+// the integrated loudness, a louder tail can only read louder. Returns -inf for silence.
+inline double ungatedLufs (const float* left, const float* right, size_t numSamples, double sampleRate)
+{
+    auto fl = kWeighting (sampleRate), fr = kWeighting (sampleRate);
+    double sum = 0.0;
+    for (size_t i = 0; i < numSamples; ++i)
+    {
+        const double l = fl[1].process (fl[0].process (left[i]));
+        const double r = fr[1].process (fr[0].process (right[i]));
+        sum += l * l + r * r;
+    }
+    return sum > 0.0 ? -0.691 + 10.0 * std::log10 (sum / (double) std::max ((size_t) 1, numSamples))
+                     : -std::numeric_limits<double>::infinity();
+}
+
 // Integrated loudness (LUFS) of a stereo signal with the absolute (-70 LUFS) and relative (-10 LU) gates.
 // Returns -inf for silence.
 inline double integratedLufs (const float* left, const float* right, size_t numSamples, double sampleRate)

@@ -2690,15 +2690,25 @@ namespace potatoReady
                         control.render (blockSize, pos == 0 ? events : std::vector<std::pair<int, juce::MidiMessage>> {});
                     }
                 };
+                // A player releases the keys between strikes; re-striking held notes would test the engines'
+                // legato glide, which depends on what the knob did in between, not the knob's loudness
+                std::vector<std::pair<int, juce::MidiMessage>> offs;
+                for (int n : chordNotes (preset.category))
+                    offs.push_back ({ 0, off (n) });
+                keep (swept.render (24000, offs));
+                control.render (24000, offs);
                 move (0.0f, 1.0f, 96000, chord);
-                keep (swept.render (24000));
-                control.render (24000);
+                keep (swept.render (24000, offs));
+                control.render (24000, offs);
                 const auto a = swept.render (96000, chord);
                 const auto ar = swept.right;
                 const auto c = control.render (96000, chord);
-                const double change = lufs (a, ar, 0, a.size()) - lufs (c, control.right, 0, c.size());
+                // Ungated: the integrated loudness's relative gate reads a longer, louder tail (more reverb, OTT
+                // lifting a pluck's decay) as quieter, since more of the quiet tail gets past the gate
+                const double change = ps::loudness::ungatedLufs (a.data(), ar.data(), a.size(), sampleRate)
+                                    - ps::loudness::ungatedLufs (c.data(), control.right.data(), c.size(), sampleRate);
                 keep (a);
-                move (1.0f, 0.0f, 24000);
+                move (1.0f, 0.0f, 24000, offs);
                 keep (swept.render (24000));
                 control.render (24000);
 
@@ -2847,6 +2857,29 @@ void testPressureAfterPause()
         CHECK (dip > -3.0, "PRESSURE doesn't swell a chord in (strike " + std::to_string (k + 1) + ": first 50 ms "
                                + std::to_string (dip) + " dB against PRESSURE off)");
     }
+}
+
+// GROOVE's pump: a pluck struck on the beat, right in the dip, punches through it and keeps its level (user's
+// pick), while a held chord still pumps (the chain-knob tests check the swing)
+void testPumpPunchThrough()
+{
+    const auto& bank = ps::presets::factory();
+    const ps::presets::Preset* pluck = nullptr;
+    for (const auto& p : bank)
+        if (p.name == "Mash Pluck")
+            pluck = &p;
+    std::array<double, 2> level {};
+    for (int g = 0; g < 2; ++g)
+    {
+        potatoReady::PresetRig rig (*pluck);
+        rig.set (ps::params::chainKnob (ps::chain::groove), (float) g);
+        // Free-running at 120 BPM since prepare: a beat every 24000 samples. Strike on the fourth one.
+        rig.render (96000 - 9 * blockSize);
+        const auto x = rig.render (24000, potatoReady::chordOn (ps::presets::Category::pluck));
+        level[(size_t) g] = ps::loudness::ungatedLufs (x.data(), rig.right.data(), x.size(), sampleRate);
+    }
+    CHECK (std::abs (level[1] - level[0]) < 1.0, "a pluck on the beat punches through GROOVE's dip ("
+                                                     + std::to_string (level[1] - level[0]) + " LU at full GROOVE)");
 }
 
 // Loading a preset puts back every parameter it doesn't set, and Init sounds like a fresh instance
@@ -3991,6 +4024,7 @@ int main()
     {
         testPresetLoading();
         testPressureAfterPause();
+        testPumpPunchThrough();
         testFactoryPresets();
         return failures == 0 ? 0 : 1;
     }
@@ -4100,6 +4134,8 @@ int main()
     testInserts();
     testMixHealth();
     testPresetLoading();
+    testPressureAfterPause();
+    testPumpPunchThrough();
     testFactoryPresets();
     testArpeggiator();
     testStepSequencer();

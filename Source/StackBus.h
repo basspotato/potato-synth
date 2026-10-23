@@ -754,8 +754,12 @@ private:
 // to a normalised exponential exp(-t / tau), tau = k * beat (hard), shifted so it reaches 0 exactly at the
 // next beat, so the curve is continuous everywhere. Follows the host's beat position while it plays and
 // free-runs at its tempo otherwise. One gain for both channels: linear, so the mono lows stay mono.
-// The power it takes is known exactly (mean of g^2 over a beat), so the loudness trim compensates without
-// measuring, and never chases the pump itself.
+// The power it takes is known exactly (mean of g^2 over a beat), so it makes that up itself, M = 1 / sqrt(mean g^2),
+// with nothing to measure and no loop that could chase the pump.
+// New notes punch through the dip (user's pick): at each note-on the gain rises to unity over 5 ms, holds 50 ms
+// and falls back into the pump (tau 120 ms), so a pluck or stab on the beat keeps its attack while held parts and
+// tails pump: g_total = P + (1 - P) M g, P the punch envelope. Unity under the punch, made up outside it, so a
+// held chord keeps its power and a struck note keeps its level.
 class TempoPump
 {
 public:
@@ -763,6 +767,9 @@ public:
     {
         sr = (float) sampleRate;
         smoothCoef = 1.0f - std::exp (-1.0f / (0.0015f * sr));
+        punchStep = 1.0f / (0.005f * sr);
+        punchHoldSamples = juce::roundToInt (0.08f * sr);
+        punchRelease = std::exp (-1.0f / (0.25f * sr));
         reset();
     }
 
@@ -771,13 +778,16 @@ public:
         phase = 0.0;
         gain = 1.0f;
         meanSquare = 1.0f;
+        punch = 0.0f;
+        punchHold = 0;
         settled = true;
     }
 
     // depthDb: the dip at its deepest; hardness 0..1: cosine to exponential; k: tau in beats.
     // ppq: the host's beat position at the block start, or a negative value when the transport is stopped.
+    // noteOns: the block's note-on positions, ascending.
     bool process (float* left, float* right, int numSamples, float depthDb, float hardness, float k,
-                  double bpm, double ppq) noexcept
+                  double bpm, double ppq, const std::vector<int>& noteOns = {}) noexcept
     {
         const float depth = 1.0f - juce::Decibels::decibelsToGain (-juce::jmax (0.0f, depthDb));
         const double beatsPerSample = juce::jlimit (20.0, 400.0, bpm) / 60.0 / sr;
@@ -797,9 +807,26 @@ public:
         meanSquare = sumSquare / points;
 
         settled = depth < 1.0e-5f;
+        const float makeup = 1.0f / std::sqrt (juce::jmax (0.05f, meanSquare));
+        size_t nextOn = 0;
         for (int i = 0; i < numSamples; ++i)
         {
-            const float target = 1.0f - depth * envelope ((float) phase, sh);
+            while (nextOn < noteOns.size() && noteOns[nextOn] <= i)
+            {
+                punchHold = punchHoldSamples;
+                ++nextOn;
+            }
+            if (punchHold > 0)
+            {
+                punch = juce::jmin (1.0f, punch + punchStep);
+                --punchHold;
+            }
+            else
+            {
+                punch *= punchRelease;
+            }
+            const float pumped = makeup * (1.0f - depth * envelope ((float) phase, sh));
+            const float target = punch + (1.0f - punch) * pumped;
             gain += (target - gain) * smoothCoef;   // smooths a jump in the host's position
             settled = settled && std::abs (gain - 1.0f) < 1.0e-5f;
             left[i] *= gain;
@@ -811,8 +838,6 @@ public:
         return true;
     }
 
-    // The fraction of power the pump keeps, mean g^2 over a beat (1 when off)
-    float powerRatio() const noexcept { return meanSquare; }
 
 private:
     struct Shape { float attack, hardness, invTau, floor; };
@@ -835,6 +860,8 @@ private:
     }
 
     float sr = 48000.0f, smoothCoef = 0.03f, gain = 1.0f, meanSquare = 1.0f;
+    float punch = 0.0f, punchStep = 0.004f, punchRelease = 0.9998f;
+    int punchHold = 0, punchHoldSamples = 2400;
     double phase = 0.0;
     bool settled = true;
 };

@@ -141,6 +141,7 @@ void PotatoSynthProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
         for (int r = 0; r < ps::numSlotRoles; ++r)
             motionPhase[(size_t) l][(size_t) r] = std::fmod (0.381966f * (float) (l * ps::numSlotRoles + r), 1.0f);
     pump.prepare (sampleRate);
+    noteOnPositions.reserve (256);
     knobStagesIn.prepare (sampleRate);
     knobStagesOut.prepare (sampleRate);
     knobStagesActive = false;
@@ -420,8 +421,13 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         knobStagesOut.reset();
     }
     knobStagesActive = active;
-    // The pump's power loss is known exactly, so it sits outside the measured stages
-    pump.process (left, right, n, offsets.pumpDb, offsets.pumpHardness, offsets.pumpTau, bpm, ppq);
+    // The pump makes up its own (exactly known) power loss, so it sits outside the measured stages. New notes
+    // punch through its dip.
+    noteOnPositions.clear();
+    for (const auto m : generatedMidi)
+        if (m.getMessage().isNoteOn() && noteOnPositions.size() < noteOnPositions.capacity())
+            noteOnPositions.push_back (m.samplePosition);
+    pump.process (left, right, n, offsets.pumpDb, offsets.pumpHardness, offsets.pumpTau, bpm, ppq, noteOnPositions);
 
     // Harmony Engine, invariant 1: hold the loudness the patch has without the knobs
     std::array<float, ps::params::numLayers> power {}, patchGain {}, knobGain {};
@@ -442,10 +448,8 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     loudnessTrim.update (power.data(), patchGain.data(), knobGain.data(), ps::params::numLayers,
                          (active ? ps::harmony::stageRatio (knobStagesIn, knobStagesOut) : 1.0) * clipper.knobStageRatio(), n,
                          playing, onset);
-    // The pump's makeup is exact and immediate (no meter to wait for), so it rides on top of the smoothed trim.
-    // Both go in inside the clipper, after its knob stages.
-    const float trim = juce::jlimit (0.25f, 4.0f, loudnessTrim.getGain() / std::sqrt (pump.powerRatio())
-                                                      * juce::Decibels::decibelsToGain (offsets.loudnessLiftDb));
+    // The trim goes in inside the clipper, after its knob stages
+    const float trim = juce::jlimit (0.25f, 4.0f, loudnessTrim.getGain() * juce::Decibels::decibelsToGain (offsets.loudnessLiftDb));
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (masterDb->load()));
     masterGain.applyGain (buffer, buffer.getNumSamples());
@@ -639,11 +643,41 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     const auto carve = ps::harmony::solveOwnership (energy, roles, sounding, offsets.carveTemperature, offsets.carveDepthDb);
     mixHealth.updateMasking (energy, sounding, ps::params::numLayers);
     const bool analyse = carving || mixHealth.isActive();   // Mix Health's masking check reads the same band energies
+    // GROOVE's onset duck dips Body and Air under each new note; the leading layers rise by the power that takes
+    // (at the duck's deepest), so a note's onset keeps its loudness and only the balance leans to the leaders
+    std::array<float, ps::params::numLayers> onsetDb = offsets.onsetDuckDb;
+    {
+        // Each layer's share from what it measured; from its gain alone while nothing has been measured (the first
+        // note after a pause), since the layers sit at about equal power at the same gain
+        double measured = 0.0;
+        for (int i = 0; i < ps::params::numLayers; ++i)
+            measured += stack.layer (i).engine() != nullptr ? (double) stack.layer (i).measuredPower() : 0.0;
+        const bool fromGain = measured < 1.0e-8;
+        double given = 0.0, leading = 0.0;
+        for (int i = 0; i < ps::params::numLayers; ++i)
+        {
+            const auto& layer = stack.layer (i);
+            if (layer.engine() == nullptr)
+                continue;
+            const double p = (fromGain ? 1.0 : (double) layer.measuredPower()) * juce::square (layer.patchGain() * layer.knobGain());
+            if (onsetDb[(size_t) i] > 0.0f)
+                given += p * (1.0 - std::pow (10.0, -0.1 * onsetDb[(size_t) i]));
+            else
+                leading += p;
+        }
+        if (given > 0.0 && leading > 1.0e-10)
+        {
+            const auto lift = (float) (-10.0 * std::log10 (1.0 + given / leading));
+            for (int i = 0; i < ps::params::numLayers; ++i)
+                if (onsetDb[(size_t) i] <= 0.0f && stack.layer (i).engine() != nullptr)
+                    onsetDb[(size_t) i] = juce::jmax (-6.0f, lift);
+        }
+    }
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         stack.layer (i).setChainOffsets (offsets.levelDb[(size_t) i], offsets.slot[(size_t) i]);
         stack.layer (i).setBeatCeiling (offsets.beatCeiling);
-        stack.layer (i).setOnsetDuck (offsets.onsetDuckDb[(size_t) i], offsets.onsetDuckMs);
+        stack.layer (i).setOnsetDuck (onsetDb[(size_t) i], offsets.onsetDuckMs);
         stack.layer (i).setCarveGains (carve[(size_t) i], analyse);
         stack.layer (i).setChainDrift (offsets.driftCents[(size_t) i] * driftWobble);
         stack.layer (i).setChainInserts (offsets.layerDrive[(size_t) i], offsets.layerChorus[(size_t) i]);

@@ -99,6 +99,7 @@ private:
     std::atomic<float>* phaseAlign = nullptr;
     ps::NoteGenerator noteGenerator;
     juce::MidiBuffer generatedMidi, heldMidi;
+    std::vector<int> noteOnPositions;   // this block's note-ons, for the pump's punch-through
     // HOLD acts as a sustain pedal that stays down: the pedal the stack and arp see is the real pedal OR HOLD
     const juce::MidiBuffer& applyHold (const juce::MidiBuffer& midi);
     std::atomic<float>* holdButton = nullptr;

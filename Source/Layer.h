@@ -184,9 +184,11 @@ public:
 
     // GROOVE's inter-layer ducking: each new note dips this layer by depthDb for about windowMs, so the
     // transient layers' attacks read through it (forward masking). 0 dB turns it off.
+    // depthDb > 0 dips this layer under each new note's onset; < 0 lifts it by as much (a leading layer taking up
+    // the power the dipped ones give away)
     void setOnsetDuck (float depthDb, float windowMs) noexcept
     {
-        duck.depth = 1.0f - juce::Decibels::decibelsToGain (-juce::jmax (0.0f, depthDb));
+        duck.depth = 1.0f - juce::Decibels::decibelsToGain (-juce::jlimit (-6.0f, 24.0f, depthDb));
         duck.releaseSamples = juce::jmax (1.0f, windowMs * 0.001f * duckRate);
     }
 
@@ -549,7 +551,7 @@ private:
 
         void trigger() noexcept
         {
-            if (depth <= 0.0f && shape <= 0.0f)
+            if (depth == 0.0f && shape <= 0.0f)
                 return;
             from = shape;
             t = 0.0f;
