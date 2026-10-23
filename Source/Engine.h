@@ -60,6 +60,8 @@ struct EngineInfo
     juce::String name;           // shown in the GUI
     int maxVoices = 16;          // per-layer voice budget for this engine (heavier engines get fewer)
     std::vector<SlotInfo> slots; // at most Engine::numSlots
+    bool levelsItself = false;   // its slot moves never change its loudness (it normalises every spectrum), so the
+                                 // layer's slot twin skips it
 };
 
 // A synth engine owns a fixed bank of voices, indexed by the stack's note slots. Engines are created

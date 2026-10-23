@@ -71,6 +71,11 @@ public:
             v.pitch.jumpTo (e.glideSeconds > 0.0 && e.glideFrom >= 0.0f ? e.glideFrom : (float) e.note);
             v.smooth = target;
             v.fixedPhase = e.fixedPhase;
+            // Mid and Air start every note at a new phase (CLAUDE.md): a fixed one would lock them to the Body
+            // layer's retriggered phase on every note, so their sum would comb the same way each time and move
+            // with every change of timbre
+            if (! e.fixedPhase)
+                v.phase = random();
             v.active = true;
         }
         if (fresh || ! e.legato)
@@ -216,6 +221,15 @@ private:
         s[fmIndex].role = SlotRole::crossMod;
         s[tone].role = SlotRole::brightness;
         return s;
+    }
+
+    // xorshift32, in cycles 0..1
+    double random() noexcept
+    {
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+        return (double) (rng >> 8) * (1.0 / 16777216.0);
     }
 
     void resetVoice (Voice& v) noexcept
@@ -646,10 +660,11 @@ private:
         std::array<bool, numModes> live {};
         const float t60 = bodyT60 (v.smooth[bodyDecay]), toneMix = v.smooth[bodyTone];
         float strikePower = 0.0f;
-        std::array<float, numModes> strikeAmp {};
+        std::array<float, numModes> strikeAmp {}, ratios {};
         for (int k = 0; k < numModes; ++k)
         {
             const float ratio = (float) (k + 1) + ((barRatios[(size_t) k]) - (float) (k + 1)) * toneMix;
+            ratios[(size_t) k] = ratio;
             const float f = ratio * dt;
             if (f >= 0.45f)
                 continue;
@@ -664,10 +679,17 @@ private:
         if (v.strikePending && strikePower > 0.0f)
         {
             // About twice a saw's RMS at full Strike and velocity
+            // Each mode is struck at the phase the drive reaches it with (ratio x the master phase), so a note
+            // that starts at a new phase (Mid, Air) rings the same as one at phase 0
             const float scale = 2.0f * sawRms * v.smooth[strike] * v.velocity / std::sqrt (strikePower);
             for (int k = 0; k < numModes; ++k)
                 if (live[(size_t) k])
-                    v.zi[(size_t) k] += 0.5f * scale * strikeAmp[(size_t) k];
+                {
+                    const float a = 0.5f * scale * strikeAmp[(size_t) k];
+                    const float angle = twoPi * (float) std::fmod ((double) ratios[(size_t) k] * v.phase, 1.0);
+                    v.zr[(size_t) k] -= a * std::sin (angle);
+                    v.zi[(size_t) k] += a * std::cos (angle);
+                }
         }
         for (int j = 0; j < n; ++j)
         {
@@ -688,6 +710,7 @@ private:
     }
 
     float sr = 48000.0f, tune = 0.0f;
+    uint32_t rng = 0x9E3779B9u;
     std::array<float, numUsedSlots> target = []
     {
         std::array<float, numUsedSlots> d {};

@@ -51,6 +51,10 @@ public:
     ps::NoteGenerator::Step getPatternStep (int index) const noexcept { return noteGenerator.getStep (index); }
     void setLaneValue (int lane, int step, float value) noexcept { modLanes.setValue (lane, step, value); }
     float getLaneValue (int lane, int step) const noexcept { return modLanes.getValue (lane, step); }
+    // The slot twin's reading of what the knobs' slot moves do to a layer's power (Layer::slotPowerRatio), and the
+    // layer's own K-weighted power at unity gain; for the tests (audio thread values, read while it is stopped)
+    float getSlotPowerRatio (int layer) const noexcept { return stack.layer (layer).slotPowerRatio(); }
+    float getLayerPower (int layer) const noexcept { return stack.layer (layer).measuredPower(); }
     // Where each chain knob (with SUPER, BUILD/DROP and the lanes) and the XY pad actually are, for the GUI
     // What the chain knobs add to one layer's LEVEL (dB) and engine slot roles (normalised), for the GUI's map rings
     float getChainLevelDb (int layer) const noexcept { return ghostLevelDb[(size_t) layer].load(); }

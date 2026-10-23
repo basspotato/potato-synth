@@ -1558,6 +1558,25 @@ void testBassHarmonics()
     CHECK (second > 0.2f * total && third > 0.1f * total, "MASS harmonics: a 55 Hz sine gets its 2nd and 3rd harmonics");
     CHECK (above < 1.0e-3f * total, "MASS harmonics: nothing above 400 Hz (no aliasing, no fizz)");
     CHECK (l == r, "MASS harmonics are added in mono");
+
+    // Invariant 6: the harmonics fill the 120-400 Hz band at most up to the level it already has. A bass with a
+    // quiet 220 Hz partial (20 dB under its 55 Hz fundamental) gains at most 3.5 dB there, and a bare sine gets
+    // them about 15 dB under its fundamental.
+    {
+        ps::BassHarmonics hb;
+        hb.prepare (sampleRate);
+        std::vector<float> bl (n), br (n), bass (n);
+        for (int i = 0; i < n; ++i)
+            bass[(size_t) i] = 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 55.0 * i / sampleRate)
+                             + 0.05f * (float) std::sin (juce::MathConstants<double>::twoPi * 220.0 * i / sampleRate);
+        bl = br = bass;
+        for (int pos = 0; pos < n; pos += 512)
+            hb.process (bl.data() + pos, br.data() + pos, std::min (512, n - pos), 1.0f);
+        const float rise = 10.0f * std::log10 (bandEnergy (bl, 24000, 120.0, 400.0) / bandEnergy (bass, 24000, 120.0, 400.0));
+        CHECK (rise < 3.5f, "MASS harmonics fill the 120-400 Hz band no further than its own level (+" + std::to_string (rise) + " dB)");
+        const float level = 10.0f * std::log10 (bandEnergy (added, 24000, 100.0, 400.0) / bandEnergy (dry, 24000, 40.0, 70.0));
+        CHECK (level > -18.0f && level < -12.0f, "MASS harmonics: a bare sine gets them about 15 dB under it (" + std::to_string (level) + " dB)");
+    }
 }
 
 void testChainKnobInvariants()
@@ -2928,7 +2947,8 @@ void testFactoryPresets()
         // Invariant 6, spectral balance: the octave balance is held to a target tilt (-4.5 dB/oct; SHINE tilts it
         // up to -3 dB/oct and MASS raises the 63 Hz octave up to 6 dB, the moves they are designed to make). A
         // knob may move a band freely toward the target, but never more than 3 dB further from it than the preset
-        // already sits: a preset's own colour is kept, and no knob pushes it out of balance. Each spectrum is
+        // already sits (MORPH, which swaps the architecture, 6 dB): a preset's own colour is kept, and no knob
+        // pushes it out of balance. A band starting 15 dB or more under the line isn't held. Each spectrum is
         // fitted to the target by its mean offset. Bands more than 30 dB under the preset's loudest are left out,
         // where a dB of change is no audible tone move. So is the 125 Hz octave: it straddles the 120 Hz sub
         // crossover, where the sub and the upper roles' fundamentals overlap and beat, and a 2 s window reads up
@@ -2963,24 +2983,33 @@ void testFactoryPresets()
                     }
                     mean /= (double) bands.size();
                     for (int b : bands)
-                        d[(size_t) b] = std::abs (d[(size_t) b] - mean);
+                        d[(size_t) b] -= mean;
                     return d;
                 };
                 const auto before = distance (false), after = distance (true);
+                const float morph = super ? ps::chain::superContribution (ps::chain::morph, 1.0f) : (k == (size_t) ps::chain::morph ? 1.0f : 0.0f);
                 double worst = 0.0;
                 int worstBand = 0;
                 for (int b : bands)
-                    if (after[(size_t) b] - before[(size_t) b] > worst)
+                {
+                    // A band the preset barely has (15 dB or more under the line) can't sound out of balance; it
+                    // only moves against the mean when the knob lifts the bands around it
+                    if (before[(size_t) b] < -15.0)
+                        continue;
+                    const double further = std::abs (after[(size_t) b]) - std::abs (before[(size_t) b]);
+                    if (further > worst)
                     {
-                        worst = after[(size_t) b] - before[(size_t) b];
+                        worst = further;
                         worstBand = b;
                     }
-                if (worst > 3.0)
+                }
+                // MORPH changes the architecture, so it may move the tone further (6 dB)
+                if (worst > 3.0 + 3.0 * morph)
                 {
                     const std::string name = super ? "SUPER" : ps::params::chainKnobNames[k];
                     res.failures.push_back (name + " pushes the " + std::to_string ((int) (62.5 * std::pow (2.0, worstBand))) + " Hz octave "
-                                            + std::to_string (worst) + " dB further from the target tilt (" + std::to_string (before[(size_t) worstBand])
-                                            + " -> " + std::to_string (after[(size_t) worstBand]) + " dB off)");
+                                            + std::to_string (worst) + " dB further from the target tilt (" + std::to_string (std::abs (before[(size_t) worstBand]))
+                                            + " -> " + std::to_string (std::abs (after[(size_t) worstBand])) + " dB off)");
                 }
             }
         }
@@ -3206,6 +3235,46 @@ void testLayerLink()
 // XY pad Snapshot mode: a captured corner brings back the sound it was captured from, the pad blends in each
 // parameter's normalised range, an empty corner stands for the live settings, anchored layers stay put, and
 // moving the pad or switching modes never clicks. Corners are saved with the state; a preset clears them.
+// Invariant 1 for engine slots: the slot twin reads what the knobs' slot moves do to a layer's power. A Genome mid
+// layer held on a sustained note: the twin's ratio (moved / at rest) matches the layer's own measured power ratio.
+// MORPH takes it from each start through two or three designs.
+void testSlotTwin()
+{
+    for (const float arch : { 0.0f, 0.25f, 0.6f })
+    {
+        Rig at, moved;
+        for (auto* r : { &at, &moved })
+        {
+            r->proc->setLayerEngine (2, "genome");
+            r->set (ps::params::layerRole (2), (float) ps::params::Role::mid);
+            r->set (ps::params::layerSlot (2, ps::GenomeEngine::architecture), arch);
+            // No attack transients (index envelope, strike): the twin's window then reads the held tone, as the meter does
+            r->set (ps::params::layerSlot (2, ps::GenomeEngine::fmEnv), 0.0f);
+            r->set (ps::params::layerSlot (2, ps::GenomeEngine::strike), 0.0f);
+            r->set (ps::params::layerSustain (2), 100.0f);
+            r->render (blockSize);
+            r->collectRetired();
+        }
+        // MORPH moves the architecture, the FM index and nothing else on this engine
+        for (int pos = 0; pos < 24000; pos += blockSize)
+        {
+            moved.set (ps::params::chainKnob (ps::chain::morph), (float) (pos + blockSize) / 24000.0f);
+            moved.render (blockSize);
+        }
+        at.render (24000);
+        for (auto* r : { &at, &moved })
+            r->render (96000, { { 0, on (55, 1.0f) } });
+        const float twin = moved.proc->getSlotPowerRatio (2);
+        const float real = moved.proc->getLayerPower (2) / at.proc->getLayerPower (2);
+        CHECK (at.proc->getSlotPowerRatio (2) == 1.0f, "the twin reads 1 while the knobs move no slot (architecture " + std::to_string (arch) + ")");
+        const float errorDb = std::abs (juce::Decibels::gainToDecibels (twin / real) * 0.5f);
+        // Within 1 dB: the twin weighs a note's first half second (a resonant body is still building up there), the
+        // meter reads it settled
+        CHECK (errorDb < 1.0f, "the slot twin reads the knobs' slot moves to within 1 dB (architecture " + std::to_string (arch) + ": twin "
+               + std::to_string (10.0f * std::log10 (twin)) + " dB, layer " + std::to_string (10.0f * std::log10 (real)) + " dB)");
+    }
+}
+
 void testSnapshotMorph()
 {
     namespace p = ps::params;
@@ -3497,6 +3566,20 @@ void testGenomeEngine()
         auto first = GenomeRig ({ { Genome::architecture, 0.3f } }).render (12000, { { 0, on (52) } });
         auto second = GenomeRig ({ { Genome::architecture, 0.3f } }).render (12000, { { 0, on (52) } });
         CHECK (first == second, "Genome: a note renders identically every time (no random drift or phase)");
+    }
+
+    // Mid and Air start each note at a new phase, so they never lock to the Body layer's retriggered phase
+    {
+        auto rig = genomeAt (0.0f);
+        rig.set (ps::params::layerRole (2), (float) ps::params::Role::mid);
+        rig.set (ps::params::layerRelease (2), 5.0f);
+        const auto first = rig.render (4800, { { 0, on (57) }, { 2400, off (57) } });
+        rig.render (9600);
+        const auto second = rig.render (4800, { { 0, on (57) }, { 2400, off (57) } });
+        float diff = 0.0f;
+        for (size_t i = 0; i < 2000; ++i)
+            diff = std::max (diff, std::abs (first[i] - second[i]));
+        CHECK (diff > 0.05f, "Genome on Mid: each note starts at a new phase");
     }
 
     // Shared phase: the 2x designs and the 1x harmonics line up to a fraction of a sample
@@ -4459,11 +4542,23 @@ int main()
         benchmarkDirt();
         return failures == 0 ? 0 : 1;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_TWIN_ONLY", {}).isNotEmpty())
+    {
+        testSlotTwin();
+        testGenomeEngine();
+        testBassHarmonics();
+        return failures == 0 ? 0 : 1;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_MORPH_ONLY", {}).isNotEmpty())
     {
         testSnapshotMorph();
         testLayerZones();
         testLayerLink();
+        return failures == 0 ? 0 : 1;
+    }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_FACTORY_ONLY", {}).isNotEmpty())
+    {
+        testFactoryPresets();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_PRESETS_ONLY", {}).isNotEmpty())

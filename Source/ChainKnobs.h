@@ -133,7 +133,8 @@ inline const std::vector<Route>& routes()
         // longer does: the layer measures what the knobs' drive adds, and the trim takes it back.)
         // (The body's own drive and sub-octave slots are left alone: on the init Dirt body they lost 0.8 LU
         // between them, the sub octave mostly under the Body role's 120 Hz band limit, where it can't be heard.)
-        { mass, Target::loudnessLiftDb, anyRole, SlotRole::none, Path ({ 0.0f, 0.15f, 0.3f, 0.45f, 0.6f }) },
+        // (Since the presets moved 10 dB under the ceiling, 2026-10-23, the limiter no longer works on them and the
+        // lift only made MASS 0.6 LU louder; the sweeps now hold it inside +-1 LU without one.)
         // Listening (build #25): still too subtle. The balance of the stack leans onto the low roles (the trim holds
         // the total), so the weight shift is heard on any speaker, not only on a sub.
         { mass, Target::layerLevelDb, sub, SlotRole::none, Path ({ 0.0f, 0.8f, 1.6f, 2.4f, 3.0f }) },
@@ -159,10 +160,10 @@ inline const std::vector<Route>& routes()
         { scale, Target::slot, upper, SlotRole::positionSpread, Path ({ 0.0f, 0.12f, 0.25f, 0.38f, 0.5f }) },
 
         // SHINE: air and sparkle
-        { shine, Target::layerLevelDb, roleBit (R::air), SlotRole::none, Path ({ 0.0f, 1.5f, 3.0f, 4.5f, 6.0f }) },
-        { shine, Target::slot, upper, SlotRole::brightness, Path ({ 0.0f, 0.04f, 0.08f, 0.12f, 0.15f }) },
-        { shine, Target::tiltDbPerOct, anyRole, SlotRole::none, Path ({ 0.0f, 0.4f, 0.8f, 1.2f, 1.5f }) },
-        { shine, Target::exciter, anyRole, SlotRole::none, Path ({ 0.0f, 0.06f, 0.12f, 0.19f, 0.25f }) },
+        { shine, Target::layerLevelDb, roleBit (R::air), SlotRole::none, Path ({ 0.0f, 0.75f, 1.5f, 2.25f, 3.0f }) },
+        { shine, Target::slot, upper, SlotRole::brightness, Path ({ 0.0f, 0.015f, 0.03f, 0.045f, 0.06f }) },
+        { shine, Target::tiltDbPerOct, anyRole, SlotRole::none, Path ({ 0.0f, 0.2f, 0.4f, 0.6f, 0.75f }) },
+        { shine, Target::exciter, anyRole, SlotRole::none, Path ({ 0.0f, 0.04f, 0.08f, 0.12f, 0.15f }) },
 
         // GROOVE: the pump and the bounce. The transient roles (Sub, Mid) lead; Body and Air duck under their
         // onsets inside the forward-masking window.

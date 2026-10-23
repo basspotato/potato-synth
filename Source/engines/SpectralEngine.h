@@ -48,7 +48,7 @@ public:
 
     const EngineInfo& info() const override
     {
-        static const EngineInfo i { "spectral", "Spectral", 16, makeSlots() };
+        static const EngineInfo i { "spectral", "Spectral", 16, makeSlots(), true };
         return i;
     }
 

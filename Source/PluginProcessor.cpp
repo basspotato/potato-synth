@@ -199,7 +199,7 @@ void PotatoSynthProcessor::setLayerEngine (int layerIndex, const juce::String& e
     }
 
     engineInfos[(size_t) layerIndex] = info;
-    stack.layer (layerIndex).requestEngine (std::move (engine), engineId);
+    stack.layer (layerIndex).requestEngine (std::move (engine), engineId, ps::engines::create (engineId), ps::engines::create (engineId));
     snapshot.updateEngines (layerEngineIds());
     updateHostDisplay (ChangeDetails().withParameterInfoChanged (true));   // slot value text follows the engine
 }
@@ -263,7 +263,7 @@ void PotatoSynthProcessor::applyLayerEnginesFromState()
         {
             auto engine = ps::engines::create (id);
             engineInfos[(size_t) i] = engine != nullptr ? &engine->info() : nullptr;
-            stack.layer (i).requestEngine (std::move (engine), id);
+            stack.layer (i).requestEngine (std::move (engine), id, ps::engines::create (id), ps::engines::create (id));
         }
     }
     snapshot.updateEngines (layerEngineIds());
@@ -480,9 +480,11 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     for (int i = 0; i < ps::params::numLayers; ++i)
     {
         const auto& layer = stack.layer (i);
-        power[(size_t) i] = layer.measuredPower();
+        // The meter reads the engine as the knobs' slot moves left it; the slot twin says by how much
+        const float slots = layer.slotPowerRatio();
+        power[(size_t) i] = layer.measuredPower() / slots;
         patchGain[(size_t) i] = layer.patchGain();
-        knobGain[(size_t) i] = layer.knobGain() * std::sqrt (layer.carvePowerRatio() * layer.drivePowerRatio());
+        knobGain[(size_t) i] = layer.knobGain() * std::sqrt (layer.carvePowerRatio() * layer.drivePowerRatio() * slots);
     }
     // Playing: this block within 10 dB of the held level (the loudness meter's relative gate); an onset: 6 dB
     // over the 400 ms average
@@ -634,6 +636,9 @@ ps::chain::Offsets PotatoSynthProcessor::updateChainKnobs (int numSamples)
     for (int i = 0; i < ps::params::numLayers; ++i)
         roles[(size_t) i] = stack.layer (i).role();
     auto offsets = ps::chain::compute (u, roles);
+    // BUILD's SCALE share and rising high-pass each cost a little loudness that the trim leaves (-0.55 and -0.3 LU on
+    // the init stack); SHINE's old, louder air used to cover it. The lift puts the build back inside the band.
+    offsets.loudnessLiftDb += 0.8f * b;
     // The XY pad: layer emphasis at constant power (StackMorph.h), glided like the knobs
     padXSmoothed += (juce::jlimit (0.0f, 1.0f, padX->load() + laneOffsets[ps::ModLanes::padXTarget]) - padXSmoothed) * coef;
     padYSmoothed += (juce::jlimit (0.0f, 1.0f, padY->load() + laneOffsets[ps::ModLanes::padYTarget]) - padYSmoothed) * coef;

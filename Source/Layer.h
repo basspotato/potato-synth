@@ -74,15 +74,29 @@ public:
     ~Layer()
     {
         delete pending.exchange (nullptr);
+        delete twinPending.exchange (nullptr);
         collectGarbage();
         delete outgoing;
         delete active;
+        delete twin;
     }
 
     // ---- Message thread ----------------------------------------------------------------------------
-    void requestEngine (std::unique_ptr<Engine> engine, const juce::String& id)
+    // twinBase / twinMoved: two more instances of the same engine for the slot twin (see runSlotTwin); without
+    // them the knobs' slot moves are left out of the loudness trim
+    void requestEngine (std::unique_ptr<Engine> engine, const juce::String& id,
+                        std::unique_ptr<Engine> twinBase = nullptr, std::unique_ptr<Engine> twinMoved = nullptr)
     {
         engineId = id;
+        // Posted before the engine, so the audio thread finds it when it takes the engine
+        TwinPair* pair = nullptr;
+        if (engine != nullptr && twinBase != nullptr && twinMoved != nullptr)
+        {
+            pair = new TwinPair { std::move (twinBase), std::move (twinMoved) };
+            for (auto* e : { pair->base.get(), pair->moved.get() })
+                e->prepare (sampleRate.load(), blockSize.load(), 2);
+        }
+        delete twinPending.exchange (pair);
         if (engine == nullptr)
             engine = std::make_unique<Empty>();   // an explicit "no engine" so the old one still fades out
         engine->prepare (sampleRate.load(), blockSize.load(), numVoices);
@@ -97,6 +111,7 @@ public:
     {
         for (auto& r : retired)
             delete r.exchange (nullptr);
+        delete twinRetired.exchange (nullptr);
     }
 
     const juce::String& getEngineId() const noexcept { return engineId; }
@@ -149,6 +164,17 @@ public:
         for (auto* e : { active, outgoing })
             if (e != nullptr)
                 e->prepare (sr, maxBlock, voices);
+        for (auto* t : { twin, twinPending.load() })
+            if (t != nullptr)
+                for (auto* e : { t->base.get(), t->moved.get() })
+                    e->prepare (sr, maxBlock, 2);
+        for (auto& c : twinChannels)
+        {
+            c.band.prepare (sr);
+            c.meter.prepare (sr, false);
+        }
+        twinPos = -1;
+        twinRatio = 1.0f;
 
         if (auto* p = pending.exchange (nullptr))
         {
@@ -217,6 +243,8 @@ public:
     float knobGain() const noexcept  { return juce::Decibels::decibelsToGain (chainLevelDb); }
     // K-weighted power of this layer at unity gain (after its band limit), averaged over 400 ms
     float measuredPower() const noexcept { return meter.getPower(); }
+    // What the chain knobs' slot moves do to the engine's power (moved / at rest; 1 when they move none)
+    float slotPowerRatio() const noexcept { return twinRatio; }
 
     // CLARITY's band ownership (HarmonyEngine.h): the dips the solver asks for, the band energies it reads,
     // and the power the dips take (P_out / P_in, 1 while flat), which the loudness trim counts as the knobs'
@@ -342,10 +370,14 @@ public:
             driveOutMeter.update();
         }
         // Swap only when the previous engine has finished fading and there is room to retire this one
-        if (outgoing == nullptr && freeRetireSlots() >= 2)
+        if (outgoing == nullptr && freeRetireSlots() >= 2 && twinRetired.load() == nullptr)
         {
             if (auto* next = pending.exchange (nullptr))
             {
+                if (auto* t = twinPending.exchange (nullptr))
+                    twinRetired.store (std::exchange (twin, t));
+                twinPos = -1;
+                twinRatio = 1.0f;
                 if (active != nullptr)
                 {
                     // The old engine fades out on its own copy of the envelopes; the new one starts silent
@@ -497,6 +529,8 @@ public:
             retireNow (std::exchange (outgoing, nullptr));
         if (filterFade > 0)
             filterFade = std::max (0, filterFade - numSamples);
+        if (! isMuted())
+            runSlotTwin (numSamples);
 
         const float patchDrive = juce::jlimit (0.0f, 1.0f, load (params.drive, 0.0f) * 0.01f);
         const float totalDrive = juce::jlimit (0.0f, 1.0f, patchDrive + chainDrive);
@@ -952,6 +986,8 @@ private:
             case params::Role::full: break;
         }
         band.setBand (hp, lp, snap);
+        bandHp = hp;
+        bandLp = lp;
     }
 
     double glideSeconds() const { return load (params.glideMs, 0.0f) * 0.001; }
@@ -993,11 +1029,13 @@ private:
     void updateSlots()
     {
         const auto& infoSlots = active->info().slots;
+        slotsMoved = false;
         for (size_t k = 0; k < lastSlot.size(); ++k)
         {
             if (params.slots[k] == nullptr)
                 continue;
             float v = params.slots[k]->load();
+            baseSlot[k] = v;
             if (k < infoSlots.size() && infoSlots[k].role != SlotRole::none)
             {
                 const float offset = chainSlots[(size_t) infoSlots[k].role];
@@ -1008,8 +1046,144 @@ private:
                 active->setSlot ((int) k, v);
                 lastSlot[k] = v;
             }
+            slotsMoved = slotsMoved || (twinReads (k, infoSlots) && std::abs (v - baseSlot[k]) > 1.0e-4f);
         }
         slotsSent = true;
+    }
+
+    // Invariant 1 for the engines' slots. The loudness trim knows exactly what the knobs do to a layer's level,
+    // but not what their slot moves (MORPH's frames and architectures, MASS's translate, SUPER's mix of them) do
+    // to the engine's output: the layer's meter reads the moved engine, with no reference at rest. The twin is
+    // that reference: two one-voice copies of the engine, one at the patch's slot values and one at the values
+    // the layer sends, play the layer's last note through the same filter, amp envelope and role band. Every
+    // twinPeriod samples they strike it afresh for twinWindow samples (the attack, where a pluck's loudness is),
+    // and the ratio of their K-weighted powers is what the slot moves add. It runs only while the knobs move a
+    // slot, at about a third of one voice per copy, and is deterministic (no thread, no timing).
+    void runSlotTwin (int numSamples) noexcept
+    {
+        if (twin == nullptr || active == nullptr || ! slotsMoved || active->info().levelsItself || &twin->base->info() != &active->info())
+        {
+            twinPos = -1;
+            twinRatio = 1.0f;
+            return;
+        }
+        for (int done = 0; done < numSamples;)
+        {
+            if (twinPos < 0 || twinPos >= twinPeriod)
+                startTwin();
+            const int half = twinWindow / 2;
+            const int n = std::min (numSamples - done, twinPos < half ? half - twinPos
+                                                                      : (twinPos < twinWindow ? twinWindow - twinPos : twinPeriod - twinPos));
+            if (twinPos < twinWindow)
+            {
+                for (size_t c = 0; c < twinChannels.size(); ++c)
+                {
+                    auto& ch = twinChannels[c];
+                    auto& e = c == 0 ? *twin->base : *twin->moved;
+                    e.beginBlock (n);
+                    std::fill_n (voiceL.data(), n, 0.0f);
+                    std::fill_n (voiceR.data(), n, 0.0f);
+                    for (int v = 0; v < twinVoices; ++v)
+                        e.render (v, voiceL.data(), voiceR.data(), n);
+                    filterVoice (ch.filter, n);
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const float g = ch.env.next (adsr);
+                        voiceL[(size_t) i] *= g;
+                        voiceR[(size_t) i] *= g;
+                    }
+                    ch.band.process (voiceL.data(), voiceR.data(), n);
+                    ch.meter.process (voiceL.data(), voiceR.data(), n);
+                }
+                if (twinPos + n == half)
+                    for (auto& ch : twinChannels)
+                    {
+                        ch.meter.update();
+                        ch.early = ch.meter.getBlockPower();
+                    }
+                if (twinPos + n == twinWindow)
+                {
+                    // A held note is mostly its later part: the second half counts more the higher the sustain
+                    const float lateWeight = 1.0f + 3.0f * juce::jlimit (0.0f, 1.0f, load (params.sustainPercent, 100.0f) * 0.01f);
+                    for (auto& ch : twinChannels)
+                        ch.meter.update();
+                    const float pb = twinChannels[0].early + lateWeight * twinChannels[0].meter.getBlockPower(),
+                                pm = twinChannels[1].early + lateWeight * twinChannels[1].meter.getBlockPower();
+                    if (pb > 1.0e-12f && pm > 1.0e-12f)
+                        twinRatio = juce::jlimit (1.0f / 16.0f, 16.0f, pm / pb);
+                    for (int v = 0; v < twinVoices; ++v)
+                    {
+                        twin->base->endVoice (v);
+                        twin->moved->endVoice (v);
+                    }
+                }
+            }
+            twinPos += n;
+            done += n;
+        }
+    }
+
+    // The twin reads the timbre roles. Unison detune, mix and spread are left to the engines, whose unison is
+    // power-normalised: their effect is beating and width, which a short strike at fixed phases would misread.
+    static bool twinReads (size_t k, const std::vector<SlotInfo>& infoSlots) noexcept
+    {
+        if (k >= infoSlots.size())
+            return false;
+        const auto role = infoSlots[k].role;
+        return role != SlotRole::none && role != SlotRole::detune && role != SlotRole::unisonMix
+            && role != SlotRole::stereoSpread && role != SlotRole::positionSpread;
+    }
+
+    void startTwin() noexcept
+    {
+        // The window spans the note's attack and decay, where a pluck's loudness is, and for a held note (some
+        // sustain) half a second, so designs that build up (resonant modes, slow envelopes) are read settled. It
+        // runs a third of the time.
+        const double sr = sampleRate.load();
+        const double envelopeMs = load (params.attackMs, 2.0f) + load (params.decayMs, 400.0f);
+        const bool held = load (params.sustainPercent, 100.0f) > 10.0f;
+        twinWindow = juce::jlimit (4096, juce::roundToInt (0.5 * sr), held ? juce::roundToInt (0.5 * sr) : juce::roundToInt (envelopeMs * 0.001 * sr));
+        twinWindow -= twinWindow % 2;
+        twinPeriod = 3 * twinWindow;
+        // The lowest and highest notes sounding (or last sounding): an engine's slot moves change its low and
+        // high notes differently against the role's band limits, and the twin plays both
+        int low = 128, high = -1;
+        for (int v = 0; v < numVoices; ++v)
+            if (envelopes[(size_t) v].isActive())
+            {
+                const int n = juce::roundToInt (voiceFilters[(size_t) v].note);
+                low = std::min (low, n);
+                high = std::max (high, n);
+            }
+        if (high >= 0)
+        {
+            twinLow = low;
+            twinHigh = high;
+        }
+        twinVoices = twinHigh > twinLow ? 2 : 1;
+        for (size_t c = 0; c < twinChannels.size(); ++c)
+        {
+            auto& ch = twinChannels[c];
+            auto& e = c == 0 ? *twin->base : *twin->moved;
+            e.reset();
+            const auto& infoSlots = active->info().slots;
+            for (size_t k = 0; k < lastSlot.size(); ++k)
+                if (params.slots[k] != nullptr)
+                    e.setSlot ((int) k, c == 1 && twinReads (k, infoSlots) ? lastSlot[k] : baseSlot[k]);
+            e.setTune (tune.load());
+            for (int v = 0; v < twinVoices; ++v)
+            {
+                e.setVoiceBend (v, 0.0f);
+                e.noteOn (v, { v == 0 ? twinLow : twinHigh, 1.0f, 0.0, -1.0f, false, true });
+            }
+            ch.env.reset();
+            ch.env.trigger();
+            ch.filter.start ((twinLow + twinHigh) / 2, false);
+            ch.band.reset();
+            ch.band.setBand (bandHp, bandLp, true);
+            ch.meter.reset();
+        }
+        twinPos = 0;
     }
 
     void processLowDuck (int n) noexcept
@@ -1159,5 +1333,26 @@ private:
     int numMonoNotes = 0, monoOwner = -1;
     std::array<float, Engine::maxVoices> slotBend {}, slotPressure {}, slotTimbre {};
     float lastNote = -1.0f;   // MIDI note last played, where poly and mono glides start from
+
+    // The slot twin (runSlotTwin)
+    struct TwinPair { std::unique_ptr<Engine> base, moved; };
+    struct TwinChannel
+    {
+        AmpEnvelope env;
+        VoiceFilter filter;
+        RoleBandLimit band;
+        harmony::KPowerMeter meter;
+        float early = 0.0f;   // the first half's mean power
+    };
+    int twinWindow = 4096, twinPeriod = 12288;
+    TwinPair* twin = nullptr;   // audio thread
+    std::atomic<TwinPair*> twinPending { nullptr }, twinRetired { nullptr };
+    std::array<TwinChannel, 2> twinChannels {};
+    std::array<float, Engine::numSlots> baseSlot {};
+    bool slotsMoved = false;
+    int twinPos = -1;
+    float twinRatio = 1.0f;
+    int twinLow = 60, twinHigh = 60, twinVoices = 1;
+    double bandHp = 0.0, bandLp = 0.0;
 };
 }

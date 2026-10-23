@@ -182,6 +182,8 @@ public:
         gLow = tptGain (120.0f, sr);
         gHigh = tptGain (90.0f, sr);
         gTop = tptGain (400.0f, sr);
+        gBand = tptGain (120.0f, sr);
+        powerCoef = 1.0f - std::exp (-1.0f / (0.05f * sr));
         attack = 1.0f - std::exp (-1.0f / (0.002f * sr));
         release = 1.0f - std::exp (-1.0f / (0.06f * sr));
         smoothCoef = 1.0f - std::exp (-1.0f / (0.03f * sr));
@@ -190,9 +192,10 @@ public:
 
     void reset()
     {
-        for (auto* f : { &low1, &low2, &high, &top })
+        for (auto* f : { &low1, &low2, &high, &top, &band1, &band2, &bandTop })
             f->reset();
-        envelope = current = 0.0f;
+        envelope = current = bandPower = addPower = lowPower = 0.0f;
+        limit = 1.0f;
     }
 
     // amount 0..1: the harmonics' level against the low band they come from. Returns false when off and settled.
@@ -220,7 +223,19 @@ public:
             const float t2 = 2.0f * u * u - 1.0f, t3 = u * (4.0f * u * u - 3.0f);
             const float h = envelope * (0.6f * t2 + 0.4f * t3);
             const float shaped = top.process (high.process (h, gHigh, k).high, gTop, k).low;
-            const float add = 2.0f * current * shaped;
+            // Invariant 6: the harmonics may fill the 120-400 Hz band up to the power it already has (+3 dB), and
+            // never take it over. A bare sub (an 808, a sine) has nothing there, so it gets them 15 dB under the
+            // low band, which still carries its pitch on small speakers. Powers over 50 ms and a gain that moves
+            // slower still, so the limit never modulates the harmonics into fizz.
+            const float band = bandTop.process (band2.process (band1.process (mid, gBand, k).high, gBand, k).high, gTop, k).low;
+            const float full = 2.0f * shaped;
+            bandPower += (band * band - bandPower) * powerCoef;
+            addPower += (full * full - addPower) * powerCoef;
+            lowPower += (lowBand * lowBand - lowPower) * powerCoef;
+            const float room = std::max (bandPower, 0.032f * lowPower);   // -15 dB
+            const float target = addPower > room ? std::sqrt (room / addPower) : 1.0f;
+            limit += (target - limit) * smoothCoef;
+            const float add = current * limit * full;
             left[i] += add;
             right[i] += add;
         }
@@ -228,9 +243,10 @@ public:
     }
 
 private:
-    ZdfSvf low1, low2, high, top;
-    float sr = 48000.0f, gLow = 0.0f, gHigh = 0.0f, gTop = 0.0f;
+    ZdfSvf low1, low2, high, top, band1, band2, bandTop;
+    float sr = 48000.0f, gLow = 0.0f, gHigh = 0.0f, gTop = 0.0f, gBand = 0.0f;
     float attack = 0.01f, release = 0.001f, smoothCoef = 0.001f, envelope = 0.0f, current = 0.0f;
+    float powerCoef = 0.001f, bandPower = 0.0f, addPower = 0.0f, lowPower = 0.0f, limit = 1.0f;
     bool active = false;
 };
 

@@ -134,13 +134,15 @@ inline double stageRatio (const KPowerMeter& in, const KPowerMeter& out) noexcep
 //                 known exactly:  ratio_layers = sum P_l g_l^2 / sum P_l (g_l c_l)^2   (g: patch, c: knob gain)
 //   bus stages:   a stage the knobs drive (MASS's low focus EQ, PRESSURE's dynamics and clipping) is measured
 //                 in and out: ratio_stage = P_in / P_out, which is 1 when the knob is at rest
+//   engine slots: what the knobs' slot moves (frames, architectures, brightness) do to an engine is read by the
+//                 layer's slot twin (Layer::runSlotTwin), and the layer's power is taken back to the patch's by it.
+//                 Unison detune, mix and spread are kept power-neutral by the engines themselves.
 //
 // The trim is sqrt of their product, smoothed over 300 ms. It only learns while the stack is playing: through a
 // tail or a pause it holds (a dynamics stage treats a dying tail unlike the notes, and the notes are what it
 // compensates), and when a note lands well over the recent level it goes straight to its target (the clipper ramps
-// it across the block), so a note after a pause starts at the right level instead of swelling in. Engine slot moves are kept loudness-neutral by the
-// engines themselves (power-normalised unison, translate, frames); the knob-sweep tests hold everything to
-// +-0.5 LU.
+// it across the block), so a note after a pause starts at the right level instead of swelling in. The knob-sweep tests hold the
+// default stack to +-0.5 LU and every factory preset to +-1 LU.
 class LoudnessTrim
 {
 public:
