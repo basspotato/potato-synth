@@ -465,7 +465,7 @@ namespace
     struct KeysRow
     {
         const char* name;
-        int kind;              // 0 FM e-piano, 1 Spectral organ, 2 Wavetable drawbars, 3 Genome bell, 4 JP poly
+        int kind;              // 0 FM e-piano, 1 Spectral organ, 2 Wavetable drawbars, 3 Genome bell, 4 JP poly, 5 Wavetable digital, 6 Spectral vowel
         float decayMs, sustain, brightness, reverb;
         IT midInsert;
     };
@@ -481,6 +481,8 @@ namespace
             case 1:  specLayer (x, body, Role::body, { 5, 4, 0.2f, -1.0f }); break;
             case 2:  wtLayer (x, body, Role::body, { 4, 0.3f + 0.5f * r.brightness, 0.0f, 500.0f, 0.0f, 0, 0.0f, 0.5f, 0.0f }); break;
             case 3:  genomeLayer (x, body, Role::body, { 1.0f, 0.0f, 0.0f, 0.35f, 0.25f, 0.3f, 0.25f, 0.5f, 0.5f, 0.6f, 1.0f, 0.6f }); break;
+            case 5:  wtLayer (x, body, Role::body, { 5, 0.2f + 0.6f * r.brightness, 0.0f, 500.0f, 0.0f, 0, 0.0f, 0.5f, 0.0f }); break;
+            case 6:  specLayer (x, body, Role::body, { 6, 7, 0.3f + 0.4f * r.brightness, 0.0f, 0.0f, 0.1f }); break;
             default: jpLayer (x, body, Role::body, { 0, 0, 0.0f, 0.6f, 0.4f, 1000.0f + 6000.0f * r.brightness, 0.15f, 24.0f, 500.0f, 0.3f }); break;
         }
         level (x, body, -3.0f);
@@ -518,6 +520,26 @@ namespace
         { "Warm Poly", 4,        1200.0f, 60.0f, 0.3f, 30.0f, IT::off },
         { "Tonewheel Drive", 2,  1000.0f, 100.0f, 0.6f, 20.0f, IT::drive },
         { "Dream Keys", 0,       2500.0f, 40.0f, 0.4f, 45.0f, IT::off },
+        { "Wurly Chords", 0,      900.0f, 15.0f, 0.5f, 25.0f, IT::off },
+        { "Neo Soul Keys", 0,    1200.0f, 20.0f, 0.3f, 30.0f, IT::off },
+        { "Velvet EP", 0,        1400.0f, 25.0f, 0.2f, 25.0f, IT::phaser },
+        { "FM Piano Bright", 0,   700.0f, 10.0f, 0.8f, 20.0f, IT::off },
+        { "Jazz Organ", 1,        800.0f, 90.0f, 0.6f, 25.0f, IT::drive },
+        { "Cathedral Chords", 1, 1000.0f, 95.0f, 0.3f, 55.0f, IT::off },
+        { "B3 Percussive", 2,     700.0f, 85.0f, 0.7f, 20.0f, IT::off },
+        { "Soul Drawbars", 2,     900.0f, 95.0f, 0.4f, 25.0f, IT::drive },
+        { "Crystal Keys", 3,     2500.0f, 10.0f, 0.7f, 40.0f, IT::off },
+        { "Frozen Bells", 3,     3500.0f,  0.0f, 0.5f, 55.0f, IT::off },
+        { "Glock Chords", 3,     1500.0f, 10.0f, 0.9f, 30.0f, IT::off },
+        { "Italo Chords", 4,      700.0f, 55.0f, 0.6f, 25.0f, IT::off },
+        { "Garage Stabs", 4,      350.0f,  0.0f, 0.5f, 20.0f, IT::off },
+        { "Synthwave Keys", 4,   1100.0f, 50.0f, 0.5f, 35.0f, IT::phaser },
+        { "Analog Horns", 4,      800.0f, 75.0f, 0.4f, 25.0f, IT::off },
+        { "DX Keys", 5,          1000.0f, 15.0f, 0.6f, 25.0f, IT::off },
+        { "Digital EP", 5,       1300.0f, 20.0f, 0.4f, 30.0f, IT::off },
+        { "Glass Piano", 5,      1800.0f, 10.0f, 0.8f, 35.0f, IT::off },
+        { "Choir Keys", 6,       1400.0f, 70.0f, 0.5f, 45.0f, IT::off },
+        { "Vowel Chords", 6,      900.0f, 60.0f, 0.7f, 35.0f, IT::off },
     };
 
     // ==== Arp / Sequence =====================================================================================
@@ -711,6 +733,179 @@ namespace
         { "Pre-Drop Sweep",    3, 3000.0f, 40.0f },
     };
 
+    // ==== Sub / Low Bass =====================================================================================
+    // Clean and deep: a pure Sub layer carries the fundamental (shape, Translate and Drive set how it reads on
+    // small speakers), a quiet Body layer adds the first harmonics above the crossover, and a faint Mid layer
+    // gives the note its edge. Mono, no unison, nothing wandering.
+    struct LowRow
+    {
+        const char* name;
+        float shape, octave, translate, drive, even, toneHz;   // the Sub layer
+        float punchSemis, punchMs;
+        int bodyKind;            // 0 JP triangle, 1 JP soft saw, 2 Genome FM sine, 3 Spectral sine > triangle, 4 Wavetable basic
+        float bodyCutoffHz, bodyDb, midDb;
+        float glideMs, attackMs, decayMs, sustain, releaseMs;
+        IT insert;
+        float insertAmount;
+    };
+
+    Preset lowBass (const LowRow& r)
+    {
+        auto x = make (r.name, Category::subBass);
+        x.engine (sub, "sub", Role::sub);
+        x.slot (sub, SubEngine::shape, r.shape).slot (sub, SubEngine::subOctave, r.octave).slot (sub, SubEngine::translate, r.translate)
+         .slot (sub, SubEngine::drive, r.drive).slot (sub, SubEngine::even, r.even)
+         .slot (sub, SubEngine::tone, juce::jlimit (0.0f, 1.0f, std::log (r.toneHz / 40.0f) / std::log (500.0f)));
+        if (r.punchSemis > 0.0f)
+            x.slot (sub, SubEngine::punch, r.punchSemis / 36.0f).slot (sub, SubEngine::punchDecay, SubEngine::punchValue (r.punchMs));
+        level (x, sub, 0.0f);
+        switch (r.bodyKind)
+        {
+            case 0:  jpLayer (x, body, Role::body, { 2, 0, 0.0f, 0.65f, 0.0f, r.bodyCutoffHz, 0.0f, 0.0f, 400.0f, 1.0f }); break;
+            case 1:  jpLayer (x, body, Role::body, { 0, 0, 0.0f, 0.65f, 0.0f, r.bodyCutoffHz, 0.05f, 0.0f, 400.0f, 1.0f }); break;
+            case 2:  genomeLayer (x, body, Role::body, { 0.25f, 0.0f, 0.0f, fmIndex (0.7f), fmRatio (1.0f), 0.0f, 0.0f, 0.5f }); break;
+            case 3:  specLayer (x, body, Role::body, { 4, 2, 0.5f }); break;
+            default: wtLayer (x, body, Role::body, { 0, 0.0f, 0.0f, 500.0f, 0.0f, 0, 0.0f, 0.5f, 0.0f }); break;
+        }
+        level (x, body, r.bodyDb);
+        jpLayer (x, mid, Role::mid, { 2, 0, 0.0f, 0.65f, 0.0f, 900.0f, 0.0f, 0.0f, 400.0f, 1.0f });
+        level (x, mid, r.midDb);
+        ampAll (x, r.attackMs, r.decayMs, r.sustain, r.releaseMs);
+        mono (x, r.glideMs > 0.0f, r.glideMs);
+        if (r.insert != IT::off)
+            insert (x, body, 0, r.insert, r.insertAmount);
+        space (x, 4.0f, 1.0f);
+        return x;
+    }
+
+    const LowRow lowRows[] = {
+        //  name                shape  oct   transl drive even  tone   punch ms    body cutoff dB   mid   glide atk decay  sust rel   insert
+        { "Pure Sub",           0.00f, 0.00f, 0.15f, 0.00f, 0.0f, 20000.0f, 0.0f,  0.0f,  3, 400.0f, -14.0f, -24.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Deep Sine",          0.00f, 0.25f, 0.10f, 0.00f, 0.0f,   300.0f, 0.0f,  0.0f,  2, 300.0f, -14.0f, -26.0f, 0.0f,  4.0f,  600.0f, 100.0f, 300.0f, IT::off, 0.0f },
+        { "Sub Zero",           0.00f, 0.50f, 0.00f, 0.00f, 0.0f,   120.0f, 0.0f,  0.0f,  3, 250.0f, -18.0f, -30.0f, 0.0f,  5.0f,  800.0f, 100.0f, 350.0f, IT::off, 0.0f },
+        { "808 Classic",        0.00f, 0.00f, 0.20f, 0.08f, 0.1f,   600.0f, 14.0f, 45.0f, 0, 500.0f, -12.0f, -24.0f, 0.0f,  1.0f,  900.0f,  60.0f, 250.0f, IT::off, 0.0f },
+        { "808 Long",           0.00f, 0.00f, 0.20f, 0.06f, 0.1f,   500.0f, 12.0f, 40.0f, 0, 450.0f, -12.0f, -26.0f, 0.0f,  1.0f, 1800.0f,  45.0f, 400.0f, IT::off, 0.0f },
+        { "808 Short",          0.00f, 0.00f, 0.25f, 0.10f, 0.1f,   700.0f, 18.0f, 30.0f, 0, 600.0f, -12.0f, -24.0f, 0.0f,  1.0f,  500.0f,  55.0f, 150.0f, IT::off, 0.0f },
+        { "Rumble Sub",         0.15f, 0.30f, 0.30f, 0.20f, 0.0f,   400.0f, 0.0f,  0.0f,  1, 350.0f, -10.0f, -22.0f, 0.0f,  3.0f,  500.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Triangle Sub",       0.50f, 0.00f, 0.10f, 0.00f, 0.0f,   500.0f, 0.0f,  0.0f,  0, 400.0f, -14.0f, -26.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Warm Sub",           0.05f, 0.00f, 0.15f, 0.10f, 0.4f,   350.0f, 0.0f,  0.0f,  4, 300.0f, -12.0f, -26.0f, 0.0f,  4.0f,  600.0f, 100.0f, 300.0f, IT::off, 0.0f },
+        { "Soft Square Sub",    0.75f, 0.00f, 0.20f, 0.00f, 0.0f,   250.0f, 0.0f,  0.0f,  1, 300.0f, -14.0f, -28.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Heavy Sub",          0.10f, 0.35f, 0.45f, 0.20f, 0.0f,   500.0f, 0.0f,  0.0f,  2, 400.0f, -10.0f, -22.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Glide Sub",          0.00f, 0.15f, 0.15f, 0.00f, 0.0f,   400.0f, 0.0f,  0.0f,  3, 350.0f, -14.0f, -26.0f, 90.0f, 3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Slide 808",          0.00f, 0.00f, 0.20f, 0.08f, 0.1f,   600.0f, 10.0f, 40.0f, 0, 500.0f, -12.0f, -24.0f, 140.0f, 1.0f, 1400.0f,  55.0f, 350.0f, IT::off, 0.0f },
+        { "Round Sub",          0.05f, 0.00f, 0.05f, 0.00f, 0.0f,   180.0f, 0.0f,  0.0f,  3, 250.0f, -16.0f, -30.0f, 0.0f,  5.0f,  600.0f, 100.0f, 300.0f, IT::off, 0.0f },
+        { "Floor Shaker",       0.10f, 0.60f, 0.30f, 0.12f, 0.0f,   450.0f, 0.0f,  0.0f,  2, 350.0f, -12.0f, -24.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Chest Thump",        0.00f, 0.00f, 0.25f, 0.10f, 0.1f,   600.0f, 7.0f,  60.0f, 0, 500.0f, -12.0f, -24.0f, 0.0f,  1.0f,  400.0f,  55.0f, 150.0f, IT::transient, 40.0f },
+        { "Low Tide",           0.05f, 0.20f, 0.10f, 0.00f, 0.0f,   300.0f, 0.0f,  0.0f,  3, 300.0f, -14.0f, -28.0f, 60.0f, 120.0f, 600.0f, 100.0f, 600.0f, IT::off, 0.0f },
+        { "Sub Pillar",         0.00f, 0.50f, 0.15f, 0.00f, 0.0f,   160.0f, 0.0f,  0.0f,  2, 250.0f, -16.0f, -30.0f, 0.0f,  6.0f,  800.0f, 100.0f, 400.0f, IT::off, 0.0f },
+        { "Dark Sub",           0.00f, 0.00f, 0.05f, 0.00f, 0.0f,    90.0f, 0.0f,  0.0f,  3, 200.0f, -20.0f, -32.0f, 0.0f,  5.0f,  800.0f, 100.0f, 350.0f, IT::off, 0.0f },
+        { "Concrete Sub",       0.10f, 0.20f, 0.35f, 0.35f, 0.2f,   700.0f, 0.0f,  0.0f,  1, 500.0f, -10.0f, -20.0f, 0.0f,  2.0f,  500.0f, 100.0f, 200.0f, IT::off, 0.0f },
+        { "Subwoofer Test",     0.00f, 0.00f, 0.00f, 0.00f, 0.0f, 20000.0f, 0.0f,  0.0f,  3, 300.0f, -30.0f, -40.0f, 0.0f,  5.0f,  800.0f, 100.0f, 350.0f, IT::off, 0.0f },
+        { "Octave Down Sub",    0.00f, 0.85f, 0.10f, 0.00f, 0.0f,   200.0f, 0.0f,  0.0f,  2, 250.0f, -16.0f, -28.0f, 0.0f,  5.0f,  800.0f, 100.0f, 350.0f, IT::off, 0.0f },
+        { "Mono Weight",        0.10f, 0.40f, 0.50f, 0.15f, 0.0f,   500.0f, 0.0f,  0.0f,  0, 450.0f, -10.0f, -22.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Clean Kick Bass",    0.00f, 0.00f, 0.30f, 0.05f, 0.0f,   800.0f, 20.0f, 25.0f, 0, 600.0f, -12.0f, -24.0f, 0.0f,  1.0f,  450.0f,  55.0f, 150.0f, IT::off, 0.0f },
+        { "Drop 24",            0.00f, 0.00f, 0.20f, 0.05f, 0.0f,   500.0f, 24.0f, 300.0f, 3, 400.0f, -14.0f, -26.0f, 0.0f, 1.0f,  900.0f,  60.0f, 250.0f, IT::off, 0.0f },
+        { "Velvet Low",         0.10f, 0.10f, 0.10f, 0.00f, 0.25f,  220.0f, 0.0f,  0.0f,  4, 300.0f, -14.0f, -28.0f, 40.0f, 4.0f,  600.0f, 100.0f, 300.0f, IT::off, 0.0f },
+        { "Thick Sine",         0.00f, 0.20f, 0.20f, 0.05f, 0.0f,   800.0f, 0.0f,  0.0f,  2, 400.0f,  -8.0f, -16.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+        { "Deep House Sub",     0.25f, 0.00f, 0.25f, 0.10f, 0.0f,   600.0f, 4.0f,  50.0f, 0, 500.0f, -12.0f, -22.0f, 0.0f,  2.0f,  500.0f,  60.0f, 200.0f, IT::off, 0.0f },
+        { "Dub Sub",            0.20f, 0.30f, 0.15f, 0.00f, 0.0f,   150.0f, 0.0f,  0.0f,  3, 250.0f, -14.0f, -28.0f, 0.0f,  4.0f,  700.0f,  70.0f, 400.0f, IT::off, 0.0f },
+        { "Foundation",         0.30f, 0.30f, 0.35f, 0.12f, 0.0f,   500.0f, 0.0f,  0.0f,  1, 400.0f, -10.0f, -22.0f, 0.0f,  3.0f,  600.0f, 100.0f, 250.0f, IT::off, 0.0f },
+    };
+
+    // ==== Drones =============================================================================================
+    // Simple and clean: one held note stacked into a fixed interval (a fifth, an octave, a fourth), two or three
+    // layers, a slow attack, and one creative touch: a Shepard rise, a frequency shift, a comb, a vowel. No
+    // random wandering; whatever moves is a rate the preset sets.
+    struct DroneRow
+    {
+        const char* name;
+        int bodyKind;            // 0 JP saw, 1 Spectral organ, 2 Wavetable reso, 3 Genome FM, 4 Spectral vowel, 5 Spectral glass Shepard, 6 Wavetable vowels, 7 JP triangle
+        int bodySemis;           // the body's interval over the root
+        int midKind;             // 0 Spectral glass, 1 Spectral organ, 2 JP soft saw, 3 Genome FM bell
+        int midOctave;
+        float brightness;        // 0..1: filter or morph of the body
+        float chorus, reverb, reverbSize;
+        IT insert;
+        float insertAmount;
+        float attackMs, releaseMs;
+        float airDb;             // the Air layer's level; -60 leaves it out
+        float shepardRate = 0.62f;
+    };
+
+    Preset drone (const DroneRow& r)
+    {
+        auto x = make (r.name, Category::drone);
+        subLayer (x, 0.0f);
+        level (x, sub, -9.0f);
+        switch (r.bodyKind)
+        {
+            case 0:  jpLayer (x, body, Role::body, { 0, 1, 0.3f, 0.6f, 0.7f, 400.0f + 4000.0f * r.brightness, 0.05f, 0.0f, 400.0f, 1.0f }); break;
+            case 1:  specLayer (x, body, Role::body, { 5, 4, 0.1f + 0.5f * r.brightness }); break;
+            case 2:  wtLayer (x, body, Role::body, { 3, r.brightness, 0.0f, 500.0f, 0.0f, 0, 0.0f, 0.5f, 0.0f }); break;
+            case 3:  genomeLayer (x, body, Role::body, { 0.25f, 0.0f, 0.05f, fmIndex (0.8f + 1.5f * r.brightness), fmRatio (1.0f), 0.1f, 0.0f, 0.5f }); break;
+            case 4:  specLayer (x, body, Role::body, { 6, 7, r.brightness, 0.0f, 0.0f, 0.3f }); break;
+            case 5:  specLayer (x, body, Role::body, { 8, 0, 0.3f + 0.4f * r.brightness, 0.0f, 0.0f, 0.2f, 0.8f, r.shepardRate, 2, 0.4f, 0.8f }); break;
+            case 6:  wtLayer (x, body, Role::body, { 2, r.brightness, 0.0f, 500.0f, 0.0f, 0, 0.0f, 0.5f, 0.0f }); break;
+            default: jpLayer (x, body, Role::body, { 2, 0, 0.0f, 0.65f, 0.0f, 600.0f + 4000.0f * r.brightness, 0.0f, 0.0f, 400.0f, 1.0f }); break;
+        }
+        level (x, body, -4.0f);
+        x.set (p::layerSemi (body), (float) r.bodySemis);
+        switch (r.midKind)
+        {
+            case 0:  specLayer (x, mid, Role::mid, { 8, 0, 0.3f }); break;
+            case 1:  specLayer (x, mid, Role::mid, { 5, 4, 0.3f }); break;
+            case 2:  jpLayer (x, mid, Role::mid, { 0, 1, 0.3f, 0.6f, 0.7f, 800.0f + 3000.0f * r.brightness, 0.0f, 0.0f, 400.0f, 1.0f }); break;
+            default: genomeLayer (x, mid, Role::mid, { 0.25f, 0.0f, 0.05f, fmIndex (1.0f + 1.5f * r.brightness), fmRatio (2.0f), 0.1f, 0.0f, 0.5f }); break;
+        }
+        level (x, mid, -7.0f);
+        x.set (p::layerOctave (mid), (float) r.midOctave);
+        if (r.airDb > -40.0f)
+        {
+            specLayer (x, air, Role::air, { 8, 0, 0.5f, 3.0f, 0.0f, 0.8f });
+            level (x, air, r.airDb);
+        }
+        ampAll (x, r.attackMs, 1000.0f, 100.0f, r.releaseMs);
+        x.set (p::layerChorus (mid), r.chorus);
+        if (r.insert != IT::off)
+            insert (x, mid, 0, r.insert, r.insertAmount);
+        space (x, r.reverb, r.reverbSize);
+        return x;
+    }
+
+    const DroneRow droneRows[] = {
+        //  name                    body semis mid oct bright chorus reverb size  insert       amount attack release air
+        { "Root Drone",             7, 0,  0, 0, 0.40f, 20.0f, 30.0f, 5.0f, IT::off,       0.0f, 1500.0f, 2500.0f, -16.0f },
+        { "Fifth Drone",            0, 7,  2, 0, 0.35f, 25.0f, 30.0f, 5.0f, IT::off,       0.0f, 1500.0f, 2500.0f, -16.0f },
+        { "Octave Drone",           0, 12, 2, 0, 0.30f, 20.0f, 25.0f, 4.5f, IT::off,       0.0f, 1200.0f, 2500.0f, -60.0f },
+        { "Fourth Drone",           0, 5,  2, 0, 0.30f, 20.0f, 30.0f, 5.0f, IT::off,       0.0f, 1500.0f, 2500.0f, -16.0f },
+        { "Sus Drone",              1, 5,  1, 0, 0.40f, 15.0f, 30.0f, 5.0f, IT::off,       0.0f, 1800.0f, 3000.0f, -18.0f },
+        { "Glass Drone",            5, 0,  0, 1, 0.50f, 10.0f, 40.0f, 6.0f, IT::off,       0.0f, 2000.0f, 3000.0f, -14.0f, 0.5f },
+        { "Organ Drone",            1, 0,  1, 0, 0.30f, 10.0f, 25.0f, 4.0f, IT::off,       0.0f, 1200.0f, 2500.0f, -60.0f },
+        { "Tanpura Fifth",          0, 7,  2, 1, 0.45f, 30.0f, 30.0f, 5.0f, IT::off,       0.0f, 1200.0f, 3000.0f, -18.0f },
+        { "Choir Drone",            4, 0,  0, 0, 0.40f, 25.0f, 45.0f, 6.0f, IT::off,       0.0f, 2200.0f, 3500.0f, -18.0f },
+        { "Vowel Drone",            4, 7,  1, 0, 0.75f, 20.0f, 40.0f, 6.0f, IT::off,       0.0f, 2200.0f, 3500.0f, -60.0f },
+        { "Shepard Climb Drone",    5, 0,  0, 0, 0.40f, 10.0f, 35.0f, 6.0f, IT::off,       0.0f, 1500.0f, 3000.0f, -16.0f, 0.68f },
+        { "Shepard Fall Drone",     5, 0,  0, 0, 0.40f, 10.0f, 35.0f, 6.0f, IT::off,       0.0f, 1500.0f, 3000.0f, -16.0f, 0.34f },
+        { "Reso Drone",             2, 0,  2, 0, 0.35f, 15.0f, 30.0f, 5.0f, IT::off,       0.0f, 1500.0f, 2500.0f, -60.0f },
+        { "Digital Drone",          6, 12, 0, 1, 0.50f, 10.0f, 30.0f, 5.0f, IT::off,       0.0f, 1500.0f, 2500.0f, -18.0f },
+        { "Triangle Drone",         7, 0,  1, 0, 0.30f,  0.0f, 25.0f, 4.0f, IT::off,       0.0f, 1500.0f, 2500.0f, -60.0f },
+        { "Pure Sine Drone",        1, 7,  0, 0, 0.00f,  0.0f, 20.0f, 4.0f, IT::off,       0.0f, 1800.0f, 3000.0f, -60.0f },
+        { "Warm Saw Drone",         0, 0,  2, 0, 0.15f, 25.0f, 25.0f, 4.5f, IT::off,       0.0f, 1800.0f, 3000.0f, -60.0f },
+        { "Cold Saw Drone",         0, 12, 2, 1, 0.80f, 15.0f, 30.0f, 5.0f, IT::off,       0.0f, 1500.0f, 2500.0f, -14.0f },
+        { "Bell Drone",             3, 0,  3, 1, 0.50f, 10.0f, 40.0f, 6.0f, IT::off,       0.0f, 1800.0f, 3000.0f, -16.0f },
+        { "Metal Drone",            3, 7,  3, 1, 0.80f, 10.0f, 35.0f, 5.0f, IT::off,       0.0f, 1500.0f, 3000.0f, -60.0f },
+        { "Shifted Drone",          0, 0,  1, 0, 0.30f, 10.0f, 35.0f, 5.5f, IT::freqShift, 40.0f, 1800.0f, 3000.0f, -18.0f },
+        { "Comb Drone",             0, 7,  2, 0, 0.35f, 10.0f, 30.0f, 5.0f, IT::comb,      45.0f, 1800.0f, 3000.0f, -60.0f },
+        { "Phase Drone",            1, 0,  2, 0, 0.40f, 10.0f, 30.0f, 5.0f, IT::phaser,    50.0f, 1800.0f, 3000.0f, -18.0f },
+        { "Flange Drone",           0, 0,  2, 0, 0.30f, 10.0f, 30.0f, 5.0f, IT::flanger,   45.0f, 1800.0f, 3000.0f, -60.0f },
+        { "Formant Drone",          4, 0,  0, 0, 0.50f, 15.0f, 40.0f, 6.0f, IT::formant,   45.0f, 2000.0f, 3500.0f, -18.0f },
+        { "Hollow Drone",           7, 12, 1, 0, 0.20f,  0.0f, 35.0f, 5.5f, IT::off,       0.0f, 1500.0f, 3000.0f, -60.0f },
+        { "Void Drone",             1, 0,  0, 0, 0.10f,  0.0f, 55.0f, 9.0f, IT::off,       0.0f, 2500.0f, 4000.0f, -22.0f },
+        { "Monolith Drone",         0, 7,  2, 0, 0.20f, 10.0f, 25.0f, 4.5f, IT::off,       0.0f, 1500.0f, 3000.0f, -60.0f },
+        { "Horizon Drone",          4, 5,  0, 1, 0.60f, 20.0f, 45.0f, 7.0f, IT::off,       0.0f, 2200.0f, 3500.0f, -16.0f },
+        { "Ether Drone",            5, 7,  0, 1, 0.60f, 20.0f, 50.0f, 8.0f, IT::off,       0.0f, 2500.0f, 4000.0f, -14.0f, 0.56f },
+    };
+
     // Each preset's level trim, from the Potato Ready calibration (name, dB)
     struct Trim { const char* name; float db; };
     const std::vector<Trim> trims {
@@ -762,6 +957,8 @@ const std::vector<Preset>& factory()
         for (const auto& r : keysRows)   b.push_back (keys (r));
         for (const auto& r : arpRows)    b.push_back (arp (r));
         for (const auto& r : fxRows)     b.push_back (fx (r));
+        for (const auto& r : lowRows)    b.push_back (lowBass (r));
+        for (const auto& r : droneRows)  b.push_back (drone (r));
         // Init stays the fresh-instance state, so it isn't trimmed
         for (size_t i = 1; i < b.size(); ++i)
             applyTrim (b[i]);

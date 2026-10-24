@@ -2600,13 +2600,15 @@ namespace potatoReady
             case Category::keys:  return -25.0f;
             case Category::arp:   return -26.0f;
             case Category::fx:    return -26.0f;
+            case Category::subBass: return -22.0f;
+            case Category::drone: return -24.0f;
             case Category::count: break;
         }
         return -12.0f;
     }
 
     // How long a held chord needs before it is at its sustained level (slow pads and risers take longer)
-    int settleSamples (Category c) { return (int) sampleRate * (c == Category::pad || c == Category::fx ? 3 : 1); }
+    int settleSamples (Category c) { return (int) sampleRate * (c == Category::pad || c == Category::fx || c == Category::drone ? 3 : 1); }
 
     struct PresetRig : Rig
     {
@@ -2620,7 +2622,7 @@ namespace potatoReady
     };
 
     // The held chord at full velocity; basses (mono) play one low note
-    std::vector<int> chordNotes (Category c) { return c == Category::bass ? std::vector<int> { 36 } : std::vector<int> { 36, 48, 55, 60, 64, 67 }; }
+    std::vector<int> chordNotes (Category c) { return c == Category::bass || c == Category::subBass ? std::vector<int> { 36 } : std::vector<int> { 36, 48, 55, 60, 64, 67 }; }
     std::vector<std::pair<int, juce::MidiMessage>> chordOn (Category c)
     {
         std::vector<std::pair<int, juce::MidiMessage>> events;
@@ -2780,7 +2782,7 @@ namespace potatoReady
         // Note-on: a single note's first 5 ms above 8 kHz stays within what its next 200 ms have
         {
             PresetRig rig (preset);
-            const auto x = rig.render (24000, { { 0, on (preset.category == Category::bass ? 36 : 60, 1.0f) } });
+            const auto x = rig.render (24000, { { 0, on (preset.category == Category::bass || preset.category == Category::subBass ? 36 : 60, 1.0f) } });
             const auto hx = highBand (x);
             const float onset = peak (hx, 0, 240), after = peak (hx, 240, 9840);
             if (onset > 2.0f * after + 1.0e-3f)
@@ -2892,7 +2894,7 @@ void testFactoryPresets()
 {
     using namespace potatoReady;
     const auto& bank = ps::presets::factory();
-    CHECK (bank.size() == 221 && bank[0].name == "Init", "the factory bank is Init plus 220 presets");
+    CHECK (bank.size() == 301 && bank[0].name == "Init", "the factory bank is Init plus 300 presets");
     std::map<std::string, int> names;
     for (const auto& x : bank)
         ++names[x.name.toStdString()];

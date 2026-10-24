@@ -10,9 +10,9 @@
 namespace ps::presets
 {
     // Order is permanent: the browser groups by it
-    enum class Category { init, lead, bass, pad, pluck, keys, arp, fx, count };
+    enum class Category { init, lead, bass, pad, pluck, keys, arp, fx, subBass, drone, count };
     inline const char* const categoryNames[] = { "Init", "Supersaw / Lead", "Bass / Reese / Growl", "Pad / Atmos", "Pluck / Stab",
-                                                 "Chord / Keys", "Arp / Sequence", "FX / Riser / Impact" };
+                                                 "Chord / Keys", "Arp / Sequence", "FX / Riser / Impact", "Sub / Low Bass", "Drones" };
 
     struct Preset
     {

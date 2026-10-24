@@ -50,11 +50,11 @@ public:
         const auto r = nameArea().toFloat();
         g.setColour (theme::bgBottom);
         g.fillRoundedRectangle (r, 6.0f);
-        g.setColour (isMouseOver() ? theme::chainAccent (categoryIndex).withAlpha (0.8f) : theme::panelEdge);
+        g.setColour (isMouseOver() ? theme::chainAccent (categoryIndex % 8).withAlpha (0.8f) : theme::panelEdge);
         g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
         g.setFont (fonts::mono (10.5f));
         const int catW = juce::GlyphArrangement::getStringWidthInt (fonts::mono (10.5f), displayCategory) + 4;
-        g.setColour (theme::chainAccent (categoryIndex));
+        g.setColour (theme::chainAccent (categoryIndex % 8));
         g.drawText (displayCategory, r.withTrimmedRight (10.0f), juce::Justification::centredRight, false);
         g.setColour (theme::text);
         g.setFont (fonts::bold (14.0f, 0.04f));

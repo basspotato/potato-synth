@@ -63,7 +63,7 @@ public:
         for (int i = 0; i < (int) presets::Category::count; ++i)
         {
             const auto r = categoryRect (i);
-            const auto accent = theme::chainAccent (i);
+            const auto accent = theme::chainAccent (i % 8);
             const bool on = i == category;
             if (on)
             {
@@ -98,7 +98,7 @@ public:
         g.drawLine (xr.getRight() - 10.0f, xr.getY() + 10.0f, xr.getX() + 10.0f, xr.getBottom() - 10.0f, 1.6f);
 
         const auto& bank = presets::factory();
-        const auto accent = theme::chainAccent (category);
+        const auto accent = theme::chainAccent (category % 8);
         const auto& list = byCategory[(size_t) category];
         for (int n = 0; n < (int) list.size(); ++n)
         {
