@@ -2602,6 +2602,7 @@ namespace potatoReady
             case Category::fx:    return -26.0f;
             case Category::subBass: return -22.0f;
             case Category::drone: return -24.0f;
+            case Category::chords: return -24.0f;
             case Category::count: break;
         }
         return -12.0f;
@@ -2894,7 +2895,7 @@ void testFactoryPresets()
 {
     using namespace potatoReady;
     const auto& bank = ps::presets::factory();
-    CHECK (bank.size() == 301 && bank[0].name == "Init", "the factory bank is Init plus 300 presets");
+    CHECK (bank.size() == 321 && bank[0].name == "Init", "the factory bank is Init plus 320 presets");
     std::map<std::string, int> names;
     for (const auto& x : bank)
         ++names[x.name.toStdString()];
@@ -3054,7 +3055,7 @@ void testFactoryPresets()
 void testPressureKeepsBalance()
 {
     using namespace potatoReady;
-    for (const char* name : { "Mash Pad", "Drawbar Classic", "Hoover Royale" })
+    for (const char* name : { "Mash Pad", "Drawbar Keys", "Hoover Royale" })
     {
         const ps::presets::Preset* preset = nullptr;
         for (const auto& x : ps::presets::factory())

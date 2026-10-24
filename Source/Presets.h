@@ -9,10 +9,14 @@
 // applies the preset's values in order. Presets are never host programs (PluginProcessor.h).
 namespace ps::presets
 {
-    // Order is permanent: the browser groups by it
-    enum class Category { init, lead, bass, pad, pluck, keys, arp, fx, subBass, drone, count };
-    inline const char* const categoryNames[] = { "Init", "Supersaw / Lead", "Bass / Reese / Growl", "Pad / Atmos", "Pluck / Stab",
-                                                 "Chord / Keys", "Arp / Sequence", "FX / Riser / Impact", "Sub / Low Bass", "Drones" };
+    // The enum order is only an index (the browser's display order is categoryOrder), but new categories are
+    // appended before count
+    enum class Category { init, lead, bass, pad, pluck, keys, arp, fx, subBass, drone, chords, count };
+    inline const char* const categoryNames[] = { "Init", "Supersaw / Lead", "Bass", "Pad / Atmos", "Pluck / Stab",
+                                                 "Keys", "Arp / Sequence", "FX / Riser / Impact", "Sub / Low Bass", "Drones", "Chords" };
+    // Top to bottom in the browser
+    inline constexpr Category categoryOrder[] = { Category::init, Category::lead, Category::bass, Category::subBass, Category::arp,
+                                                  Category::keys, Category::chords, Category::pluck, Category::drone, Category::pad, Category::fx };
 
     struct Preset
     {
@@ -39,6 +43,9 @@ namespace ps::presets
 
     // The whole bank, Init first. Built once, on first use.
     const std::vector<Preset>& factory();
+
+    // The preset `by` places after bank index `from` (-1 or any) in browser order: categoryOrder, then bank order. Wraps.
+    int stepInBrowserOrder (int from, int by);
 
     // A preset's calibrated level trim in dB (0 if it has none): master up to +6, the rest on its layer levels
     float trimDb (const juce::String& name);

@@ -461,11 +461,11 @@ namespace
         { "Chime Stab",        500.0f, 0, 1.0f, 2, 3000.0f, 24.0f, 250.0f, 20.0f, 30.0f },
     };
 
-    // ==== Chord / Keys =======================================================================================
+    // ==== Keys ===============================================================================================
     struct KeysRow
     {
         const char* name;
-        int kind;              // 0 FM e-piano, 1 Spectral organ, 2 Wavetable drawbars, 3 Genome bell, 4 JP poly, 5 Wavetable digital, 6 Spectral vowel
+        int kind;              // 0 FM e-piano, 1 Spectral organ, 2 Wavetable drawbars, 3 Genome bell, 4 JP clav, 5 Wavetable digital, 6 Spectral vowel
         float decayMs, sustain, brightness, reverb;
         IT midInsert;
     };
@@ -500,46 +500,107 @@ namespace
     }
 
     const KeysRow keysRows[] = {
-        { "Mash Keys", 0,        1500.0f, 40.0f, 0.4f, 25.0f, IT::off },
-        { "Electric Tines", 0,   2500.0f, 30.0f, 0.5f, 25.0f, IT::phaser },
-        { "Gospel Organ", 1,     800.0f,  90.0f, 0.5f, 25.0f, IT::off },
-        { "Glass Bells", 3,      3000.0f, 10.0f, 0.7f, 40.0f, IT::off },
-        { "Drawbar Classic", 2,  1000.0f, 100.0f, 0.4f, 20.0f, IT::drive },
-        { "House Chords", 4,     600.0f,  50.0f, 0.6f, 25.0f, IT::off },
-        { "Soft Rhodes", 0,      2000.0f, 35.0f, 0.2f, 30.0f, IT::off },
-        { "Digital Piano", 0,    2500.0f, 20.0f, 0.6f, 25.0f, IT::off },
-        { "Church Pipes", 1,     1000.0f, 95.0f, 0.3f, 50.0f, IT::off },
-        { "Music Box", 3,        1800.0f, 0.0f,  0.9f, 35.0f, IT::off },
-        { "Lo-Fi Keys", 0,       1500.0f, 30.0f, 0.3f, 20.0f, IT::crush },
-        { "Poly Brass Keys", 4,  700.0f,  70.0f, 0.5f, 20.0f, IT::off },
-        { "Vibe Mallets", 3,     2200.0f, 15.0f, 0.5f, 30.0f, IT::phaser },
-        { "Combo Organ", 2,      800.0f,  100.0f, 0.7f, 20.0f, IT::off },
-        { "Clav Funk", 4,        500.0f,  20.0f, 0.8f, 15.0f, IT::off },
-        { "Detroit Chords", 4,   900.0f,  45.0f, 0.5f, 30.0f, IT::off },
-        { "Celesta Mash", 3,     2000.0f, 15.0f,  0.8f, 35.0f, IT::off },
-        { "Warm Poly", 4,        1200.0f, 60.0f, 0.3f, 30.0f, IT::off },
-        { "Tonewheel Drive", 2,  1000.0f, 100.0f, 0.6f, 20.0f, IT::drive },
-        { "Dream Keys", 0,       2500.0f, 40.0f, 0.4f, 45.0f, IT::off },
-        { "Wurly Chords", 0,      900.0f, 15.0f, 0.5f, 25.0f, IT::off },
-        { "Neo Soul Keys", 0,    1200.0f, 20.0f, 0.3f, 30.0f, IT::off },
-        { "Velvet EP", 0,        1400.0f, 25.0f, 0.2f, 25.0f, IT::phaser },
-        { "FM Piano Bright", 0,   700.0f, 10.0f, 0.8f, 20.0f, IT::off },
-        { "Jazz Organ", 1,        800.0f, 90.0f, 0.6f, 25.0f, IT::drive },
-        { "Cathedral Chords", 1, 1000.0f, 95.0f, 0.3f, 55.0f, IT::off },
-        { "B3 Percussive", 2,     700.0f, 85.0f, 0.7f, 20.0f, IT::off },
-        { "Soul Drawbars", 2,     900.0f, 95.0f, 0.4f, 25.0f, IT::drive },
-        { "Crystal Keys", 3,     2500.0f, 10.0f, 0.7f, 40.0f, IT::off },
-        { "Frozen Bells", 3,     3500.0f,  0.0f, 0.5f, 55.0f, IT::off },
-        { "Glock Chords", 3,     1500.0f, 10.0f, 0.9f, 30.0f, IT::off },
-        { "Italo Chords", 4,      700.0f, 55.0f, 0.6f, 25.0f, IT::off },
-        { "Garage Stabs", 4,      350.0f,  0.0f, 0.5f, 20.0f, IT::off },
-        { "Synthwave Keys", 4,   1100.0f, 50.0f, 0.5f, 35.0f, IT::phaser },
-        { "Analog Horns", 4,      800.0f, 75.0f, 0.4f, 25.0f, IT::off },
-        { "DX Keys", 5,          1000.0f, 15.0f, 0.6f, 25.0f, IT::off },
-        { "Digital EP", 5,       1300.0f, 20.0f, 0.4f, 30.0f, IT::off },
-        { "Glass Piano", 5,      1800.0f, 10.0f, 0.8f, 35.0f, IT::off },
-        { "Choir Keys", 6,       1400.0f, 70.0f, 0.5f, 45.0f, IT::off },
-        { "Vowel Chords", 6,      900.0f, 60.0f, 0.7f, 35.0f, IT::off },
+        { "Rhodes Classic", 0, 2200.0f, 30.0f, 0.35f, 22.0f, IT::off },
+        { "Mellow Rhodes", 0, 2600.0f, 35.0f, 0.15f, 25.0f, IT::off },
+        { "Bright Rhodes", 0, 1800.0f, 25.0f, 0.70f, 20.0f, IT::off },
+        { "Wurly", 0, 1000.0f, 15.0f, 0.50f, 20.0f, IT::drive },
+        { "Dyno EP", 0, 2000.0f, 30.0f, 0.40f, 25.0f, IT::phaser },
+        { "Tine Bell EP", 0, 1600.0f, 20.0f, 0.80f, 25.0f, IT::off },
+        { "Lo-Fi EP", 0, 1500.0f, 30.0f, 0.30f, 20.0f, IT::crush },
+        { "Neo Soul EP", 0, 1400.0f, 25.0f, 0.25f, 30.0f, IT::off },
+        { "FM Piano", 0, 1200.0f, 15.0f, 0.60f, 20.0f, IT::off },
+        { "DX Piano", 5, 1000.0f, 15.0f, 0.60f, 22.0f, IT::off },
+        { "Digital Piano", 5, 1400.0f, 20.0f, 0.40f, 22.0f, IT::off },
+        { "Glass Piano", 5, 1800.0f, 10.0f, 0.80f, 30.0f, IT::off },
+        { "Felt Keys", 5, 1800.0f, 20.0f, 0.20f, 28.0f, IT::off },
+        { "Soft Keys", 5, 2000.0f, 25.0f, 0.20f, 30.0f, IT::off },
+        { "Clavinet", 4, 450.0f, 15.0f, 0.80f, 12.0f, IT::off },
+        { "Funk Clav", 4, 350.0f, 10.0f, 0.90f, 10.0f, IT::phaser },
+        { "Harpsichord", 4, 500.0f, 5.0f, 1.00f, 15.0f, IT::off },
+        { "Hammond B3", 2, 800.0f, 100.0f, 0.50f, 18.0f, IT::drive },
+        { "Jazz Organ", 1, 800.0f, 92.0f, 0.60f, 22.0f, IT::off },
+        { "Drawbar Keys", 2, 900.0f, 95.0f, 0.35f, 20.0f, IT::off },
+        { "Church Organ", 1, 1000.0f, 97.0f, 0.30f, 45.0f, IT::off },
+        { "Combo Organ", 2, 700.0f, 100.0f, 0.75f, 18.0f, IT::off },
+        { "Celesta", 3, 2200.0f, 10.0f, 0.80f, 30.0f, IT::off },
+        { "Glockenspiel", 3, 1800.0f, 0.0f, 1.00f, 28.0f, IT::off },
+        { "Music Box", 3, 1800.0f, 0.0f, 0.90f, 32.0f, IT::off },
+        { "Vibraphone", 3, 2600.0f, 20.0f, 0.45f, 30.0f, IT::phaser },
+        { "Marimba", 3, 500.0f, 0.0f, 0.30f, 18.0f, IT::off },
+        { "Kalimba", 3, 900.0f, 0.0f, 0.55f, 25.0f, IT::off },
+        { "Toy Piano", 3, 400.0f, 0.0f, 0.95f, 15.0f, IT::off },
+        { "Analog Keys", 4, 1000.0f, 45.0f, 0.40f, 22.0f, IT::off },
+    };
+
+    // ==== Chords =============================================================================================
+    struct ChordRow
+    {
+        const char* name;
+        int kind;              // 0 supersaw 8, 1 JP 7 saw, 2 Wavetable PWM, 3 Spectral saw > organ, 4 Spectral vowel, 5 Dirt saw, 6 Genome additive
+        float attackMs, decayMs, sustain, releaseMs, brightness, detune, reverb, delay;
+        IT midInsert;
+    };
+
+    Preset chord (const ChordRow& r)
+    {
+        auto x = make (r.name, Category::chords);
+        subLayer (x, 0.0f);
+        level (x, sub, -10.0f);
+        const float cut = 1500.0f + 9000.0f * r.brightness;
+        switch (r.kind)
+        {
+            case 0:  jpLayer (x, body, Role::body, { 0, 2, r.detune, 0.7f, 0.8f, cut, 0.1f, 12.0f, 600.0f, 0.5f }); break;
+            case 1:  jpLayer (x, body, Role::body, { 0, 1, r.detune, 0.65f, 0.7f, cut, 0.1f, 12.0f, 500.0f, 0.5f }); break;
+            case 2:  wtLayer (x, body, Role::body, { 1, 0.4f, 0.0f, 500.0f, 0.0f, 2, r.detune, 0.7f, 0.8f }); break;
+            case 3:  specLayer (x, body, Role::body, { 0, 5, 0.4f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1, r.detune, 0.8f }); break;
+            case 4:  specLayer (x, body, Role::body, { 6, 7, 0.3f + 0.4f * r.brightness, 0.0f, 0.0f, 0.1f }); break;
+            case 5:  dirtLayer (x, body, Role::body, { 0.5f, 0.0f, 0.0f, 0.0f, 0.3f, cut, 0.2f, 12.0f, 500.0f, 0.5f }); break;
+            default: genomeLayer (x, body, Role::body, { 0.75f, 0.0f, r.detune, 0.35f, 0.25f, 0.3f, 0.25f, 0.5f, 0.5f, 0.5f, 0.0f, 0.5f }); break;
+        }
+        level (x, body, -3.0f);
+        jpLayer (x, mid, Role::mid, { 0, 1, r.detune, 0.6f, 0.9f, 3000.0f + 10000.0f * r.brightness, 0.1f, 0.0f, 400.0f, 1.0f });
+        level (x, mid, -5.0f);
+        specLayer (x, air, Role::air, { 8, 5, 0.3f, 1.0f });
+        level (x, air, -12.0f);
+        ampAll (x, r.attackMs, r.decayMs, r.sustain, r.releaseMs);
+        x.set (p::layerChorus (body), 25.0f);
+        if (r.midInsert != IT::off)
+            insert (x, body, 0, r.midInsert, 30.0f);
+        space (x, r.reverb, 2.4f, r.delay);
+        return x;
+    }
+
+    const ChordRow chordRows[] = {
+        { "Supersaw Stab", 0, 2.0f, 350.0f, 35.0f, 180.0f, 0.80f, 0.60f, 22.0f, 0.0f, IT::off },
+        { "Trance Chords", 0, 5.0f, 600.0f, 60.0f, 300.0f, 0.70f, 0.60f, 30.0f, 12.0f, IT::off },
+        { "Big Room Chords", 0, 3.0f, 500.0f, 50.0f, 250.0f, 0.85f, 0.70f, 25.0f, 0.0f, IT::off },
+        { "Future Chords", 0, 8.0f, 900.0f, 70.0f, 400.0f, 0.60f, 0.50f, 30.0f, 10.0f, IT::phaser },
+        { "Pop Chords", 0, 4.0f, 700.0f, 60.0f, 250.0f, 0.70f, 0.40f, 22.0f, 0.0f, IT::off },
+        { "Festival Chords", 0, 3.0f, 600.0f, 65.0f, 300.0f, 0.90f, 0.70f, 28.0f, 10.0f, IT::off },
+        { "Wide Minor Chords", 0, 10.0f, 1000.0f, 75.0f, 500.0f, 0.50f, 0.50f, 35.0f, 0.0f, IT::off },
+        { "Sad Chords", 0, 15.0f, 1200.0f, 70.0f, 600.0f, 0.30f, 0.40f, 40.0f, 0.0f, IT::off },
+        { "Uplifting Chords", 0, 6.0f, 800.0f, 70.0f, 400.0f, 0.80f, 0.55f, 35.0f, 12.0f, IT::off },
+        { "Prog House Chords", 1, 4.0f, 600.0f, 60.0f, 250.0f, 0.60f, 0.45f, 28.0f, 10.0f, IT::off },
+        { "Deep House Stabs", 1, 3.0f, 300.0f, 20.0f, 150.0f, 0.40f, 0.30f, 25.0f, 12.0f, IT::off },
+        { "M1 Organ Chords", 3, 2.0f, 500.0f, 70.0f, 200.0f, 0.60f, 0.20f, 20.0f, 0.0f, IT::off },
+        { "String Chords", 3, 70.0f, 1200.0f, 85.0f, 600.0f, 0.40f, 0.50f, 40.0f, 0.0f, IT::off },
+        { "Ensemble Chords", 1, 40.0f, 1000.0f, 85.0f, 500.0f, 0.50f, 0.60f, 35.0f, 0.0f, IT::off },
+        { "Brass Chords", 1, 15.0f, 600.0f, 65.0f, 200.0f, 0.45f, 0.20f, 18.0f, 0.0f, IT::drive },
+        { "Choir Chords", 4, 60.0f, 1200.0f, 85.0f, 700.0f, 0.50f, 0.40f, 45.0f, 0.0f, IT::off },
+        { "Vowel Chords", 4, 25.0f, 900.0f, 70.0f, 400.0f, 0.70f, 0.30f, 35.0f, 0.0f, IT::off },
+        { "Dirty Chords", 5, 3.0f, 500.0f, 60.0f, 250.0f, 0.50f, 0.00f, 18.0f, 0.0f, IT::drive },
+        { "Warm Chords", 1, 12.0f, 1000.0f, 75.0f, 500.0f, 0.30f, 0.40f, 30.0f, 0.0f, IT::off },
+        { "Glass Chords", 2, 8.0f, 900.0f, 60.0f, 500.0f, 0.80f, 0.40f, 40.0f, 12.0f, IT::off },
+        { "Hollow Chords", 2, 20.0f, 1000.0f, 70.0f, 500.0f, 0.20f, 0.30f, 35.0f, 0.0f, IT::off },
+        { "Cinematic Chords", 3, 120.0f, 1800.0f, 90.0f, 1200.0f, 0.40f, 0.50f, 55.0f, 0.0f, IT::off },
+        { "Lush Chords", 0, 50.0f, 1400.0f, 85.0f, 800.0f, 0.60f, 0.70f, 45.0f, 10.0f, IT::off },
+        { "Analog Poly Chords", 1, 6.0f, 900.0f, 55.0f, 300.0f, 0.50f, 0.35f, 25.0f, 0.0f, IT::off },
+        { "Techno Stab Chords", 5, 2.0f, 250.0f, 0.0f, 120.0f, 0.55f, 0.00f, 15.0f, 18.0f, IT::off },
+        { "Rave Chords", 0, 2.0f, 400.0f, 40.0f, 150.0f, 0.90f, 0.80f, 20.0f, 15.0f, IT::phaser },
+        { "Dub Chords", 1, 3.0f, 350.0f, 0.0f, 200.0f, 0.35f, 0.30f, 30.0f, 35.0f, IT::off },
+        { "Gospel Chords", 6, 5.0f, 900.0f, 85.0f, 400.0f, 0.50f, 0.30f, 30.0f, 0.0f, IT::off },
+        { "Neon Chords", 2, 6.0f, 800.0f, 65.0f, 400.0f, 0.70f, 0.50f, 32.0f, 10.0f, IT::phaser },
+        { "Anthem Chords", 0, 5.0f, 900.0f, 80.0f, 500.0f, 0.85f, 0.70f, 38.0f, 10.0f, IT::off },
     };
 
     // ==== Arp / Sequence =====================================================================================
@@ -942,6 +1003,22 @@ float trimDb (const juce::String& name)
     return 0.0f;
 }
 
+int stepInBrowserOrder (int from, int by)
+{
+    const auto& bank = factory();
+    std::vector<int> order;
+    for (auto c : categoryOrder)
+        for (size_t i = 0; i < bank.size(); ++i)
+            if (bank[i].category == c)
+                order.push_back ((int) i);
+    const int n = (int) order.size();
+    int pos = 0;
+    for (int k = 0; k < n; ++k)
+        if (order[(size_t) k] == from)
+            pos = k;
+    return order[(size_t) (((pos + by) % n + n) % n)];
+}
+
 const std::vector<Preset>& factory()
 {
     static const std::vector<Preset> bank = []
@@ -955,6 +1032,7 @@ const std::vector<Preset>& factory()
         for (const auto& r : padRows)    b.push_back (pad (r));
         for (const auto& r : pluckRows)  b.push_back (pluck (r));
         for (const auto& r : keysRows)   b.push_back (keys (r));
+        for (const auto& r : chordRows)  b.push_back (chord (r));
         for (const auto& r : arpRows)    b.push_back (arp (r));
         for (const auto& r : fxRows)     b.push_back (fx (r));
         for (const auto& r : lowRows)    b.push_back (lowBass (r));
