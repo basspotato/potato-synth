@@ -142,7 +142,7 @@ inline double stageRatio (const KPowerMeter& in, const KPowerMeter& out) noexcep
 // tail or a pause it holds (a dynamics stage treats a dying tail unlike the notes, and the notes are what it
 // compensates), and when a note lands well over the recent level it goes straight to its target (the clipper ramps
 // it across the block), so a note after a pause starts at the right level instead of swelling in. The knob-sweep tests hold the
-// default stack to +-0.5 LU and every factory preset to +-1 LU.
+// default stack to +-0.5 LU and every factory preset to +-1.5 LU.
 class LoudnessTrim
 {
 public:

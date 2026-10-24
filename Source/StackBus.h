@@ -289,6 +289,9 @@ public:
         for (auto& b : splitHigh) for (auto& f : b) f.reset();
         for (auto& c : lowAllpass) for (auto& f : c) f.reset();
         bandEnvelope.fill (0.0f);
+        bandIn.fill (0.0f);
+        bandOut.fill (0.0f);
+        bandMakeup.fill (1.0f);
         glueDetector = 0.0f;
         glueShortTerm.reset();
         glueGainDb = 0.0f;
@@ -441,6 +444,30 @@ private:
             const float ms = timeScale * releaseMs[b] + tempoLock * (sixteenthMs - timeScale * releaseMs[b]);
             release[b] = 1.0f - std::exp (-1.0f / (ms * 0.001f * sr));
         }
+        // Balance (the knob's instance only): each band's slow in/out power ratio against the whole's, so the OTT
+        // keeps its per-band dynamics without its smile EQ, which tilted the octave balance by up to 5 dB (invariant 6)
+        const bool balance = followLevel;
+        std::array<float, 3> makeupFrom = bandMakeup, makeupStep {};
+        if (balance)
+        {
+            float in = 0.0f, out = 0.0f;
+            for (size_t b = 0; b < 3; ++b)
+            {
+                in += bandIn[b];
+                out += bandOut[b];
+            }
+            for (size_t b = 0; b < 3; ++b)
+            {
+                float target = 1.0f;
+                // Bands under -60 dB of the whole are left as they are: there's no tone to keep
+                if (bandIn[b] > 1.0e-6f * in && bandOut[b] > 1.0e-12f && out > 1.0e-12f)
+                    target = juce::jlimit (0.25f, 4.0f, std::sqrt ((bandIn[b] / bandOut[b]) / (in / out)));
+                makeupStep[b] = (target - makeupFrom[b]) / (float) juce::jmax (1, n);
+                bandMakeup[b] = target;
+            }
+        }
+        const float powerCoef = 1.0f - std::exp (-(float) n / (0.5f * sr));
+        std::array<double, 3> sumIn {}, sumOut {};
         for (int i = 0; i < n; ++i)
         {
             float band[3][2];
@@ -471,13 +498,27 @@ private:
                     // crossing the gate fades into silence: a hard gate would switch 12 dB on and off as a noisy
                     // tail's envelope wanders across it, and crackle
                     gainDb += upward * std::min ({ 12.0f, (upDb - db) * (2.0f / 3.0f), db - gateDb });
-                const float gain = std::exp2 (gainDb * depth * (1.0f / 6.0206f));
+                float gain = std::exp2 (gainDb * depth * (1.0f / 6.0206f));
+                if (balance)
+                {
+                    const auto c = (size_t) b;
+                    const float in = band[b][0] * band[b][0] + band[b][1] * band[b][1];
+                    sumIn[c] += in;
+                    sumOut[c] += in * gain * gain;
+                    gain *= makeupFrom[c] + makeupStep[c] * (float) (i + 1);
+                }
                 outL += band[b][0] * gain;
                 outR += band[b][1] * gain;
             }
             left[i] = outL;
             right[i] = outR;
         }
+        if (balance)
+            for (size_t b = 0; b < 3; ++b)
+            {
+                bandIn[b] += ((float) (sumIn[b] / juce::jmax (1, n)) - bandIn[b]) * powerCoef;
+                bandOut[b] += ((float) (sumOut[b] / juce::jmax (1, n)) - bandOut[b]) * powerCoef;
+            }
     }
 
     void trackLevel (const float* left, const float* right, int n) noexcept
@@ -528,7 +569,7 @@ private:
     std::array<Pair, 2> splitLow { Pair { LR (LR::Type::lowPass), LR (LR::Type::lowPass) }, Pair { LR (LR::Type::lowPass), LR (LR::Type::lowPass) } };
     std::array<Pair, 2> splitHigh { Pair { LR (LR::Type::highPass), LR (LR::Type::highPass) }, Pair { LR (LR::Type::highPass), LR (LR::Type::highPass) } };
     std::array<Pair, 2> lowAllpass { Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) }, Pair { LR (LR::Type::lowPass), LR (LR::Type::highPass) } };
-    std::array<float, 3> bandEnvelope {};
+    std::array<float, 3> bandEnvelope {}, bandIn {}, bandOut {}, bandMakeup { 1.0f, 1.0f, 1.0f };
     float glueDetector = 0.0f, glueGainDb = 0.0f;
     HeldLevel glueShortTerm;
 };

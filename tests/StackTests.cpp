@@ -2792,7 +2792,8 @@ namespace potatoReady
 
     // Macros: every chain knob and SUPER in turn, on the held chord (struck again for each knob), swept 0 -> 1 over
     // 2 s, held, then back to 0 over 0.5 s. The whole run stays under the true-peak ceiling. 0.5 s after each sweep
-    // the chord is struck again at the knob's new position, and over the next 2 s its loudness is within 1 LU of an
+    // the chord is struck again at the knob's new position, and over the next 2 s its loudness is within 1.5 LU (user
+    // decision 2026-10-24: a single strike through PRESSURE's ~12 dB of dynamics can't be trimmed tighter causally) of an
     // untouched copy of the preset at the same moment (so a sound that evolves by itself, like a riser, isn't counted
     // against the knob, and a pluck is measured on its notes rather than its tail). The rigs are built here, on the calling
     // thread; run() only renders, so several presets can run at once.
@@ -2818,11 +2819,13 @@ namespace potatoReady
                     l.insert (l.end(), x.begin(), x.end());
                     r.insert (r.end(), swept.right.begin(), swept.right.end());
                 };
+                // POTATO_NULL_SWEEP: the knobs stay at 0, which measures the check's own noise
+                static const bool nullSweep = juce::SystemStats::getEnvironmentVariable ("POTATO_NULL_SWEEP", {}).isNotEmpty();
                 auto move = [&] (float from, float to, int length, std::vector<std::pair<int, juce::MidiMessage>> events = {})
                 {
                     for (int pos = 0; pos < length; pos += blockSize)
                     {
-                        swept.set (knobs[k], from + (to - from) * (float) (pos + blockSize) / (float) length);
+                        swept.set (knobs[k], nullSweep ? 0.0f : from + (to - from) * (float) (pos + blockSize) / (float) length);
                         keep (swept.render (blockSize, pos == 0 ? events : std::vector<std::pair<int, juce::MidiMessage>> {}));
                         control.render (blockSize, pos == 0 ? events : std::vector<std::pair<int, juce::MidiMessage>> {});
                     }
@@ -2866,7 +2869,7 @@ namespace potatoReady
                 }
                 if (tp > -1.0 + 0.05)
                     res.failures.push_back (name + " sweep true peak " + std::to_string (tp));
-                if (std::isfinite (change) && std::abs (change) > 1.0)
+                if (std::isfinite (change) && std::abs (change) > 1.5)
                     res.failures.push_back (name + " sweep moves loudness " + std::to_string (change) + " LU");
             }
         }
@@ -3044,6 +3047,47 @@ void testFactoryPresets()
 // to drift in the silence: the second chord came out 2.5 LU off and the first one swelled in from -9 dB.) Each strike
 // is compared with PRESSURE off, since the stack itself plays the second strike a little differently (phase
 // alignment fixes a note from its second play).
+// PRESSURE keeps the tone: its OTT bands are balanced against each other over 500 ms, so on held pads and organs
+// no octave moves more than 1.5 dB against the rest (the OTT's smile EQ alone moved them 3-5 dB)
+void testPressureKeepsBalance()
+{
+    using namespace potatoReady;
+    for (const char* name : { "Mash Pad", "Drawbar Classic", "Hoover Royale" })
+    {
+        const ps::presets::Preset* preset = nullptr;
+        for (const auto& x : ps::presets::factory())
+            if (x.name == name)
+                preset = &x;
+        if (preset == nullptr)
+        {
+            CHECK (false, std::string ("factory preset ") + name + " exists");
+            continue;
+        }
+        PresetRig a (*preset), b (*preset);
+        b.set (ps::params::chainKnob (ps::chain::pressure), 1.0f);
+        const auto chord = chordOn (preset->category);
+        a.render (48000, chord);
+        b.render (48000, chord);
+        const auto xa = a.render (96000);
+        const auto ra = a.right;
+        const auto xb = b.render (96000);
+        const auto ea = octaveEnergy (xa, ra), eb = octaveEnergy (xb, b.right);
+        double top = 0.0, mean = 0.0;
+        for (auto e : ea)
+            top = std::max (top, e);
+        std::vector<double> change;
+        for (int o = 0; o < numOctaves; ++o)
+            if (ea[(size_t) o] > top * 1.0e-3)
+                change.push_back (10.0 * std::log10 ((eb[(size_t) o] + 1.0e-20) / (ea[(size_t) o] + 1.0e-20)));
+        for (auto c : change)
+            mean += c / (double) change.size();
+        double worst = 0.0;
+        for (auto c : change)
+            worst = std::max (worst, std::abs (c - mean));
+        CHECK (worst < 1.5, std::string ("PRESSURE keeps ") + name + "'s octave balance (worst " + std::to_string (worst) + " dB)");
+    }
+}
+
 void testPressureAfterPause()
 {
     const auto& bank = ps::presets::factory();
@@ -4515,6 +4559,55 @@ void testOddBlockSizes()
 }
 }
 
+// POTATO_DIAG="Preset A,Preset B" POTATO_DIAG_KNOB=<chain knob index, 8 = SUPER>: the sweep's measured strike,
+// swept against control, as 100 ms loudness steps (dB), to see where a knob's loudness change sits in a note
+void diagKnobOverTime()
+{
+    using namespace potatoReady;
+    const auto names = juce::StringArray::fromTokens (juce::SystemStats::getEnvironmentVariable ("POTATO_DIAG", {}), ",", {});
+    const int k = juce::SystemStats::getEnvironmentVariable ("POTATO_DIAG_KNOB", "2").getIntValue();
+    const auto knob = k < ps::params::numChainKnobs ? ps::params::chainKnob (k) : ps::params::super;
+    for (const auto& preset : ps::presets::factory())
+    {
+        if (! names.contains (preset.name))
+            continue;
+        PresetRig swept (preset), control (preset);
+        const auto chord = chordOn (preset.category);
+        std::vector<std::pair<int, juce::MidiMessage>> offs;
+        for (int n : chordNotes (preset.category))
+            offs.push_back ({ 0, off (n) });
+        swept.render (settleSamples (preset.category), chord);
+        control.render (settleSamples (preset.category), chord);
+        swept.render (24000, offs);
+        control.render (24000, offs);
+        for (int pos = 0; pos < 96000; pos += blockSize)
+        {
+            swept.set (knob, (float) (pos + blockSize) / 96000.0f);
+            swept.render (blockSize, pos == 0 ? chord : std::vector<std::pair<int, juce::MidiMessage>> {});
+            control.render (blockSize, pos == 0 ? chord : std::vector<std::pair<int, juce::MidiMessage>> {});
+        }
+        swept.render (24000, offs);
+        control.render (24000, offs);
+        const auto a = swept.render (96000, chord);
+        const auto ar = swept.right;
+        const auto c = control.render (96000, chord);
+        const double change = ps::loudness::ungatedLufs (a.data(), ar.data(), a.size(), sampleRate)
+                            - ps::loudness::ungatedLufs (c.data(), control.right.data(), c.size(), sampleRate);
+        const auto ea = octaveEnergy (a, ar), ec = octaveEnergy (c, control.right);
+        std::cout << "diag: " << preset.name << " knob " << k << " change " << change << " LU\n  octaves 63..16k level/change dB:";
+        for (int b = 0; b < numOctaves; ++b)
+            std::cout << " " << juce::String (10.0 * std::log10 (ec[(size_t) b] + 1.0e-20), 1) << "/" << juce::String (10.0 * std::log10 ((ea[(size_t) b] + 1.0e-20) / (ec[(size_t) b] + 1.0e-20)), 1);
+        std::cout << "\n  ctl dB / diff dB per 100 ms:";
+        for (size_t at = 0; at + 4800 <= a.size(); at += 4800)
+        {
+            const double pc = ps::loudness::ungatedLufs (c.data() + at, control.right.data() + at, 4800, sampleRate);
+            const double pa = ps::loudness::ungatedLufs (a.data() + at, ar.data() + at, 4800, sampleRate);
+            std::cout << " " << juce::String (pc, 1) << "/" << juce::String (pa - pc, 1);
+        }
+        std::cout << "\n";
+    }
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI gui;
@@ -4556,6 +4649,11 @@ int main()
         testLayerLink();
         return failures == 0 ? 0 : 1;
     }
+    if (juce::SystemStats::getEnvironmentVariable ("POTATO_DIAG", {}).isNotEmpty())
+    {
+        diagKnobOverTime();
+        return 0;
+    }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_FACTORY_ONLY", {}).isNotEmpty())
     {
         testFactoryPresets();
@@ -4569,6 +4667,7 @@ int main()
         testLayerZones();
         testLayerLink();
         testPressureAfterPause();
+    testPressureKeepsBalance();
         testPumpPunchThrough();
         testFactoryPresets();
         return failures == 0 ? 0 : 1;
@@ -4578,6 +4677,7 @@ int main()
         testMasterChain();
         testOttUpwardTaper();
         testPressureBypassFade();
+        testPressureKeepsBalance();
         testBuildStageExit();
         testSubDuck();
         testInserts();
@@ -4690,6 +4790,7 @@ int main()
     testLayerZones();
     testLayerLink();
     testPressureAfterPause();
+    testPressureKeepsBalance();
     testPumpPunchThrough();
     testFactoryPresets();
     testArpeggiator();
