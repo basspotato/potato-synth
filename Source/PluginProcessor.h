@@ -10,6 +10,7 @@
 #include "Arp.h"
 #include "ModLanes.h"
 #include "MixHealth.h"
+#include "OutputScope.h"
 #include "Presets.h"
 
 class PotatoSynthProcessor : public juce::AudioProcessor,
@@ -86,6 +87,8 @@ public:
     juce::String getPresetName() const { return apvts.state.getProperty ("presetName", "Init").toString(); }
     // Mix Health meters and listen modes (the editor turns the meters on while it is open)
     ps::MixHealth& getMixHealth() noexcept { return mixHealth; }
+    // The output's last samples and peak levels, for the editor's waveform and level meter
+    ps::OutputScope& getOutputScope() noexcept { return outputScope; }
     // Message thread: the XY pad's Snapshot corners (0 top left, 1 top right, 2 bottom left, 3 bottom right).
     // Capture takes the sound as it is heard now; an empty corner stands for the live settings.
     void captureSnapshot (int corner) { snapshot.capture (corner, layerEngineIds()); }
@@ -185,6 +188,7 @@ private:
     ps::TruePeakClipper clipper;
     ps::TruePeakLimiter limiter;
     ps::MixHealth mixHealth;
+    ps::OutputScope outputScope;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> masterGain { 1.0f };
     juce::SmoothedValue<float> stackGain { 1.0f };
 

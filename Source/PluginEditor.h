@@ -6,6 +6,7 @@
 #include "gui/LayerPage.h"
 #include "gui/ArpPage.h"
 #include "gui/MixPage.h"
+#include "gui/LevelMeter.h"
 #include "gui/PresetBar.h"
 #include "gui/PresetBrowser.h"
 #include "gui/PotatoBadge.h"
@@ -49,6 +50,7 @@ private:
     ps::LayerPage layerPage;
     ps::ArpPage arpPage;
     ps::MixPage mixPage;
+    ps::LevelMeter levelMeter;
     ps::PresetBar presetBar { [this] (int i) { processor.loadPreset (ps::presets::factory()[(size_t) i]); },
                               [this] { return processor.getPresetName(); } };
     ps::PotatoBadge badge;

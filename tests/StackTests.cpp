@@ -2483,6 +2483,26 @@ void testInserts()
 
 // Mix Health: the meters agree with the offline BS.1770 measurements, watching never changes the sound, the
 // listen modes do what they say without clicking, and two layers on the same band are flagged
+// The editor's waveform and level meter read the output through OutputScope
+void testOutputScope()
+{
+    JpRig rig ({});
+    const auto left = rig.render (48000, { { 0, on (45) }, { 0, on (57) } });
+    auto& scope = rig.proc->getOutputScope();
+    float peak = 0.0f;
+    for (float v : left)
+        peak = std::max (peak, std::abs (v));
+    const float peakL = scope.takePeak (0);
+    CHECK (peak > 0.01f && std::abs (peakL - peak) < 1.0e-6f, "the scope's left peak is the highest output sample (" + std::to_string (peakL) + " vs " + std::to_string (peak) + ")");
+    CHECK (scope.takePeak (0) == 0.0f, "reading the peak resets it");
+    std::vector<float> last (ps::OutputScope::size);
+    scope.snapshot (last.data(), (int) last.size());
+    bool same = true;
+    for (size_t i = 0; i < last.size(); ++i)
+        same = same && std::abs (last[i] - 0.5f * (left[left.size() - last.size() + i] + rig.right[left.size() - last.size() + i])) < 1.0e-6f;
+    CHECK (same, "the scope holds the newest 4096 output samples, oldest first");
+}
+
 void testMixHealth()
 {
     using MH = ps::MixHealth;
@@ -4737,6 +4757,7 @@ int main()
         testInserts();
         benchmarkInserts();
         testMixHealth();
+        testOutputScope();
         return failures == 0 ? 0 : 1;
     }
     if (juce::SystemStats::getEnvironmentVariable ("POTATO_GENOME_ONLY", {}).isNotEmpty())
@@ -4838,6 +4859,7 @@ int main()
     testSubDuck();
     testInserts();
     testMixHealth();
+    testOutputScope();
     testPresetLoading();
     testLayerMuteSolo();
     testSnapshotMorph();

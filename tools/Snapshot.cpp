@@ -1,6 +1,6 @@
 // Renders the plugin editor to a PNG without a host, so GUI work can be checked headlessly.
 // Usage: PotatoSynthSnapshot out.png [width] [page] [height]   (page: the start of a button's text, comma-separated to click several, e.g. LAYER,FILTER;
-// "BROWSE" opens the preset browser, "PRESET=Name" loads a factory preset first)
+// "BROWSE" opens the preset browser, "PRESET=Name" loads a factory preset first, "PLAY" sounds a chord so the waveform and meter show)
 #include "PluginProcessor.h"
 #include "gui/PresetBar.h"
 
@@ -45,6 +45,24 @@ int main (int argc, char** argv)
                 for (const auto& preset : ps::presets::factory())
                     if (preset.name == text.fromFirstOccurrenceOf ("=", false, false))
                         static_cast<PotatoSynthProcessor&> (*processor).loadPreset (preset);
+                continue;
+            }
+            if (text == "PLAY")
+            {
+                processor->setPlayConfigDetails (0, 2, 48000.0, 512);
+                processor->prepareToPlay (48000.0, 512);
+                juce::AudioBuffer<float> block (2, 512);
+                for (int i = 0; i < 120; ++i)
+                {
+                    juce::MidiBuffer midi;
+                    if (i == 0)
+                        for (int n : { 48, 55, 60, 64 })
+                            midi.addEvent (juce::MidiMessage::noteOn (1, n, 0.9f), 0);
+                    block.clear();
+                    processor->processBlock (block, midi);
+                }
+                juce::Timer::callAfterDelay (250, [] { juce::MessageManager::getInstance()->stopDispatchLoop(); });
+                juce::MessageManager::getInstance()->runDispatchLoop();
                 continue;
             }
             click (*editor, text);

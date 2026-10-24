@@ -39,9 +39,8 @@ namespace
 
 PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     : AudioProcessorEditor (&p), processor (p), layerPage (p.apvts), arpPage (p),
-      mixPage (p.apvts, p.getMixHealth(), [this] (int l) { return ps::theme::roleColour (layerRole (l)); })
+      mixPage (p.apvts, p.getOutputScope()), levelMeter (p.getOutputScope())
 {
-    processor.getMixHealth().setActive (true);
     setLookAndFeel (&look);
 
     for (int i = 0; i < ps::params::numLayers; ++i)
@@ -68,6 +67,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     addChildComponent (layerPage);
     addChildComponent (arpPage);
     addChildComponent (mixPage);
+    addAndMakeVisible (levelMeter);
     addAndMakeVisible (presetBar);
     setWantsKeyboardFocus (true);
     addAndMakeVisible (badge);
@@ -338,7 +338,6 @@ void PotatoSynthEditor::showEngineMenu (int layerIndex)
 
 PotatoSynthEditor::~PotatoSynthEditor()
 {
-    processor.getMixHealth().setActive (false);
     setLookAndFeel (nullptr);
 }
 
@@ -487,6 +486,8 @@ void PotatoSynthEditor::resized()
 
     auto superArea = right.removeFromTop (scaled (210));
     super.label.setBounds (superArea.removeFromBottom (scaled (20)));
+    levelMeter.setBounds (superArea.removeFromRight (scaled (22)).reduced (0, scaled (14)));
+    superArea.removeFromRight (scaled (6));
     super.slider.setBounds (superArea);
     right.removeFromTop (scaled (10));
     auto buttons = right.removeFromTop (scaled (44));

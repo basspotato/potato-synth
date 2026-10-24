@@ -510,6 +510,7 @@ void PotatoSynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     limiter.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples(), safe);
     mixHealth.setCrossover (crossoverLowHz->load());
     mixHealth.process (buffer.getWritePointer (0), buffer.getWritePointer (1), buffer.getNumSamples());
+    outputScope.push (buffer.getReadPointer (0), buffer.getReadPointer (1), buffer.getNumSamples());
 }
 
 void PotatoSynthProcessor::addRamped (float* out, const float* in, int numSamples, float from, float to) noexcept
