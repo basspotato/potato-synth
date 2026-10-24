@@ -3801,7 +3801,7 @@ void benchmarkGenome()
 // What the insert slots cost: the init stack's engines with both slots on all 4 layers on the heaviest types
 void benchmarkInserts()
 {
-    auto measure = [] (bool withInserts)
+    auto measure = [] (bool withInserts, bool knobsUp)
     {
         Rig rig (false);
         const char* engines[] = { "sub", "dirt", "jp", "spectral" };
@@ -3817,6 +3817,12 @@ void benchmarkInserts()
                 rig.set (ps::params::layerInsertAmount (i, 0), 100.0f);
                 rig.set (ps::params::layerInsertAmount (i, 1), 100.0f);
             }
+        if (knobsUp)
+        {
+            // MORPH and SUPER up, so every layer's slot twin runs
+            rig.set (ps::params::chainKnob (ps::chain::morph), 1.0f);
+            rig.set (ps::params::super, 1.0f);
+        }
         std::vector<std::pair<int, juce::MidiMessage>> chord;
         for (int n : { 36, 43, 48, 52, 55, 60, 64, 67 })
             chord.push_back ({ 0, on (n) });
@@ -3830,8 +3836,9 @@ void benchmarkInserts()
         }
         return best;
     };
-    const double without = measure (false), with = measure (true);
-    std::cout << "info: 8-note chord on the init stack: " << without << "% of one core, " << with << "% with 8 insert slots (Freq Shift + Formant)\n";
+    const double without = measure (false, false), with = measure (true, false), knobs = measure (false, true);
+    std::cout << "info: 8-note chord on the init stack: " << without << "% of one core, " << with << "% with 8 insert slots (Freq Shift + Formant), "
+              << knobs << "% with MORPH and SUPER up (every layer's slot twin running)\n";
     CHECK (with < 20.0, "the init stack with 8 heavy insert slots stays within the 20 % CPU budget");
 }
 
@@ -4572,9 +4579,25 @@ void diagKnobOverTime()
         if (! names.contains (preset.name))
             continue;
         PresetRig swept (preset), control (preset);
-        const auto chord = chordOn (preset.category);
+        // POTATO_DIAG_SOLO=n: layer n alone (0-based)
+        if (const auto solo = juce::SystemStats::getEnvironmentVariable ("POTATO_DIAG_SOLO", {}); solo.isNotEmpty())
+            for (auto* rig : { &swept, &control })
+                rig->set (ps::params::layerSolo (solo.getIntValue()), 1.0f);
+        auto chord = chordOn (preset.category);
+        auto notes = chordNotes (preset.category);
+        // POTATO_DIAG_NOTES="36,67": play these instead of the chord
+        if (const auto only = juce::SystemStats::getEnvironmentVariable ("POTATO_DIAG_NOTES", {}); only.isNotEmpty())
+        {
+            notes.clear();
+            chord.clear();
+            for (const auto& t : juce::StringArray::fromTokens (only, ",", {}))
+            {
+                notes.push_back (t.getIntValue());
+                chord.push_back ({ 0, on (t.getIntValue(), 1.0f) });
+            }
+        }
         std::vector<std::pair<int, juce::MidiMessage>> offs;
-        for (int n : chordNotes (preset.category))
+        for (int n : notes)
             offs.push_back ({ 0, off (n) });
         swept.render (settleSamples (preset.category), chord);
         control.render (settleSamples (preset.category), chord);
@@ -4588,11 +4611,39 @@ void diagKnobOverTime()
         }
         swept.render (24000, offs);
         control.render (24000, offs);
-        const auto a = swept.render (96000, chord);
-        const auto ar = swept.right;
-        const auto c = control.render (96000, chord);
+        std::vector<float> a, ar, c, cr;
+        std::string twins;
+        std::array<std::array<double, 4>, 2> layerEnergy {};
+        for (int pos = 0; pos < 96000; pos += blockSize)
+        {
+            const auto x = swept.render (blockSize, pos == 0 ? chord : std::vector<std::pair<int, juce::MidiMessage>> {});
+            a.insert (a.end(), x.begin(), x.end());
+            ar.insert (ar.end(), swept.right.begin(), swept.right.end());
+            const auto y = control.render (blockSize, pos == 0 ? chord : std::vector<std::pair<int, juce::MidiMessage>> {});
+            c.insert (c.end(), y.begin(), y.end());
+            cr.insert (cr.end(), control.right.begin(), control.right.end());
+            for (int l = 0; l < 4; ++l)
+            {
+                layerEnergy[0][(size_t) l] += swept.proc->getLayerPower (l);
+                layerEnergy[1][(size_t) l] += control.proc->getLayerPower (l);
+            }
+            if (juce::SystemStats::getEnvironmentVariable ("POTATO_DIAG_TRIM", {}).isNotEmpty() && pos % 4800 < blockSize)
+                std::cout << "  t " << pos / 48 << " ms trim " << juce::Decibels::gainToDecibels (swept.proc->getLoudnessTrim())
+                          << " dB, layer 2 twin " << 10.0f * std::log10 (swept.proc->getSlotPowerRatio (2)) << " dB, meters " << 10.0f * std::log10 (swept.proc->getLayerPower (2) / control.proc->getLayerPower (2)) << " dB\n";
+            if (pos % 24000 == 0)
+            {
+                twins += " |";
+                for (int l = 0; l < 4; ++l)
+                    twins += " " + juce::String (10.0 * std::log10 (swept.proc->getStack().layer (l).slotPowerRatio()), 1).toStdString();
+            }
+        }
+        control.right = cr;
         const double change = ps::loudness::ungatedLufs (a.data(), ar.data(), a.size(), sampleRate)
                             - ps::loudness::ungatedLufs (c.data(), control.right.data(), c.size(), sampleRate);
+        std::cout << "twin dB per 0.5 s:" << twins << " | layer meters' energy, swept/control dB:";
+        for (int l = 0; l < 4; ++l)
+            std::cout << " " << juce::String (10.0 * std::log10 ((layerEnergy[0][(size_t) l] + 1.0e-20) / (layerEnergy[1][(size_t) l] + 1.0e-20)), 1);
+        std::cout << "\n";
         const auto ea = octaveEnergy (a, ar), ec = octaveEnergy (c, control.right);
         std::cout << "diag: " << preset.name << " knob " << k << " change " << change << " LU\n  octaves 63..16k level/change dB:";
         for (int b = 0; b < numOctaves; ++b)
