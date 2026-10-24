@@ -401,7 +401,8 @@ void PotatoSynthEditor::resized()
     auto scaled = [s] (int v) { return juce::roundToInt ((float) v * s); };
 
     badge.setBounds (frame.getX() + scaled (20), frame.getY() + scaled (4), scaled (66), scaled (46));
-    presetBar.setBounds (frame.getX() + scaled (92), frame.getY() + scaled (58), scaled (300), scaled (22));
+    // Same width and left edge as the layer cards, so it sits centred over the first one
+    presetBar.setBounds (frame.getX() + scaled (24), frame.getY() + scaled (58), scaled (280), scaled (22));
     presetBrowser.setBounds (getLocalBounds());
     presetBrowser.setScale (s);
     auto area = frame.reduced (scaled (24));
