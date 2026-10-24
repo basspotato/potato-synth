@@ -6,7 +6,8 @@ namespace ps
 {
 // The preset browser, laid out like Potato-Kicker's: the categories down the left, the category's presets as
 // tiles on the right. It covers the editor with a dim backdrop; picking a tile loads the preset and keeps the
-// browser open to audition the next, and the X, Esc or a click outside closes it.
+// browser open to audition the next, and the X, Esc or a click outside closes it. The header drags the window;
+// the arrows beside the X and the computer's arrow keys step through the presets in the order shown.
 class PresetBrowser : public juce::Component
 {
 public:
@@ -60,9 +61,10 @@ public:
         g.setFont (fonts::bold (15.0f, 0.3f));
         g.drawText ("PRESETS", juce::Rectangle<float> (22.0f, 14.0f, 170.0f, 28.0f), juce::Justification::centredLeft, false);
 
-        for (int i = 0; i < (int) presets::Category::count; ++i)
+        for (int row = 0; row < numRows; ++row)
         {
-            const auto r = categoryRect (i);
+            const int i = (int) presets::categoryOrder[row];
+            const auto r = categoryRect (row);
             const auto accent = theme::chainAccent (i % 8);
             const bool on = i == category;
             if (on)
@@ -96,6 +98,17 @@ public:
         g.setColour (theme::text);
         g.drawLine (xr.getX() + 10.0f, xr.getY() + 10.0f, xr.getRight() - 10.0f, xr.getBottom() - 10.0f, 1.6f);
         g.drawLine (xr.getRight() - 10.0f, xr.getY() + 10.0f, xr.getX() + 10.0f, xr.getBottom() - 10.0f, 1.6f);
+        for (int dir : { -1, 1 })
+        {
+            const auto ar = arrowRect (dir);
+            g.setColour (theme::panel);
+            g.fillRoundedRectangle (ar, 4.0f);
+            g.setColour (theme::text);
+            juce::Path tri;
+            const auto c = ar.getCentre();
+            tri.addTriangle (c.x + 5.0f * (float) dir, c.y, c.x - 4.0f * (float) dir, c.y - 6.0f, c.x - 4.0f * (float) dir, c.y + 6.0f);
+            g.fillPath (tri);
+        }
 
         const auto& bank = presets::factory();
         const auto accent = theme::chainAccent (category % 8);
@@ -156,10 +169,23 @@ public:
             setVisible (false);
             return;
         }
-        for (int i = 0; i < (int) presets::Category::count; ++i)
-            if (categoryRect (i).contains (p))
+        for (int dir : { -1, 1 })
+            if (arrowRect (dir).contains (p))
             {
-                category = i;
+                step (dir);
+                return;
+            }
+        if (p.y < gridTop - 4.0f)
+        {
+            dragging = true;
+            dragStart = e.position;
+            offsetStart = panelOffset;
+            return;
+        }
+        for (int row = 0; row < numRows; ++row)
+            if (categoryRect (row).contains (p))
+            {
+                category = (int) presets::categoryOrder[row];
                 hoverIdx = -1;
                 repaint();
                 return;
@@ -176,8 +202,32 @@ public:
             }
     }
 
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        if (! dragging)
+            return;
+        // Keep the whole panel inside the editor
+        const juce::Point<float> room ((float) getWidth() - panelW * scale, (float) getHeight() - panelH * scale);
+        const auto want = offsetStart + (e.position - dragStart);
+        const float rx = juce::jmax (0.0f, room.x) * 0.5f, ry = juce::jmax (0.0f, room.y) * 0.5f;
+        panelOffset = juce::Point<float> (juce::jlimit (-rx, rx, want.x), juce::jlimit (-ry, ry, want.y));
+        repaint();
+    }
+
+    void mouseUp (const juce::MouseEvent&) override { dragging = false; }
+
     bool keyPressed (const juce::KeyPress& k) override
     {
+        if (k == juce::KeyPress::leftKey || k == juce::KeyPress::upKey)
+        {
+            step (-1);
+            return true;
+        }
+        if (k == juce::KeyPress::rightKey || k == juce::KeyPress::downKey)
+        {
+            step (1);
+            return true;
+        }
         if (k == juce::KeyPress::escapeKey)
         {
             setVisible (false);
@@ -189,14 +239,27 @@ public:
 private:
     static constexpr float panelW = 1040.0f, panelH = 590.0f, listW = 250.0f, gridX = 272.0f, gridTop = 60.0f;
     static constexpr int columns = 4;
+    static constexpr int numRows = (int) presets::Category::count;
+    static_assert (sizeof (presets::categoryOrder) / sizeof (presets::categoryOrder[0]) == numRows, "every category needs a row");
+
+    void step (int by)
+    {
+        current = presets::stepInBrowserOrder (current, by);
+        category = (int) presets::factory()[(size_t) current].category;
+        hoverIdx = -1;
+        if (onPick)
+            onPick (current);
+        repaint();
+    }
 
     juce::Rectangle<float> panelBounds() const
     {
-        return juce::Rectangle<float> (panelW * scale, panelH * scale).withCentre (getLocalBounds().toFloat().getCentre());
+        return juce::Rectangle<float> (panelW * scale, panelH * scale).withCentre (getLocalBounds().toFloat().getCentre() + panelOffset);
     }
     juce::Point<float> toPanel (juce::Point<float> p) const { return (p - panelBounds().getPosition()) / scale; }
 
-    static juce::Rectangle<float> categoryRect (int i) { return { 0.0f, 60.0f + (float) i * 40.0f, listW, 40.0f }; }
+    static juce::Rectangle<float> categoryRect (int row) { return { 0.0f, 60.0f + (float) row * 40.0f, listW, 40.0f }; }
+    static juce::Rectangle<float> arrowRect (int dir) { return { panelW - 50.0f + (dir < 0 ? -78.0f : -39.0f), 14.0f, 30.0f, 30.0f }; }
     static juce::Rectangle<float> closeRect() { return { panelW - 50.0f, 14.0f, 30.0f, 30.0f }; }
     juce::Rectangle<float> tileRect (int n) const
     {
@@ -228,5 +291,7 @@ private:
     std::array<std::vector<int>, (size_t) presets::Category::count> byCategory;
     int category = 0, current = 0, hoverIdx = -1;
     float scale = 1.0f;
+    juce::Point<float> panelOffset, dragStart, offsetStart;
+    bool dragging = false;
 };
 }

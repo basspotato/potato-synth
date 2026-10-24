@@ -25,6 +25,14 @@ public:
 
     int currentIndex() const { return indexOf (nameOf()); }
 
+    // Next or previous preset in the browser's order (category by category), wrapping round
+    void step (int by)
+    {
+        const int i = presets::stepInBrowserOrder (indexOf (nameOf()), by);
+        loadPreset (i);
+        refresh();
+    }
+
     // Called from the editor's timer, so a state load or a host recall shows up
     void refresh()
     {
@@ -91,14 +99,6 @@ private:
             if (bank[i].name == n)
                 return (int) i;
         return -1;
-    }
-
-    void step (int by)
-    {
-        const int size = (int) presets::factory().size();
-        const int i = indexOf (nameOf());
-        loadPreset (((i < 0 ? 0 : i) + by + size) % size);
-        refresh();
     }
 
     std::function<void (int)> loadPreset;

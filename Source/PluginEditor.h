@@ -36,6 +36,8 @@ private:
     void setUpBusKnob (Knob&, const juce::String& name, const juce::ParameterID&,
                        std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>&);
     void timerCallback() override;
+    bool keyPressed (const juce::KeyPress&) override;
+    void mouseEnter (const juce::MouseEvent&) override;
     void updateGhosts();
     juce::TimedCallback ghostTimer { [this] { updateGhosts(); } };
 

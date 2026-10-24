@@ -69,6 +69,7 @@ PotatoSynthEditor::PotatoSynthEditor (PotatoSynthProcessor& p)
     addChildComponent (arpPage);
     addChildComponent (mixPage);
     addAndMakeVisible (presetBar);
+    setWantsKeyboardFocus (true);
     addAndMakeVisible (badge);
     presetBar.onBrowse = [this] { presetBrowser.show (presetBar.currentIndex()); };
     presetBrowser.onPick = [this] (int i)
@@ -392,6 +393,25 @@ void PotatoSynthEditor::paint (juce::Graphics& g)
     g.drawText (juce::CharPointer_UTF8 ("HARMONY ENGINE  \xc2\xb7  ON"),
                 juce::Rectangle<float> (x0, f.getBottom() - 26.0f * s, f.getWidth() - 24.0f * s, 18.0f * s),
                 juce::Justification::centredRight);
+}
+
+// The computer's arrow keys step through the presets while the editor has the keyboard (the browser handles
+// them itself while it is open)
+bool PotatoSynthEditor::keyPressed (const juce::KeyPress& k)
+{
+    if (k == juce::KeyPress::leftKey || k == juce::KeyPress::upKey)
+        presetBar.step (-1);
+    else if (k == juce::KeyPress::rightKey || k == juce::KeyPress::downKey)
+        presetBar.step (1);
+    else
+        return false;
+    return true;
+}
+
+void PotatoSynthEditor::mouseEnter (const juce::MouseEvent&)
+{
+    if (! presetBrowser.isVisible() && getCurrentlyFocusedComponent() == nullptr)
+        grabKeyboardFocus();
 }
 
 void PotatoSynthEditor::resized()
